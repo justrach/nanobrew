@@ -8,8 +8,11 @@ const std = @import("std");
 const Formula = @import("formula.zig").Formula;
 const BOTTLE_TAG = @import("formula.zig").BOTTLE_TAG;
 const BOTTLE_FALLBACKS = @import("formula.zig").BOTTLE_FALLBACKS;
+const Cask = @import("cask.zig").Cask;
+const Artifact = @import("cask.zig").Artifact;
 
 const API_BASE = "https://formulae.brew.sh/api/formula/";
+const CASK_API_BASE = "https://formulae.brew.sh/api/cask/";
 const API_CACHE_DIR = "/opt/nanobrew/cache/api";
 
 pub fn fetchFormula(alloc: std.mem.Allocator, name: []const u8) !Formula {
@@ -27,6 +30,167 @@ pub fn fetchFormula(alloc: std.mem.Allocator, name: []const u8) !Formula {
     }
 
     return fetchAndCache(alloc, name, cache_path);
+}
+
+pub fn fetchCask(alloc: std.mem.Allocator, token: []const u8) !Cask {
+    var cache_path_buf: [512]u8 = undefined;
+    const cache_path = std.fmt.bufPrint(&cache_path_buf, "{s}/cask-{s}.json", .{ API_CACHE_DIR, token }) catch return error.NameTooLong;
+
+    if (readCached(alloc, cache_path)) |cached_json| {
+        const cask = parseCaskJson(alloc, cached_json) catch {
+            alloc.free(cached_json);
+            return fetchAndCacheCask(alloc, token, cache_path);
+        };
+        alloc.free(cached_json);
+        return cask;
+    }
+
+    return fetchAndCacheCask(alloc, token, cache_path);
+}
+
+fn fetchAndCacheCask(alloc: std.mem.Allocator, token: []const u8, cache_path: []const u8) !Cask {
+    var url_buf: [512]u8 = undefined;
+    const url = std.fmt.bufPrint(&url_buf, "{s}{s}.json", .{ CASK_API_BASE, token }) catch return error.NameTooLong;
+
+    const run = std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "curl", "-sL", "--http2", url },
+    }) catch return error.CurlFailed;
+    defer alloc.free(run.stderr);
+
+    if (run.term.Exited != 0 or run.stdout.len == 0) {
+        alloc.free(run.stdout);
+        return error.CaskNotFound;
+    }
+
+    std.fs.makeDirAbsolute(API_CACHE_DIR) catch {};
+    if (std.fs.createFileAbsolute(cache_path, .{})) |file| {
+        defer file.close();
+        file.writeAll(run.stdout) catch {};
+    } else |_| {}
+
+    defer alloc.free(run.stdout);
+    return parseCaskJson(alloc, run.stdout);
+}
+
+fn parseCaskJson(alloc: std.mem.Allocator, json_data: []const u8) !Cask {
+    const parsed = try std.json.parseFromSlice(std.json.Value, alloc, json_data, .{});
+    defer parsed.deinit();
+
+    const root = parsed.value.object;
+
+    const token = try allocDupe(alloc, getStr(root, "token") orelse return error.MissingField);
+    const version = try allocDupe(alloc, getStr(root, "version") orelse return error.MissingField);
+    const url = try allocDupe(alloc, getStr(root, "url") orelse return error.MissingField);
+    const sha256 = try allocDupe(alloc, getStr(root, "sha256") orelse "no_check");
+    const desc = try allocDupe(alloc, getStr(root, "desc") orelse "");
+
+    // name is an array, take first element
+    var name: []const u8 = token;
+    if (root.get("name")) |name_val| {
+        if (name_val == .array and name_val.array.items.len > 0) {
+            if (name_val.array.items[0] == .string) {
+                name = try allocDupe(alloc, name_val.array.items[0].string);
+            }
+        }
+    }
+    if (std.mem.eql(u8, name, token)) {
+        name = try allocDupe(alloc, token);
+    }
+
+    const auto_updates = if (root.get("auto_updates")) |au| au == .bool and au.bool else false;
+
+    // Parse minimum macOS version from depends_on.macos.>=
+    var min_macos: ?[]const u8 = null;
+    if (root.get("depends_on")) |dep_on| {
+        if (dep_on == .object) {
+            if (dep_on.object.get("macos")) |macos_val| {
+                if (macos_val == .object) {
+                    if (macos_val.object.get(">=")) |min_val| {
+                        if (min_val == .array and min_val.array.items.len > 0) {
+                            if (min_val.array.items[0] == .string) {
+                                min_macos = try allocDupe(alloc, min_val.array.items[0].string);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Parse artifacts array
+    var artifacts: std.ArrayList(Artifact) = .empty;
+    defer artifacts.deinit(alloc);
+
+    if (root.get("artifacts")) |arts_val| {
+        if (arts_val == .array) {
+            for (arts_val.array.items) |item| {
+                if (item != .object) continue;
+                const obj = item.object;
+
+                if (obj.get("app")) |app_val| {
+                    if (app_val == .array) {
+                        for (app_val.array.items) |a| {
+                            if (a == .string) {
+                                try artifacts.append(alloc, .{ .app = try allocDupe(alloc, a.string) });
+                            }
+                        }
+                    }
+                } else if (obj.get("binary")) |bin_val| {
+                    if (bin_val == .array) {
+                        // Homebrew binary format: ["source-path", {"target": "name"}]
+                        // First string is the source, optional following object has target override
+                        const items = bin_val.array.items;
+                        var bi: usize = 0;
+                        while (bi < items.len) : (bi += 1) {
+                            if (items[bi] == .string) {
+                                const source = try allocDupe(alloc, items[bi].string);
+                                // Check if next element is an object with target
+                                var target: []const u8 = undefined;
+                                if (bi + 1 < items.len and items[bi + 1] == .object) {
+                                    target = try allocDupe(alloc, getStr(items[bi + 1].object, "target") orelse std.fs.path.basename(items[bi].string));
+                                    bi += 1; // skip the object
+                                } else {
+                                    target = try allocDupe(alloc, std.fs.path.basename(items[bi].string));
+                                }
+                                try artifacts.append(alloc, .{ .binary = .{ .source = source, .target = target } });
+                            }
+                        }
+                    }
+                } else if (obj.get("pkg")) |pkg_val| {
+                    if (pkg_val == .array) {
+                        for (pkg_val.array.items) |p| {
+                            if (p == .string) {
+                                try artifacts.append(alloc, .{ .pkg = try allocDupe(alloc, p.string) });
+                            }
+                        }
+                    }
+                } else if (obj.get("uninstall")) |uninst_val| {
+                    if (uninst_val == .array) {
+                        for (uninst_val.array.items) |u| {
+                            if (u == .object) {
+                                const quit = try allocDupe(alloc, getStr(u.object, "quit") orelse "");
+                                const pkgutil = try allocDupe(alloc, getStr(u.object, "pkgutil") orelse "");
+                                try artifacts.append(alloc, .{ .uninstall = .{ .quit = quit, .pkgutil = pkgutil } });
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return Cask{
+        .token = token,
+        .name = name,
+        .version = version,
+        .url = url,
+        .sha256 = sha256,
+        .desc = desc,
+        .auto_updates = auto_updates,
+        .artifacts = try artifacts.toOwnedSlice(alloc),
+        .min_macos = min_macos,
+    };
 }
 
 fn fetchAndCache(alloc: std.mem.Allocator, name: []const u8, cache_path: []const u8) !Formula {
@@ -237,4 +401,40 @@ test "findBottleTag - no matching tag returns null" {
     defer parsed.deinit();
     const result = findBottleTag(parsed.value.object);
     try testing.expectEqual(@as(?std.json.Value, null), result);
+}
+
+test "parseCaskJson - parses complete cask" {
+    const json =
+        \\{"token":"firefox","name":["Mozilla Firefox"],"version":"147.0.3",
+        \\"url":"https://example.com/Firefox.dmg","sha256":"deadbeef",
+        \\"desc":"Web browser","auto_updates":true,
+        \\"artifacts":[{"app":["Firefox.app"]},{"binary":[{"source":"firefox","target":"firefox"}]}],
+        \\"depends_on":{"macos":{">=":["ventura"]}}}
+    ;
+    const c = try parseCaskJson(testing.allocator, json);
+    defer c.deinit(testing.allocator);
+    try testing.expectEqualStrings("firefox", c.token);
+    try testing.expectEqualStrings("Mozilla Firefox", c.name);
+    try testing.expectEqualStrings("147.0.3", c.version);
+    try testing.expectEqualStrings("https://example.com/Firefox.dmg", c.url);
+    try testing.expectEqualStrings("deadbeef", c.sha256);
+    try testing.expectEqualStrings("Web browser", c.desc);
+    try testing.expect(c.auto_updates);
+    try testing.expectEqual(@as(usize, 2), c.artifacts.len);
+}
+
+test "parseCaskJson - missing token returns error" {
+    const json =
+        \\{"name":["Test"],"version":"1.0","url":"https://example.com/t.dmg",
+        \\"sha256":"abc","desc":"","artifacts":[]}
+    ;
+    try testing.expectError(error.MissingField, parseCaskJson(testing.allocator, json));
+}
+
+test "parseCaskJson - missing url returns error" {
+    const json =
+        \\{"token":"test","name":["Test"],"version":"1.0",
+        \\"sha256":"abc","desc":"","artifacts":[]}
+    ;
+    try testing.expectError(error.MissingField, parseCaskJson(testing.allocator, json));
 }
