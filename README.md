@@ -157,3 +157,11 @@ src/
 - **Status:** Experimental, but already useful for many common Homebrew formulas.
 - **Feedback:** If you hit incompatibilities, please open an issue or PR.
 - **License:** [Apache 2.0](./LICENSE)
+
+## Roadmap
+
+- [ ] Cask support (`nb i --cask <app>`) - install .app/.dmg/.pkg bundles
+- [ ] Source builds for formulae without bottles
+- [ ] Post-install script execution
+- [ ] `nb search` command
+- [ ] `nb upgrade --all` with diff detection
