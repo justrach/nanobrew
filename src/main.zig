@@ -103,6 +103,7 @@ fn runInit() void {
         ROOT ++ "/store",
         PREFIX,
         PREFIX ++ "/Cellar",
+        PREFIX ++ "/Caskroom",
         PREFIX ++ "/bin",
         PREFIX ++ "/opt",
         ROOT ++ "/cache",
@@ -137,14 +138,32 @@ fn runInit() void {
 
 // ── nb install ──
 
-fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
-    if (formulae.len == 0) {
+    // Check for --cask flag
+    var is_cask = false;
+    var formulae: std.ArrayList([]const u8) = .empty;
+    defer formulae.deinit(alloc);
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--cask")) {
+            is_cask = true;
+        } else {
+            formulae.append(alloc, arg) catch {};
+        }
+    }
+
+    if (formulae.items.len == 0) {
         stderr.print("nb: no formulae specified\n", .{}) catch {};
         std.process.exit(1);
     }
+
+    if (is_cask) {
+        runCaskInstall(alloc, formulae.items);
+        return;
+    }
+
+    const stdout = std.fs.File.stdout().deprecatedWriter();
 
     var timer = std.time.Timer.start() catch null;
     var phase_timer = std.time.Timer.start() catch null;
@@ -154,7 +173,7 @@ fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
     var resolver = nb.deps.DepResolver.init(alloc);
     defer resolver.deinit();
 
-    for (formulae) |name| {
+    for (formulae.items) |name| {
         resolver.resolve(name) catch |err| {
             stderr.print("nb: failed to resolve '{s}': {}\n", .{ name, err }) catch {};
             std.process.exit(1);
@@ -444,13 +463,30 @@ fn fileExists(path: []const u8) bool {
     std.fs.accessAbsolute(path, .{}) catch return false;
     return true;
 }
-fn runRemove(alloc: std.mem.Allocator, formulae: []const []const u8) void {
+fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
-    if (formulae.len == 0) {
+    // Check for --cask flag
+    var is_cask = false;
+    var tokens: std.ArrayList([]const u8) = .empty;
+    defer tokens.deinit(alloc);
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--cask")) {
+            is_cask = true;
+        } else {
+            tokens.append(alloc, arg) catch {};
+        }
+    }
+
+    if (tokens.items.len == 0) {
         stderr.print("nb: no formulae specified\n", .{}) catch {};
         std.process.exit(1);
+    }
+
+    if (is_cask) {
+        runCaskRemove(alloc, tokens.items);
+        return;
     }
 
     var db = nb.database.Database.open() catch {
@@ -459,7 +495,7 @@ fn runRemove(alloc: std.mem.Allocator, formulae: []const []const u8) void {
     };
     defer db.close();
 
-    for (formulae) |name| {
+    for (tokens.items) |name| {
         const keg = db.findKeg(name) orelse {
             stderr.print("nb: '{s}' is not installed\n", .{name}) catch {};
             continue;
@@ -573,6 +609,97 @@ fn runUpdate() void {
         },
     }
 }
+
+// ── nb install --cask ──
+
+fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    var timer = std.time.Timer.start() catch null;
+
+    var db = nb.database.Database.open() catch {
+        stderr.print("nb: warning: could not open database\n", .{}) catch {};
+        return;
+    };
+    defer db.close();
+
+    for (tokens) |token| {
+        // Check if already installed
+        if (db.findCask(token)) |existing| {
+            stdout.print("==> {s} {s} is already installed\n", .{ token, existing.version }) catch {};
+            continue;
+        }
+
+        stdout.print("==> Fetching cask metadata for {s}...\n", .{token}) catch {};
+        const cask_meta = nb.api_client.fetchCask(alloc, token) catch {
+            stderr.print("nb: cask '{s}' not found\n", .{token}) catch {};
+            continue;
+        };
+        defer cask_meta.deinit(alloc);
+
+        stdout.print("==> Downloading {s} {s}...\n", .{ cask_meta.name, cask_meta.version }) catch {};
+        stdout.print("    {s}\n", .{cask_meta.url}) catch {};
+
+        nb.cask_installer.installCask(alloc, cask_meta) catch |err| {
+            stderr.print("nb: failed to install cask '{s}': {}\n", .{ token, err }) catch {};
+            continue;
+        };
+
+        // Collect app/binary names from artifacts for database
+        var apps: std.ArrayList([]const u8) = .empty;
+        defer apps.deinit(alloc);
+        var binaries: std.ArrayList([]const u8) = .empty;
+        defer binaries.deinit(alloc);
+
+        for (cask_meta.artifacts) |art| {
+            switch (art) {
+                .app => |a| apps.append(alloc, a) catch {},
+                .binary => |b| binaries.append(alloc, b.target) catch {},
+                .pkg, .uninstall => {},
+            }
+        }
+
+        db.recordCaskInstall(token, cask_meta.version, apps.items, binaries.items) catch {
+            stderr.print("nb: warning: could not record cask install\n", .{}) catch {};
+        };
+
+        stdout.print("==> Installed {s} {s}\n", .{ cask_meta.name, cask_meta.version }) catch {};
+    }
+
+    const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
+    const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+    stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
+}
+
+// ── nb remove --cask ──
+
+fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    var db = nb.database.Database.open() catch {
+        stderr.print("nb: could not open database\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer db.close();
+
+    for (tokens) |token| {
+        const record = db.findCask(token) orelse {
+            stderr.print("nb: cask '{s}' is not installed\n", .{token}) catch {};
+            continue;
+        };
+
+        nb.cask_installer.removeCask(alloc, token, record.version, record.apps, record.binaries) catch |err| {
+            stderr.print("nb: failed to remove cask '{s}': {}\n", .{ token, err }) catch {};
+            continue;
+        };
+
+        db.recordCaskRemoval(token, alloc) catch {};
+        stdout.print("==> Removed {s}\n", .{token}) catch {};
+    }
+}
+
 
 fn printUsage() void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
