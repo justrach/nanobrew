@@ -402,3 +402,39 @@ test "findBottleTag - no matching tag returns null" {
     const result = findBottleTag(parsed.value.object);
     try testing.expectEqual(@as(?std.json.Value, null), result);
 }
+
+test "parseCaskJson - parses complete cask" {
+    const json =
+        \\{"token":"firefox","name":["Mozilla Firefox"],"version":"147.0.3",
+        \\"url":"https://example.com/Firefox.dmg","sha256":"deadbeef",
+        \\"desc":"Web browser","auto_updates":true,
+        \\"artifacts":[{"app":["Firefox.app"]},{"binary":[{"source":"firefox","target":"firefox"}]}],
+        \\"depends_on":{"macos":{">=":["ventura"]}}}
+    ;
+    const c = try parseCaskJson(testing.allocator, json);
+    defer c.deinit(testing.allocator);
+    try testing.expectEqualStrings("firefox", c.token);
+    try testing.expectEqualStrings("Mozilla Firefox", c.name);
+    try testing.expectEqualStrings("147.0.3", c.version);
+    try testing.expectEqualStrings("https://example.com/Firefox.dmg", c.url);
+    try testing.expectEqualStrings("deadbeef", c.sha256);
+    try testing.expectEqualStrings("Web browser", c.desc);
+    try testing.expect(c.auto_updates);
+    try testing.expectEqual(@as(usize, 2), c.artifacts.len);
+}
+
+test "parseCaskJson - missing token returns error" {
+    const json =
+        \\{"name":["Test"],"version":"1.0","url":"https://example.com/t.dmg",
+        \\"sha256":"abc","desc":"","artifacts":[]}
+    ;
+    try testing.expectError(error.MissingField, parseCaskJson(testing.allocator, json));
+}
+
+test "parseCaskJson - missing url returns error" {
+    const json =
+        \\{"token":"test","name":["Test"],"version":"1.0",
+        \\"sha256":"abc","desc":"","artifacts":[]}
+    ;
+    try testing.expectError(error.MissingField, parseCaskJson(testing.allocator, json));
+}
