@@ -2,7 +2,7 @@ class Nanobrew < Formula
   desc "The fastest macOS package manager. Written in Zig."
   homepage "https://github.com/justrach/nanobrew"
   head "https://github.com/justrach/nanobrew.git", branch: "main"
-  license "MIT"
+  license "Apache-2.0"
 
   depends_on "zig" => :build
   depends_on :macos

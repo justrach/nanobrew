@@ -93,7 +93,7 @@ jobs:
             homepage "https://github.com/justrach/nanobrew"
             license "MIT"
             version "${VERSION}"
-
+            license "Apache-2.0"
             on_macos do
               if Hardware::CPU.arm?
                 url "https://github.com/justrach/nanobrew/releases/download/v${VERSION}/nb-arm64-apple-darwin.tar.gz"
