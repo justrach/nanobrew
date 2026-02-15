@@ -17,23 +17,24 @@ Inspired by [zerobrew](https://github.com/lucasgelfond/zerobrew) and [uv](https:
 
 ## Install
 
-Requires [Zig 0.15+](https://ziglang.org/download/):
+```bash
+curl -fsSL https://nanobrew.trilok.ai/install | bash
+```
+
+Or with Homebrew:
+
+```bash
+brew tap justrach/nanobrew https://github.com/justrach/nanobrew
+brew install nanobrew
+```
+
+Or build from source (requires [Zig 0.15+](https://ziglang.org/download/)):
 
 ```bash
 git clone https://github.com/justrach/nanobrew.git
 cd nanobrew
 ./install.sh
 ```
-
-That builds nanobrew, creates the directory tree, and adds `nb` to your PATH.
-
-Or manually:
-
-```bash
-zig build
-sudo mkdir -p /opt/nanobrew && sudo chown -R $(whoami) /opt/nanobrew
-./zig-out/bin/nb init
-export PATH="/opt/nanobrew/prefix/bin:$PATH"  # add to .zshrc
 ## Quick start
 
 ```bash
@@ -45,13 +46,16 @@ nb list                         # list installed packages
 nb info <formula>               # show formula info
 nb help                         # show help
 ```
-nb install jq                   # install one package
-nb install ffmpeg wget curl     # install multiple (parallel deps)
-nb remove jq                    # uninstall
-nb list                         # list installed packages
-nb info <formula>               # show formula info
-nb help                         # show help
-```
+
+## Relationship with Homebrew
+
+nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely on:
+
+- Homebrew's formula definitions (homebrew-core)
+- Homebrew's pre-built bottles (hosted on GHCR)
+- Homebrew's package metadata and API infrastructure
+
+Our innovations focus on:
 
 - **Parallel pipeline** — concurrent downloads, extraction, and relocation
 - **Native HTTP client** — Zig's `std.http.Client` for downloads (no curl subprocess)
@@ -63,15 +67,6 @@ nb help                         # show help
 - **Batched codesign** — single `codesign` call for all modified binaries in a keg
 - **API + token caching** — avoid redundant network calls
 - **Live progress UI** — animated spinners and checkmarks during install
-Our innovations focus on:
-
-- **Parallel pipeline** — concurrent downloads, extraction, and relocation
-- **Content-addressable storage** for deduplication (reinstalls skip everything)
-- **APFS clonefiles** for zero-overhead copying
-- **BFS parallel dependency resolution** — fetch all deps per level concurrently
-- **Batched Mach-O relocation** — single `otool` + single `install_name_tool` per binary
-- **Built-in SHA256** — no process spawns for verification
-- **API + token caching** — avoid redundant network calls
 
 nanobrew is experimental. We recommend running it alongside Homebrew rather than as a replacement. Homebrew formulas that require source builds, cask installs, or post-install scripts are not yet supported.
 
