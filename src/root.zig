@@ -27,6 +27,8 @@ pub const cellar = @import("cellar/cellar.zig");
 pub const linker = @import("linker/linker.zig");
 pub const relocate = @import("macho/relocate.zig");
 pub const database = @import("db/database.zig");
+pub const cask = @import("api/cask.zig");
+pub const cask_installer = @import("cask/install.zig");
 
 // Reused from zigrep
 pub const simd_scanner = @import("kernel/simd_scanner.zig");
