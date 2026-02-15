@@ -7,7 +7,7 @@
 //   nb list                    # List installed packages
 //   nb info <formula>          # Show formula info from Homebrew API
 //   nb upgrade [formula]       # Upgrade packages
-
+//   nb update                  # Self-update nanobrew
 const std = @import("std");
 const nb = @import("nanobrew");
 
@@ -18,6 +18,7 @@ const Command = enum {
     list,
     info,
     upgrade,
+    update,
     help,
 };
 
@@ -62,6 +63,7 @@ pub fn main() !void {
         .list => runList(alloc),
         .info => runInfo(alloc, args[2..]),
         .upgrade => runUpgrade(alloc, args[2..]),
+        .update => runUpdate(),
         .help => printUsage(),
     }
 }
@@ -79,6 +81,8 @@ fn parseCommand(arg: []const u8) ?Command {
         .{ "ls", Command.list },
         .{ "info", Command.info },
         .{ "upgrade", Command.upgrade },
+        .{ "update", Command.update },
+        .{ "self-update", Command.update },
         .{ "help", Command.help },
         .{ "--help", Command.help },
         .{ "-h", Command.help },
@@ -531,6 +535,45 @@ fn runUpgrade(alloc: std.mem.Allocator, formulae: []const []const u8) void {
     stdout.print("nb: upgrade not yet implemented\n", .{}) catch {};
 }
 
+// ── nb update ──
+
+fn runUpdate() void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    stdout.print("==> Updating nanobrew...\n", .{}) catch {};
+
+    var child = std.process.Child.init(
+        &.{ "bash", "-c", "curl -fsSL https://nanobrew.trilok.ai/install | bash" },
+        std.heap.page_allocator,
+    );
+    child.stdout_behavior = .Inherit;
+    child.stderr_behavior = .Inherit;
+
+    child.spawn() catch |err| {
+        stderr.print("nb: update failed: {}\n", .{err}) catch {};
+        std.process.exit(1);
+    };
+
+    const term = child.wait() catch |err| {
+        stderr.print("nb: update failed: {}\n", .{err}) catch {};
+        std.process.exit(1);
+    };
+
+    switch (term) {
+        .Exited => |code| {
+            if (code != 0) {
+                stderr.print("nb: update failed (exit code {d})\n", .{code}) catch {};
+                std.process.exit(1);
+            }
+        },
+        else => {
+            stderr.print("nb: update process terminated abnormally\n", .{}) catch {};
+            std.process.exit(1);
+        },
+    }
+}
+
 fn printUsage() void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     stdout.print(
@@ -549,6 +592,7 @@ fn printUsage() void {
         \\  list                List installed packages
         \\  info <formula>      Show formula info from Homebrew API
         \\  upgrade [formula]   Upgrade packages (or all if none specified)
+        \\  update              Self-update nanobrew to the latest version
         \\  help                Show this help
         \\
         \\EXAMPLES:
