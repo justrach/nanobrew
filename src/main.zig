@@ -526,13 +526,20 @@ fn runList(alloc: std.mem.Allocator) void {
     };
     defer alloc.free(kegs);
 
-    if (kegs.len == 0) {
+    const casks_result = db.listInstalledCasks(alloc);
+    const casks: []const nb.database.CaskRecord = if (casks_result) |c| c else |_| &.{};
+    defer if (casks_result) |c| alloc.free(c) else |_| {};
+
+    if (kegs.len == 0 and casks.len == 0) {
         stdout.print("No packages installed.\n", .{}) catch {};
         return;
     }
 
     for (kegs) |keg| {
         stdout.print("{s} {s}\n", .{ keg.name, keg.version }) catch {};
+    }
+    for (casks) |c| {
+        stdout.print("{s} {s} (cask)\n", .{ c.token, c.version }) catch {};
     }
 }
 
@@ -713,21 +720,25 @@ fn printUsage() void {
         \\  nb <command> [arguments]
         \\
         \\COMMANDS:
-        \\  init                Create /opt/nanobrew/ directory tree
-        \\  install <formula>   Install packages (with full dep resolution)
-        \\  remove <formula>    Uninstall packages
-        \\  list                List installed packages
-        \\  info <formula>      Show formula info from Homebrew API
-        \\  upgrade [formula]   Upgrade packages (or all if none specified)
-        \\  update              Self-update nanobrew to the latest version
-        \\  help                Show this help
+        \\  init                     Create /opt/nanobrew/ directory tree
+        \\  install <formula>        Install packages (with full dep resolution)
+        \\  install --cask <app>     Install macOS applications
+        \\  remove <formula>         Uninstall packages
+        \\  remove --cask <app>      Uninstall macOS applications
+        \\  list                     List installed packages and casks
+        \\  info <formula>           Show formula info from Homebrew API
+        \\  upgrade [formula]        Upgrade packages (or all if none specified)
+        \\  update                   Self-update nanobrew to the latest version
+        \\  help                     Show this help
         \\
         \\EXAMPLES:
         \\  sudo nb init
         \\  nb install ripgrep
         \\  nb install ffmpeg python node
+        \\  nb install --cask firefox
         \\  nb list
         \\  nb remove ripgrep
+        \\  nb remove --cask firefox
         \\
     , .{}) catch {};
 }
