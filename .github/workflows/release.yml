@@ -1,0 +1,132 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: macos-14
+            arch: arm64
+            target: aarch64-macos
+          - os: macos-13
+            arch: x86_64
+            target: x86_64-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Package
+        run: |
+          tar -czf nb-${{ matrix.arch }}-apple-darwin.tar.gz -C zig-out/bin nb
+          shasum -a 256 nb-${{ matrix.arch }}-apple-darwin.tar.gz > nb-${{ matrix.arch }}-apple-darwin.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nb-${{ matrix.arch }}-apple-darwin
+          path: |
+            nb-${{ matrix.arch }}-apple-darwin.tar.gz
+            nb-${{ matrix.arch }}-apple-darwin.tar.gz.sha256
+
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: |
+            artifacts/nb-arm64-apple-darwin.tar.gz
+            artifacts/nb-arm64-apple-darwin.tar.gz.sha256
+            artifacts/nb-x86_64-apple-darwin.tar.gz
+            artifacts/nb-x86_64-apple-darwin.tar.gz.sha256
+
+  update-formula:
+    needs: release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download arm64 SHA
+        uses: actions/download-artifact@v4
+        with:
+          name: nb-arm64-apple-darwin
+          path: artifacts
+
+      - name: Download x86_64 SHA
+        uses: actions/download-artifact@v4
+        with:
+          name: nb-x86_64-apple-darwin
+          path: artifacts
+
+      - name: Update formula
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          ARM64_SHA=$(cut -d' ' -f1 artifacts/nb-arm64-apple-darwin.tar.gz.sha256)
+          X86_SHA=$(cut -d' ' -f1 artifacts/nb-x86_64-apple-darwin.tar.gz.sha256)
+
+          cat > Formula/nanobrew.rb << FORMULA
+          class Nanobrew < Formula
+            desc "The fastest macOS package manager. Written in Zig."
+            homepage "https://github.com/justrach/nanobrew"
+            license "MIT"
+            version "${VERSION}"
+
+            on_macos do
+              if Hardware::CPU.arm?
+                url "https://github.com/justrach/nanobrew/releases/download/v${VERSION}/nb-arm64-apple-darwin.tar.gz"
+                sha256 "${ARM64_SHA}"
+              else
+                url "https://github.com/justrach/nanobrew/releases/download/v${VERSION}/nb-x86_64-apple-darwin.tar.gz"
+                sha256 "${X86_SHA}"
+              end
+            end
+
+            def install
+              bin.install "nb"
+            end
+
+            def post_install
+              ohai "Run 'nb init' to create the nanobrew directory tree"
+            end
+
+            test do
+              assert_match "nanobrew", shell_output("#{bin}/nb help")
+            end
+          end
+          FORMULA
+
+          # Remove leading whitespace from heredoc
+          sed -i 's/^          //' Formula/nanobrew.rb
+
+      - name: Commit formula
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add Formula/nanobrew.rb
+          git diff --cached --quiet || git commit -m "formula: update to ${GITHUB_REF_NAME}"
+          git push
