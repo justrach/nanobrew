@@ -90,6 +90,8 @@ fn runInit() void {
         ROOT ++ "/cache",
         ROOT ++ "/cache/blobs",
         ROOT ++ "/cache/tmp",
+        ROOT ++ "/cache/api",
+        ROOT ++ "/cache/tokens",
         ROOT ++ "/db",
         ROOT ++ "/locks",
     };
@@ -127,6 +129,7 @@ fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
     }
 
     var timer = std.time.Timer.start() catch null;
+    var phase_timer = std.time.Timer.start() catch null;
 
     // Phase 1: Resolve all dependencies
     stdout.print("==> Resolving dependencies...\n", .{}) catch {};
@@ -140,76 +143,87 @@ fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
         };
     }
 
-    const install_order = resolver.topologicalSort() catch {
+    const resolve_ms = if (phase_timer) |*pt| @as(f64, @floatFromInt(pt.read())) / 1_000_000.0 else 0;
+    stdout.print("    [{d:.0}ms]\n", .{resolve_ms}) catch {};
+
+    const all_formulae = resolver.topologicalSort() catch {
         stderr.print("nb: dependency cycle detected\n", .{}) catch {};
         std.process.exit(1);
     };
 
-    stdout.print("==> Installing {d} package(s):\n", .{install_order.len}) catch {};
+    // Filter out already-installed packages (keg exists in Cellar)
+    var to_install: std.ArrayList(nb.formula.Formula) = .empty;
+    defer to_install.deinit(alloc);
+    for (all_formulae) |f| {
+        var ver_buf: [256]u8 = undefined;
+        const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf) orelse f.version;
+        var keg_buf: [512]u8 = undefined;
+        const keg_path = std.fmt.bufPrint(&keg_buf, "/opt/nanobrew/prefix/Cellar/{s}/{s}/bin", .{ f.name, actual_ver }) catch {
+            to_install.append(alloc, f) catch {};
+            continue;
+        };
+        // Check if keg has content (bin/ dir or at least the version dir exists)
+        var check_buf: [512]u8 = undefined;
+        const ver_dir = std.fmt.bufPrint(&check_buf, "/opt/nanobrew/prefix/Cellar/{s}/{s}", .{ f.name, actual_ver }) catch {
+            to_install.append(alloc, f) catch {};
+            continue;
+        };
+        _ = keg_path;
+        if (std.fs.openDirAbsolute(ver_dir, .{})) |d| {
+            var dir = d;
+            dir.close();
+            // Already installed, skip
+        } else |_| {
+            to_install.append(alloc, f) catch {};
+        }
+    }
+    const install_order = to_install.items;
+
+    if (install_order.len == 0) {
+        const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
+        const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+        stdout.print("==> Already installed ({d} packages up to date)\n", .{all_formulae.len}) catch {};
+        stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
+        return;
+    }
+
+    stdout.print("==> Installing {d} package(s) ({d} already up to date):\n", .{ install_order.len, all_formulae.len - install_order.len }) catch {};
     for (install_order) |f| {
         stdout.print("    {s} {s}\n", .{ f.name, f.version }) catch {};
     }
 
-    // Phase 2: Download bottles
-    stdout.print("==> Downloading bottles...\n", .{}) catch {};
-    var dl = nb.downloader.ParallelDownloader.init(alloc);
-    defer dl.deinit();
+    // Single merged phase: Download → Extract → Materialize → Relocate → Link (all parallel)
+    phase_timer = std.time.Timer.start() catch null;
+    stdout.print("==> Downloading + installing...\n", .{}) catch {};
+    {
+        var had_error = std.atomic.Value(bool).init(false);
+        var threads: std.ArrayList(std.Thread) = .empty;
+        defer threads.deinit(alloc);
+        for (install_order) |f| {
+            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error }) catch {
+                had_error.store(true, .release);
+                continue;
+            };
+            threads.append(alloc, t) catch continue;
+        }
+        for (threads.items) |t| t.join();
 
-    for (install_order) |f| {
-        dl.enqueue(f.bottleUrl(), f.bottle_sha256) catch |err| {
-            stderr.print("nb: enqueue failed for {s}: {}\n", .{ f.name, err }) catch {};
-        };
+        if (had_error.load(.acquire)) {
+            stderr.print("nb: some packages failed to install\n", .{}) catch {};
+        }
     }
-    dl.downloadAll() catch |err| {
-        stderr.print("nb: download failed: {}\n", .{err}) catch {};
-        std.process.exit(1);
-    };
+    const pipeline_ms = if (phase_timer) |*pt| @as(f64, @floatFromInt(pt.read())) / 1_000_000.0 else 0;
+    stdout.print("    [{d:.0}ms]\n", .{pipeline_ms}) catch {};
 
-    // Phase 3: Extract into store
-    stdout.print("==> Extracting...\n", .{}) catch {};
-    for (install_order) |f| {
-        const blob_path = nb.blob_cache.blobPath(f.bottle_sha256);
-        nb.store.ensureEntry(alloc, blob_path, f.bottle_sha256) catch |err| {
-            stderr.print("nb: extract failed for {s}: {}\n", .{ f.name, err }) catch {};
-        };
-    }
-
-    // Phase 4: Materialize into Cellar
-    // Pass base version — materialize auto-detects rebuild-suffixed dirs in store
-    stdout.print("==> Installing...\n", .{}) catch {};
-    for (install_order) |f| {
-        nb.cellar.materialize(f.bottle_sha256, f.name, f.version) catch |err| {
-            stderr.print("nb: materialize failed for {s}: {}\n", .{ f.name, err }) catch {};
-        };
-    }
-
-    // Phase 4.5: Relocate Mach-O paths (replace Homebrew placeholders)
-    // detectKegVersion finds the actual version dir (may have _N rebuild suffix)
-    stdout.print("==> Relocating...\n", .{}) catch {};
-    for (install_order) |f| {
-        const actual_ver = nb.cellar.detectKegVersion(f.name, f.version) orelse f.version;
-        nb.relocate.relocateKeg(alloc, f.name, actual_ver) catch |err| {
-            stderr.print("nb: relocate failed for {s}: {}\n", .{ f.name, err }) catch {};
-        };
-    }
-
-    // Phase 5: Link binaries
-    stdout.print("==> Linking...\n", .{}) catch {};
-    for (install_order) |f| {
-        const actual_ver = nb.cellar.detectKegVersion(f.name, f.version) orelse f.version;
-        nb.linker.linkKeg(f.name, actual_ver) catch |err| {
-            stderr.print("nb: link failed for {s}: {}\n", .{ f.name, err }) catch {};
-        };
-    }
-
-    // Phase 6: Record in database
+    // Record in database (must be serial — single file)
     var db = nb.database.Database.open() catch {
         stderr.print("nb: warning: could not open database\n", .{}) catch {};
         return;
     };
     defer db.close();
     for (install_order) |f| {
-        const actual_ver = nb.cellar.detectKegVersion(f.name, f.version) orelse f.version;
+        var ver_buf6: [256]u8 = undefined;
+        const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf6) orelse f.version;
         db.recordInstall(f.name, actual_ver, f.bottle_sha256) catch {};
     }
 
@@ -218,8 +232,56 @@ fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
     stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
 }
 
+
 // ── nb remove ──
 
+/// Full per-package pipeline: download → extract → materialize → relocate → link
+/// Runs in its own thread — no barriers between phases.
+/// Full per-package pipeline: download → extract → materialize → relocate → link
+/// Runs in its own thread — no barriers between phases.
+fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *std.atomic.Value(bool)) void {
+    // 1. Download (skip if blob cached)
+    const blob_dir = "/opt/nanobrew/cache/blobs";
+    var blob_buf: [512]u8 = undefined;
+    const blob_path = std.fmt.bufPrint(&blob_buf, "{s}/{s}", .{ blob_dir, f.bottle_sha256 }) catch {
+        had_error.store(true, .release);
+        return;
+    };
+
+    if (!fileExists(blob_path)) {
+        nb.downloader.downloadOne(alloc, .{ .url = f.bottleUrl(), .expected_sha256 = f.bottle_sha256 }) catch {
+            had_error.store(true, .release);
+            return;
+        };
+    }
+
+    // 2. Extract into store (skip if already there)
+    if (!nb.store.hasEntry(f.bottle_sha256)) {
+        nb.store.ensureEntry(alloc, blob_path, f.bottle_sha256) catch {
+            had_error.store(true, .release);
+            return;
+        };
+    }
+
+    // 3. Materialize (clonefile into Cellar)
+    nb.cellar.materialize(f.bottle_sha256, f.name, f.version) catch {
+        had_error.store(true, .release);
+        return;
+    };
+
+    // 4. Relocate (fix Homebrew placeholders in Mach-O binaries)
+    var ver_buf: [256]u8 = undefined;
+    const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf) orelse f.version;
+    nb.relocate.relocateKeg(alloc, f.name, actual_ver) catch {};
+
+    // 5. Link binaries
+    nb.linker.linkKeg(f.name, actual_ver) catch {};
+}
+
+fn fileExists(path: []const u8) bool {
+    std.fs.accessAbsolute(path, .{}) catch return false;
+    return true;
+}
 fn runRemove(alloc: std.mem.Allocator, formulae: []const []const u8) void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();

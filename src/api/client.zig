@@ -10,25 +10,60 @@ const BOTTLE_TAG = @import("formula.zig").BOTTLE_TAG;
 const BOTTLE_FALLBACKS = @import("formula.zig").BOTTLE_FALLBACKS;
 
 const API_BASE = "https://formulae.brew.sh/api/formula/";
+const API_CACHE_DIR = "/opt/nanobrew/cache/api";
 
 pub fn fetchFormula(alloc: std.mem.Allocator, name: []const u8) !Formula {
+    // Check cache first (5 minute TTL)
+    var cache_path_buf: [512]u8 = undefined;
+    const cache_path = std.fmt.bufPrint(&cache_path_buf, "{s}/{s}.json", .{ API_CACHE_DIR, name }) catch return error.NameTooLong;
+
+    if (readCached(alloc, cache_path)) |cached_json| {
+        const formula = parseFormulaJson(alloc, cached_json) catch {
+            alloc.free(cached_json);
+            return fetchAndCache(alloc, name, cache_path);
+        };
+        alloc.free(cached_json);
+        return formula;
+    }
+
+    return fetchAndCache(alloc, name, cache_path);
+}
+
+fn fetchAndCache(alloc: std.mem.Allocator, name: []const u8, cache_path: []const u8) !Formula {
     var url_buf: [512]u8 = undefined;
     const url = std.fmt.bufPrint(&url_buf, "{s}{s}.json", .{ API_BASE, name }) catch return error.NameTooLong;
 
-    const result = std.process.Child.run(.{
+    const run = std.process.Child.run(.{
         .allocator = alloc,
-        .argv = &.{ "curl", "-sL", url },
-    });
-
-    const run = result catch return error.CurlFailed;
-    defer alloc.free(run.stdout);
+        .argv = &.{ "curl", "-sL", "--http2", url },
+    }) catch return error.CurlFailed;
     defer alloc.free(run.stderr);
 
     if (run.term.Exited != 0 or run.stdout.len == 0) {
+        alloc.free(run.stdout);
         return error.FormulaNotFound;
     }
 
+    // Write to cache
+    std.fs.makeDirAbsolute(API_CACHE_DIR) catch {};
+    if (std.fs.createFileAbsolute(cache_path, .{})) |file| {
+        defer file.close();
+        file.writeAll(run.stdout) catch {};
+    } else |_| {}
+
+    defer alloc.free(run.stdout);
     return parseFormulaJson(alloc, run.stdout);
+}
+
+fn readCached(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
+    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
+    defer file.close();
+    // TTL: 5 minutes
+    const stat = file.stat() catch return null;
+    const now = std.time.nanoTimestamp();
+    const age_ns = now - stat.mtime;
+    if (age_ns > 300 * std.time.ns_per_s) return null;
+    return file.readToEndAlloc(alloc, 2 * 1024 * 1024) catch null;
 }
 
 fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {

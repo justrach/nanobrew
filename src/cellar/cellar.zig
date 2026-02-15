@@ -1,33 +1,32 @@
-// nanobrew — Cellar materialization via APFS clonefile
+// nanobrew — Cellar materialization via APFS clonefile(2)
 //
 // Materializes package kegs from the store into:
 //   /opt/nanobrew/prefix/Cellar/<name>/<version>/
 //
-// Uses APFS clonefile (copy-on-write) for instant, zero-disk-overhead copies.
-// Fallback chain: clonefile -> hardlink -> copy
+// Uses the macOS clonefile(2) syscall directly for zero-cost APFS copy-on-write.
+// No process spawns — single syscall per package.
 
 const std = @import("std");
-const builtin = @import("builtin");
 
 const STORE_DIR = "/opt/nanobrew/store";
 const CELLAR_DIR = "/opt/nanobrew/prefix/Cellar";
 
+// macOS clonefile(2) — direct syscall, no process spawn
+extern "c" fn clonefile(src: [*:0]const u8, dst: [*:0]const u8, flags: c_uint) c_int;
+const CLONE_NOFOLLOW: c_uint = 0x0001;
+const CLONE_NOOWNERCOPY: c_uint = 0x0002;
+
 /// Materialize a keg from the store into the Cellar.
-/// Returns the actual version string found in the store (may differ from `version`
-/// if the bottle's rebuild suffix changed between download and API fetch).
 pub fn materialize(sha256: []const u8, name: []const u8, version: []const u8) !void {
-    // Homebrew bottles contain a <name>/<version>/ prefix inside the tarball.
-    // The version dir may include a rebuild suffix (e.g. "8.0.1_3") that doesn't
-    // match the API's current rebuild value, so we probe the store to find it.
     var name_dir_buf: [512]u8 = undefined;
     const name_dir = std.fmt.bufPrint(&name_dir_buf, "{s}/{s}/{s}", .{ STORE_DIR, sha256, name }) catch return error.PathTooLong;
 
-    const actual_version = detectStoreVersion(name_dir, version) orelse version;
+    var ver_buf: [256]u8 = undefined;
+    const actual_version = detectStoreVersion(name_dir, version, &ver_buf) orelse version;
 
     var src_buf: [512]u8 = undefined;
     const src_dir = std.fmt.bufPrint(&src_buf, "{s}/{s}", .{ name_dir, actual_version }) catch return error.PathTooLong;
 
-    // Destination: Cellar/<name>/<actual_version>/
     var dest_buf: [512]u8 = undefined;
     const dest_dir = std.fmt.bufPrint(&dest_buf, "{s}/{s}/{s}", .{ CELLAR_DIR, name, actual_version }) catch return error.PathTooLong;
 
@@ -42,21 +41,32 @@ pub fn materialize(sha256: []const u8, name: []const u8, version: []const u8) !v
     // Remove existing keg if present
     std.fs.deleteTreeAbsolute(dest_dir) catch {};
 
-    // Try clonefile first (APFS copy-on-write)
-    if (builtin.os.tag == .macos) {
-        if (clonefileTree(src_dir, dest_dir)) return;
-    }
+    // clonefile(2) — single syscall, clones entire directory tree with APFS COW
+    var src_z: [512:0]u8 = undefined;
+    @memcpy(src_z[0..src_dir.len], src_dir);
+    src_z[src_dir.len] = 0;
 
-    // Fallback: recursive copy
-    try copyTree(src_dir, dest_dir);
+    var dst_z: [512:0]u8 = undefined;
+    @memcpy(dst_z[0..dest_dir.len], dest_dir);
+    dst_z[dest_dir.len] = 0;
+
+    const rc = clonefile(&src_z, &dst_z, CLONE_NOFOLLOW | CLONE_NOOWNERCOPY);
+    if (rc == 0) return;
+
+    // Fallback: cp -R if clonefile fails (non-APFS filesystem)
+    const result = std.process.Child.run(.{
+        .allocator = std.heap.page_allocator,
+        .argv = &.{ "cp", "-R", src_dir, dest_dir },
+    }) catch return error.CopyFailed;
+    std.heap.page_allocator.free(result.stdout);
+    std.heap.page_allocator.free(result.stderr);
 }
 
 /// Find the actual installed version for a keg in the Cellar.
-/// Handles rebuild-suffixed versions (e.g. "4.1_1" when API says "4.1").
-pub fn detectKegVersion(name: []const u8, version: []const u8) ?[]const u8 {
+pub fn detectKegVersion(name: []const u8, version: []const u8, result_buf: *[256]u8) ?[]const u8 {
     var parent_buf: [512]u8 = undefined;
     const parent_dir = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ CELLAR_DIR, name }) catch return null;
-    return detectStoreVersion(parent_dir, version);
+    return detectStoreVersion(parent_dir, version, result_buf);
 }
 
 /// Remove a keg from the Cellar.
@@ -65,7 +75,6 @@ pub fn remove(name: []const u8, version: []const u8) !void {
     const keg_dir = std.fmt.bufPrint(&buf, "{s}/{s}/{s}", .{ CELLAR_DIR, name, version }) catch return error.PathTooLong;
     std.fs.deleteTreeAbsolute(keg_dir) catch {};
 
-    // Remove parent if empty
     var parent_buf: [512]u8 = undefined;
     const parent_dir = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ CELLAR_DIR, name }) catch return;
     var dir = std.fs.openDirAbsolute(parent_dir, .{ .iterate = true }) catch return;
@@ -76,62 +85,7 @@ pub fn remove(name: []const u8, version: []const u8) !void {
     }
 }
 
-/// APFS clonefile(2) — macOS only, zero-cost copy-on-write.
-fn clonefileTree(src: []const u8, dest: []const u8) bool {
-    // clonefile doesn't work on directories directly in all cases.
-    // We'll use copyfile with CLONE flag via system command as fallback.
-    // For now, use recursive approach with individual file clones.
-    std.fs.makeDirAbsolute(dest) catch return false;
-    cloneDirRecursive(src, dest) catch return false;
-    return true;
-}
-
-fn cloneDirRecursive(src: []const u8, dest: []const u8) !void {
-    var dir = try std.fs.openDirAbsolute(src, .{ .iterate = true });
-    defer dir.close();
-
-    var iter = dir.iterate();
-    while (try iter.next()) |entry| {
-        var src_child_buf: [2048]u8 = undefined;
-        const src_child = std.fmt.bufPrint(&src_child_buf, "{s}/{s}", .{ src, entry.name }) catch continue;
-
-        var dest_child_buf: [2048]u8 = undefined;
-        const dest_child = std.fmt.bufPrint(&dest_child_buf, "{s}/{s}", .{ dest, entry.name }) catch continue;
-
-        switch (entry.kind) {
-            .directory => {
-                std.fs.makeDirAbsolute(dest_child) catch {};
-                try cloneDirRecursive(src_child, dest_child);
-            },
-            .file => {
-                // Try hardlink first (faster than copy, shares inode)
-                std.fs.symLinkAbsolute(src_child, dest_child, .{}) catch {
-                    // Fallback: copy
-                    std.fs.copyFileAbsolute(src_child, dest_child, .{}) catch {};
-                };
-            },
-            .sym_link => {
-                // Read and recreate symlink (target may be relative)
-                var link_buf: [std.fs.max_path_bytes]u8 = undefined;
-                const target = std.fs.readLinkAbsolute(src_child, &link_buf) catch continue;
-                std.posix.symlink(target, dest_child) catch {};
-            },
-            else => {},
-        }
-    }
-}
-
-fn copyTree(src: []const u8, dest: []const u8) !void {
-    std.fs.makeDirAbsolute(dest) catch {};
-    try cloneDirRecursive(src, dest);
-}
-
-/// Look inside store/<sha>/<name>/ and find the version directory.
-/// The tarball may use a rebuild-suffixed version (e.g. "4.1_1") that differs
-/// from the API-reported version ("4.1"). Try exact match first, then scan
-/// for a directory starting with the base version.
-fn detectStoreVersion(name_dir: []const u8, version: []const u8) ?[]const u8 {
-    // Try exact match first
+fn detectStoreVersion(name_dir: []const u8, version: []const u8, result_buf: *[256]u8) ?[]const u8 {
     var exact_buf: [512]u8 = undefined;
     const exact = std.fmt.bufPrint(&exact_buf, "{s}/{s}", .{ name_dir, version }) catch return null;
     if (std.fs.openDirAbsolute(exact, .{})) |d| {
@@ -140,26 +94,18 @@ fn detectStoreVersion(name_dir: []const u8, version: []const u8) ?[]const u8 {
         return version;
     } else |_| {}
 
-    // Scan for version dir with rebuild suffix (e.g. "4.1_1", "8.0.1_3")
     var dir = std.fs.openDirAbsolute(name_dir, .{ .iterate = true }) catch return null;
     defer dir.close();
     var iter = dir.iterate();
     while (iter.next() catch null) |entry| {
         if (entry.kind != .directory) continue;
         if (std.mem.startsWith(u8, entry.name, version)) {
-            // Must be exact or followed by "_" (rebuild suffix)
             if (entry.name.len == version.len or
                 (entry.name.len > version.len and entry.name[version.len] == '_'))
             {
-                // Return a pointer into the directory entry — this is safe because
-                // we only use it within materialize() while the dir is still open.
-                // Actually, we need to return a stable slice. Use a static buffer.
-                const S = struct {
-                    var buf: [256]u8 = undefined;
-                };
-                if (entry.name.len <= S.buf.len) {
-                    @memcpy(S.buf[0..entry.name.len], entry.name);
-                    return S.buf[0..entry.name.len];
+                if (entry.name.len <= result_buf.len) {
+                    @memcpy(result_buf[0..entry.name.len], entry.name);
+                    return result_buf[0..entry.name.len];
                 }
             }
         }

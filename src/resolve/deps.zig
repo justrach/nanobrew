@@ -1,6 +1,6 @@
 // nanobrew — Dependency resolver
 //
-// Recursively fetches formula metadata for all transitive dependencies,
+// BFS parallel resolution: fetches each dependency level in parallel,
 // then produces a topological sort (install order).
 // Uses Kahn's algorithm with cycle detection.
 
@@ -26,16 +26,71 @@ pub const DepResolver = struct {
         self.edges.deinit();
     }
 
+    /// Resolve a formula and all its transitive dependencies using BFS.
+    /// Each BFS level fetches all unknown deps in parallel.
     pub fn resolve(self: *DepResolver, name: []const u8) !void {
         if (self.formulae.contains(name)) return;
 
-        const f = try api.fetchFormula(self.alloc, name);
-        const owned_name = try self.alloc.dupe(u8, f.name);
-        try self.formulae.put(owned_name, f);
-        try self.edges.put(owned_name, f.dependencies);
+        // Seed the frontier with the requested name
+        var frontier: std.ArrayList([]const u8) = .empty;
+        defer frontier.deinit(self.alloc);
+        try frontier.append(self.alloc, name);
 
-        for (f.dependencies) |dep| {
-            try self.resolve(dep);
+        // BFS: each iteration fetches all frontier names in parallel
+        while (frontier.items.len > 0) {
+            const batch_size = frontier.items.len;
+
+            // Allocate result slots (one per frontier entry)
+            const results = try self.alloc.alloc(?Formula, batch_size);
+            defer self.alloc.free(results);
+            @memset(results, null);
+
+            if (batch_size == 1) {
+                // Single item — no thread overhead
+                results[0] = api.fetchFormula(self.alloc, frontier.items[0]) catch null;
+            } else {
+                // Parallel fetch
+                var threads: std.ArrayList(std.Thread) = .empty;
+                defer threads.deinit(self.alloc);
+
+                for (frontier.items, 0..) |dep_name, i| {
+                    const t = std.Thread.spawn(.{}, fetchWorker, .{ self.alloc, dep_name, &results[i] }) catch {
+                        // Fallback: fetch inline if thread spawn fails
+                        results[i] = api.fetchFormula(self.alloc, dep_name) catch null;
+                        continue;
+                    };
+                    threads.append(self.alloc, t) catch continue;
+                }
+                for (threads.items) |t| t.join();
+            }
+
+            // Collect results, discover next frontier
+            frontier.clearRetainingCapacity();
+            for (results) |maybe_f| {
+                const f = maybe_f orelse continue;
+                if (self.formulae.contains(f.name)) continue;
+
+                const owned_name = self.alloc.dupe(u8, f.name) catch continue;
+                self.formulae.put(owned_name, f) catch continue;
+                self.edges.put(owned_name, f.dependencies) catch continue;
+
+                // Queue any unseen deps for next BFS level
+                for (f.dependencies) |dep| {
+                    if (!self.formulae.contains(dep)) {
+                        // Avoid duplicates in frontier
+                        var already_queued = false;
+                        for (frontier.items) |queued| {
+                            if (std.mem.eql(u8, queued, dep)) {
+                                already_queued = true;
+                                break;
+                            }
+                        }
+                        if (!already_queued) {
+                            frontier.append(self.alloc, dep) catch continue;
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -44,8 +99,8 @@ pub const DepResolver = struct {
         defer in_degree.deinit();
 
         var name_iter = self.formulae.keyIterator();
-        while (name_iter.next()) |name| {
-            try in_degree.put(name.*, 0);
+        while (name_iter.next()) |name_ptr| {
+            try in_degree.put(name_ptr.*, 0);
         }
 
         // in_degree[name] = number of deps name has (must be installed before name)
@@ -69,14 +124,14 @@ pub const DepResolver = struct {
         var result: std.ArrayList(Formula) = .empty;
 
         while (queue.items.len > 0) {
-            const name = queue.orderedRemove(0);
-            const f = self.formulae.get(name) orelse continue;
+            const sorted_name = queue.orderedRemove(0);
+            const f = self.formulae.get(sorted_name) orelse continue;
             try result.append(self.alloc, f);
 
             var re_iter = self.edges.iterator();
             while (re_iter.next()) |entry| {
                 for (entry.value_ptr.*) |dep| {
-                    if (std.mem.eql(u8, dep, name)) {
+                    if (std.mem.eql(u8, dep, sorted_name)) {
                         if (in_degree.getPtr(entry.key_ptr.*)) |count| {
                             count.* -= 1;
                             if (count.* == 0) {
@@ -95,3 +150,7 @@ pub const DepResolver = struct {
         return try result.toOwnedSlice(self.alloc);
     }
 };
+
+fn fetchWorker(alloc: std.mem.Allocator, name: []const u8, slot: *?Formula) void {
+    slot.* = api.fetchFormula(alloc, name) catch null;
+}
