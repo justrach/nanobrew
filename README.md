@@ -2,9 +2,9 @@
 
 The fastest macOS package manager. Written in Zig.
 
-Inspired by [zerobrew](https://github.com/lucasgelfond/zerobrew) and [uv](https://github.com/astral-sh/uv) — proving that systems languages and smart caching can make package management feel instant.
+Inspired by [zerobrew](https://github.com/lucasgelfond/zerobrew) and [uv](https://github.com/astral-sh/uv) - proving that systems languages and smart caching can make package management feel instant.
 
-nanobrew's warm installs complete in **under 4ms** — that's faster than `echo`.
+nanobrew's warm installs complete in **under 4ms** - that's faster than `echo`.
 
 ## Performance snapshot
 
@@ -12,7 +12,7 @@ nanobrew's warm installs complete in **under 4ms** — that's faster than `echo`
 |---------|----------|----------|-----------------|-----------------|--------------|--------------|
 | **ffmpeg** (11 deps) | ~24.5s | 36.2s | **22.4s** | **3.5ms** | 1.1x / 1.6x | **7000x / 86x** |
 | **tree** (0 deps) | 8.99s | 5.86s | **1.19s** | **3.5ms** | 7.5x / 4.9x | **643x / 100x** |
-| **wget** (6 deps) | 16.84s | — | **11.26s** | **3.5ms** | 1.5x | **4811x** |
+| **wget** (6 deps) | 16.84s | - | **11.26s** | **3.5ms** | 1.5x | **4811x** |
 
 > Cold speedups shown as vs Homebrew / vs Zerobrew. Warm speedups same format.
 > All benchmarks on Apple Silicon (M-series), macOS 15, same network.
@@ -62,7 +62,7 @@ nb install ffmpeg
   |
   v
 2. Skip already-installed packages
-   Check Cellar for existing kegs — warm installs exit here (3.5ms)
+   Check Cellar for existing kegs - warm installs exit here (3.5ms)
   |
   v
 3. Parallel download + extract (streaming)
@@ -87,26 +87,26 @@ nb install ffmpeg
 
 ### Why it's fast
 
-- **Skip-installed fast path** — already-installed packages detected in microseconds, warm installs complete in 3.5ms
-- **Parallel everything** — downloads, extraction, materialization, relocation, and dependency resolution all run concurrently
-- **Native HTTP downloads** — Zig's `std.http.Client` replaces curl subprocess spawns
-- **Streaming SHA256** — hash verified during download in single pass, no re-read of file
-- **Native Mach-O parsing** — reads load commands directly from binary headers, no otool
-- **Content-addressable store** — SHA256-keyed dedup means reinstalls skip download + extract entirely
-- **APFS clonefile** — copy-on-write materialization, zero disk overhead
-- **Batched codesign** — one `codesign` call per keg (not per binary)
-- **BFS parallel resolution** — dependency tree resolved in 2-3 parallel rounds instead of N serial API calls
-- **API + GHCR token caching** — cached to disk with TTL, avoids redundant network calls
-- **Single static binary** — no Ruby runtime, no interpreter startup, no config sprawl
+- **Skip-installed fast path** - already-installed packages detected in microseconds, warm installs complete in 3.5ms
+- **Parallel everything** - downloads, extraction, materialization, relocation, and dependency resolution all run concurrently
+- **Native HTTP downloads** - Zig's `std.http.Client` replaces curl subprocess spawns
+- **Streaming SHA256** - hash verified during download in single pass, no re-read of file
+- **Native Mach-O parsing** - reads load commands directly from binary headers, no otool
+- **Content-addressable store** - SHA256-keyed dedup means reinstalls skip download + extract entirely
+- **APFS clonefile** - copy-on-write materialization, zero disk overhead
+- **Batched codesign** - one `codesign` call per keg (not per binary)
+- **BFS parallel resolution** - dependency tree resolved in 2-3 parallel rounds instead of N serial API calls
+- **API + GHCR token caching** - cached to disk with TTL, avoids redundant network calls
+- **Single static binary** - no Ruby runtime, no interpreter startup, no config sprawl
 
 ### Inspiration
 
-- [zerobrew](https://github.com/lucasgelfond/zerobrew) — proved that a Rust rewrite of Homebrew's bottle pipeline could be 2-20x faster. nanobrew takes the same architecture (content-addressable store + APFS clonefile + parallel downloads) and pushes it further with Zig's comptime and zero-overhead abstractions.
-- [uv](https://github.com/astral-sh/uv) — showed that rewriting a package manager in a systems language (Rust for pip) can deliver 10-100x speedups. Same philosophy here: the bottleneck in `brew install` isn't the network, it's the toolchain.
+- [zerobrew](https://github.com/lucasgelfond/zerobrew) - proved that a Rust rewrite of Homebrew's bottle pipeline could be 2-20x faster. nanobrew takes the same architecture (content-addressable store + APFS clonefile + parallel downloads) and pushes it further with Zig's comptime and zero-overhead abstractions.
+- [uv](https://github.com/astral-sh/uv) - showed that rewriting a package manager in a systems language (Rust for pip) can deliver 10-100x speedups. Same philosophy here: the bottleneck in `brew install` isn't the network, it's the toolchain.
 
 ## Relationship with Homebrew
 
-nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely on Homebrew's formula definitions, pre-built bottles (GHCR), and API infrastructure. nanobrew is experimental — we recommend running it alongside Homebrew rather than as a replacement. Source builds, cask installs, and post-install scripts are not yet supported.
+nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely on Homebrew's formula definitions, pre-built bottles (GHCR), and API infrastructure. nanobrew is experimental - we recommend running it alongside Homebrew rather than as a replacement. Source builds, cask installs, and post-install scripts are not yet supported.
 
 ## Directory layout
 
