@@ -14,8 +14,10 @@ const CELLAR_DIR = "/opt/nanobrew/prefix/Cellar";
 
 /// Materialize a keg from the store into the Cellar.
 pub fn materialize(sha256: []const u8, name: []const u8, version: []const u8) !void {
+    // Homebrew bottles contain a <name>/<version>/ prefix inside the tarball,
+    // so the actual keg contents are at store/<sha256>/<name>/<version>/
     var src_buf: [512]u8 = undefined;
-    const src_dir = std.fmt.bufPrint(&src_buf, "{s}/{s}", .{ STORE_DIR, sha256 }) catch return error.PathTooLong;
+    const src_dir = std.fmt.bufPrint(&src_buf, "{s}/{s}/{s}/{s}", .{ STORE_DIR, sha256, name, version }) catch return error.PathTooLong;
 
     // Destination: Cellar/<name>/<version>/
     var dest_buf: [512]u8 = undefined;
@@ -93,10 +95,10 @@ fn cloneDirRecursive(src: []const u8, dest: []const u8) !void {
                 };
             },
             .sym_link => {
-                // Read and recreate symlink
+                // Read and recreate symlink (target may be relative)
                 var link_buf: [std.fs.max_path_bytes]u8 = undefined;
                 const target = std.fs.readLinkAbsolute(src_child, &link_buf) catch continue;
-                std.fs.symLinkAbsolute(target, dest_child, .{}) catch {};
+                std.posix.symlink(target, dest_child) catch {};
             },
             else => {},
         }

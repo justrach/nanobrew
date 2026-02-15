@@ -48,12 +48,11 @@ pub const DepResolver = struct {
             try in_degree.put(name.*, 0);
         }
 
+        // in_degree[name] = number of deps name has (must be installed before name)
         var edge_iter = self.edges.iterator();
         while (edge_iter.next()) |entry| {
-            for (entry.value_ptr.*) |dep| {
-                if (in_degree.getPtr(dep)) |count| {
-                    count.* += 1;
-                }
+            if (in_degree.getPtr(entry.key_ptr.*)) |count| {
+                count.* = @intCast(entry.value_ptr.*.len);
             }
         }
 

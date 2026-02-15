@@ -50,6 +50,38 @@ pub const ParallelDownloader = struct {
     }
 };
 
+fn fetchGhcrToken(alloc: std.mem.Allocator, url: []const u8) !?[]const u8 {
+    // Extract repo scope from ghcr.io URL: /v2/homebrew/core/<pkg>/blobs/...
+    const ghcr_prefix = "https://ghcr.io/v2/";
+    if (!std.mem.startsWith(u8, url, ghcr_prefix)) return null;
+
+    const after_prefix = url[ghcr_prefix.len..];
+    const blobs_idx = std.mem.indexOf(u8, after_prefix, "/blobs/") orelse return null;
+    const repo = after_prefix[0..blobs_idx];
+
+    var token_url_buf: [512]u8 = undefined;
+    const token_url = std.fmt.bufPrint(&token_url_buf, "https://ghcr.io/token?scope=repository:{s}:pull", .{repo}) catch return null;
+
+    const result = std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "curl", "-s", token_url },
+    }) catch return null;
+    defer alloc.free(result.stderr);
+    // caller owns stdout — we parse token from it
+
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, result.stdout, .{}) catch {
+        alloc.free(result.stdout);
+        return null;
+    };
+    defer parsed.deinit();
+    alloc.free(result.stdout);
+
+    if (parsed.value.object.get("token")) |tok| {
+        if (tok == .string) return try alloc.dupe(u8, tok.string);
+    }
+    return null;
+}
+
 fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
     // Use curl for download (handles redirects, TLS, etc.)
     var tmp_path_buf: [512]u8 = undefined;
@@ -58,10 +90,23 @@ fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
     var dest_path_buf: [512]u8 = undefined;
     const dest_path = std.fmt.bufPrint(&dest_path_buf, "{s}/{s}", .{ BLOBS_DIR, req.expected_sha256 }) catch return error.PathTooLong;
 
-    const result = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "curl", "-sL", "-o", tmp_path, req.url },
-    }) catch return error.CurlFailed;
+    // Fetch GHCR bearer token if needed (ghcr.io requires auth even for public pulls)
+    const token = try fetchGhcrToken(alloc, req.url);
+    defer if (token) |t| alloc.free(t);
+
+    var auth_header_buf: [4096]u8 = undefined;
+    const result = if (token) |t| blk: {
+        const auth_header = std.fmt.bufPrint(&auth_header_buf, "Authorization: Bearer {s}", .{t}) catch return error.TokenTooLong;
+        break :blk std.process.Child.run(.{
+            .allocator = alloc,
+            .argv = &.{ "curl", "-sL", "-H", auth_header, "-o", tmp_path, req.url },
+        }) catch return error.CurlFailed;
+    } else blk: {
+        break :blk std.process.Child.run(.{
+            .allocator = alloc,
+            .argv = &.{ "curl", "-sL", "-o", tmp_path, req.url },
+        }) catch return error.CurlFailed;
+    };
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
 
