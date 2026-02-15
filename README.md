@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="assets/logo.png" alt="nanobrew logo" width="200">
+</p>
+
 # nanobrew
 
 The fastest macOS package manager. Written in Zig.
@@ -106,9 +110,9 @@ nb install ffmpeg
 - [zerobrew](https://github.com/lucasgelfond/zerobrew) - proved that a Rust rewrite of Homebrew's bottle pipeline could be 2-20x faster. nanobrew takes the same architecture (content-addressable store + APFS clonefile + parallel downloads) and pushes it further with Zig's comptime and zero-overhead abstractions.
 - [uv](https://github.com/astral-sh/uv) - showed that rewriting a package manager in a systems language (Rust for pip) can deliver 10-100x speedups. Same philosophy here: the bottleneck in `brew install` isn't the network, it's the toolchain.
 
-nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely on Homebrew's formula definitions, pre-built bottles (GHCR), cask definitions, and API infrastructure. nanobrew is experimental - we recommend running it alongside Homebrew rather than as a replacement. Source builds and post-install scripts are not yet supported.
+## Relationship with Homebrew
 
-nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely on Homebrew's formula definitions, pre-built bottles (GHCR), and API infrastructure. nanobrew is experimental - we recommend running it alongside Homebrew rather than as a replacement. Source builds, cask installs, and post-install scripts are not yet supported.
+nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely on Homebrew's formula definitions, pre-built bottles (GHCR), cask definitions, and API infrastructure. nanobrew is experimental - we recommend running it alongside Homebrew rather than as a replacement. Source builds and post-install scripts are not yet supported.
 
 ## Directory layout
 
@@ -118,6 +122,9 @@ nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely o
     blobs/          # Downloaded bottles (content-addressable by SHA256)
     api/            # Cached formula metadata (5-min TTL)
     tokens/         # Cached GHCR auth tokens (4-min TTL)
+    tmp/            # Partial downloads
+  store/            # Extracted bottles (content-addressable by SHA256)
+  prefix/
     Cellar/         # Installed kegs (cloned from store)
     Caskroom/       # Installed casks (macOS apps)
     bin/            # Symlinks to keg binaries
@@ -125,17 +132,16 @@ nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely o
   db/
     state.json      # Installed package and cask state
 ```
-    state.json      # Installed package state
-```
 
 ## Architecture
 
 ```
+src/
+  main.zig              # CLI entry point, command dispatch, live progress UI
+  api/
     client.zig          # Homebrew JSON API client (formula + cask)
     formula.zig         # Formula struct and bottle tag constants
     cask.zig            # Cask struct, Artifact types, DownloadFormat
-    client.zig          # Homebrew JSON API client
-    formula.zig         # Formula struct and bottle tag constants
   resolve/
     deps.zig            # BFS parallel dependency resolver (Kahn's topo sort)
   net/
