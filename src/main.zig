@@ -21,6 +21,17 @@ const Command = enum {
     help,
 };
 
+const Phase = enum(u8) {
+    waiting = 0,
+    downloading,
+    extracting,
+    installing,
+    relocating,
+    linking,
+    done,
+    failed,
+};
+
 const ROOT = "/opt/nanobrew";
 const PREFIX = ROOT ++ "/prefix";
 
@@ -194,19 +205,57 @@ fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
 
     // Single merged phase: Download → Extract → Materialize → Relocate → Link (all parallel)
     phase_timer = std.time.Timer.start() catch null;
-    stdout.print("==> Downloading + installing...\n", .{}) catch {};
+    const pkg_count = install_order.len;
+    stdout.print("==> Downloading + installing {d} packages...\n", .{pkg_count}) catch {};
     {
+        // Allocate per-package phase tracking
+        const phases = alloc.alloc(std.atomic.Value(u8), pkg_count) catch {
+            stderr.print("nb: out of memory\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        defer alloc.free(phases);
+        for (phases) |*p| p.* = std.atomic.Value(u8).init(@intFromEnum(Phase.waiting));
+
+        // Collect package names for display
+        const names = alloc.alloc([]const u8, pkg_count) catch {
+            stderr.print("nb: out of memory\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        defer alloc.free(names);
+        for (install_order, 0..) |f, i| names[i] = f.name;
+
         var had_error = std.atomic.Value(bool).init(false);
         var threads: std.ArrayList(std.Thread) = .empty;
         defer threads.deinit(alloc);
-        for (install_order) |f| {
-            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error }) catch {
+        for (install_order, 0..) |f, i| {
+            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error, &phases[i] }) catch {
                 had_error.store(true, .release);
+                phases[i].store(@intFromEnum(Phase.failed), .release);
                 continue;
             };
             threads.append(alloc, t) catch continue;
         }
+
+        // Live progress on TTY, plain wait otherwise
+        const is_tty = std.posix.isatty(std.posix.STDOUT_FILENO);
+        if (is_tty) {
+            renderProgress(std.fs.File.stdout(), names, phases);
+        }
+
         for (threads.items) |t| t.join();
+
+        // Non-TTY: print final status for each package
+        if (!is_tty) {
+            for (names, 0..) |name, i| {
+                const raw: u8 = phases[i].load(.acquire);
+                const phase: Phase = @enumFromInt(raw);
+                if (phase == .done) {
+                    stdout.print("    ✓ {s}\n", .{name}) catch {};
+                } else if (phase == .failed) {
+                    stdout.print("    ✗ {s}\n", .{name}) catch {};
+                }
+            }
+        }
 
         if (had_error.load(.acquire)) {
             stderr.print("nb: some packages failed to install\n", .{}) catch {};
@@ -233,49 +282,144 @@ fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
 }
 
 
-// ── nb remove ──
+
+/// Render live progress UI with spinners and checkmarks.
+/// Blocks until all packages reach .done or .failed.
+fn renderProgress(
+    stdout_file: std.fs.File,
+    names: []const []const u8,
+    phases: []std.atomic.Value(u8),
+) void {
+    const n = names.len;
+
+    // Compute max name length for alignment
+    var max_len: usize = 0;
+    for (names) |name| {
+        if (name.len > max_len) max_len = name.len;
+    }
+
+    const spinner = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏";
+    const frame_bytes: usize = 3; // each braille char is 3 UTF-8 bytes
+    const frame_count: usize = spinner.len / frame_bytes;
+    var tick: usize = 0;
+
+    // Hide cursor
+    stdout_file.writeAll("\x1b[?25l") catch {};
+
+    // Reserve N lines
+    for (0..n) |_| stdout_file.writeAll("\n") catch {};
+
+    while (true) {
+        // Move cursor up N lines
+        var esc_buf: [16]u8 = undefined;
+        const esc = std.fmt.bufPrint(&esc_buf, "\x1b[{d}A", .{n}) catch "";
+        stdout_file.writeAll(esc) catch {};
+
+        var all_done = true;
+        for (names, 0..) |name, i| {
+            const raw: u8 = phases[i].load(.acquire);
+            const phase: Phase = @enumFromInt(raw);
+
+            // Clear line
+            stdout_file.writeAll("\x1b[2K") catch {};
+
+            switch (phase) {
+                .done => {
+                    stdout_file.writeAll("    \x1b[32m✓\x1b[0m ") catch {};
+                    stdout_file.writeAll(name) catch {};
+                    stdout_file.writeAll("\n") catch {};
+                },
+                .failed => {
+                    stdout_file.writeAll("    \x1b[31m✗\x1b[0m ") catch {};
+                    stdout_file.writeAll(name) catch {};
+                    stdout_file.writeAll("\n") catch {};
+                },
+                else => {
+                    all_done = false;
+                    const fi = tick % frame_count;
+                    const start = fi * frame_bytes;
+                    stdout_file.writeAll("    ") catch {};
+                    stdout_file.writeAll(spinner[start .. start + frame_bytes]) catch {};
+                    stdout_file.writeAll(" ") catch {};
+                    stdout_file.writeAll(name) catch {};
+                    // Pad to align phase labels
+                    var pad: usize = max_len - name.len + 1;
+                    while (pad > 0) : (pad -= 1) stdout_file.writeAll(" ") catch {};
+                    const label: []const u8 = switch (phase) {
+                        .waiting => "waiting...",
+                        .downloading => "downloading...",
+                        .extracting => "extracting...",
+                        .installing => "installing...",
+                        .relocating => "relocating...",
+                        .linking => "linking...",
+                        .done, .failed => unreachable,
+                    };
+                    stdout_file.writeAll(label) catch {};
+                    stdout_file.writeAll("\n") catch {};
+                },
+            }
+        }
+
+        if (all_done) break;
+
+        tick += 1;
+        std.Thread.sleep(80 * std.time.ns_per_ms);
+    }
+
+    // Show cursor
+    stdout_file.writeAll("\x1b[?25h") catch {};
+}
 
 /// Full per-package pipeline: download → extract → materialize → relocate → link
 /// Runs in its own thread — no barriers between phases.
-/// Full per-package pipeline: download → extract → materialize → relocate → link
-/// Runs in its own thread — no barriers between phases.
-fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *std.atomic.Value(bool)) void {
+fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *std.atomic.Value(bool), phase: *std.atomic.Value(u8)) void {
     // 1. Download (skip if blob cached)
+    phase.store(@intFromEnum(Phase.downloading), .release);
     const blob_dir = "/opt/nanobrew/cache/blobs";
     var blob_buf: [512]u8 = undefined;
     const blob_path = std.fmt.bufPrint(&blob_buf, "{s}/{s}", .{ blob_dir, f.bottle_sha256 }) catch {
         had_error.store(true, .release);
+        phase.store(@intFromEnum(Phase.failed), .release);
         return;
     };
 
     if (!fileExists(blob_path)) {
         nb.downloader.downloadOne(alloc, .{ .url = f.bottleUrl(), .expected_sha256 = f.bottle_sha256 }) catch {
             had_error.store(true, .release);
+            phase.store(@intFromEnum(Phase.failed), .release);
             return;
         };
     }
 
     // 2. Extract into store (skip if already there)
+    phase.store(@intFromEnum(Phase.extracting), .release);
     if (!nb.store.hasEntry(f.bottle_sha256)) {
         nb.store.ensureEntry(alloc, blob_path, f.bottle_sha256) catch {
             had_error.store(true, .release);
+            phase.store(@intFromEnum(Phase.failed), .release);
             return;
         };
     }
 
     // 3. Materialize (clonefile into Cellar)
+    phase.store(@intFromEnum(Phase.installing), .release);
     nb.cellar.materialize(f.bottle_sha256, f.name, f.version) catch {
         had_error.store(true, .release);
+        phase.store(@intFromEnum(Phase.failed), .release);
         return;
     };
 
     // 4. Relocate (fix Homebrew placeholders in Mach-O binaries)
+    phase.store(@intFromEnum(Phase.relocating), .release);
     var ver_buf: [256]u8 = undefined;
     const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf) orelse f.version;
     nb.relocate.relocateKeg(alloc, f.name, actual_ver) catch {};
 
     // 5. Link binaries
+    phase.store(@intFromEnum(Phase.linking), .release);
     nb.linker.linkKeg(f.name, actual_ver) catch {};
+
+    phase.store(@intFromEnum(Phase.done), .release);
 }
 
 fn fileExists(path: []const u8) bool {
