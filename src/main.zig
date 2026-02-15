@@ -175,21 +175,20 @@ fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
     }
 
     // Phase 4: Materialize into Cellar
+    // Pass base version — materialize auto-detects rebuild-suffixed dirs in store
     stdout.print("==> Installing...\n", .{}) catch {};
     for (install_order) |f| {
-        var ver_buf: [128]u8 = undefined;
-        const ver = f.effectiveVersion(&ver_buf);
-        nb.cellar.materialize(f.bottle_sha256, f.name, ver) catch |err| {
+        nb.cellar.materialize(f.bottle_sha256, f.name, f.version) catch |err| {
             stderr.print("nb: materialize failed for {s}: {}\n", .{ f.name, err }) catch {};
         };
     }
 
     // Phase 4.5: Relocate Mach-O paths (replace Homebrew placeholders)
+    // detectKegVersion finds the actual version dir (may have _N rebuild suffix)
     stdout.print("==> Relocating...\n", .{}) catch {};
     for (install_order) |f| {
-        var ver_buf: [128]u8 = undefined;
-        const ver = f.effectiveVersion(&ver_buf);
-        nb.relocate.relocateKeg(alloc, f.name, ver) catch |err| {
+        const actual_ver = nb.cellar.detectKegVersion(f.name, f.version) orelse f.version;
+        nb.relocate.relocateKeg(alloc, f.name, actual_ver) catch |err| {
             stderr.print("nb: relocate failed for {s}: {}\n", .{ f.name, err }) catch {};
         };
     }
@@ -197,11 +196,10 @@ fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
     // Phase 5: Link binaries
     stdout.print("==> Linking...\n", .{}) catch {};
     for (install_order) |f| {
-        var ver_buf: [128]u8 = undefined;
-        const ver = f.effectiveVersion(&ver_buf);
-        nb.linker.linkKeg(f.name, ver) catch |err| {
+        const actual_ver = nb.cellar.detectKegVersion(f.name, f.version) orelse f.version;
+        nb.linker.linkKeg(f.name, actual_ver) catch |err| {
             stderr.print("nb: link failed for {s}: {}\n", .{ f.name, err }) catch {};
-    };
+        };
     }
 
     // Phase 6: Record in database
@@ -211,9 +209,8 @@ fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
     };
     defer db.close();
     for (install_order) |f| {
-        var ver_buf: [128]u8 = undefined;
-        const ver = f.effectiveVersion(&ver_buf);
-        db.recordInstall(f.name, ver, f.bottle_sha256) catch {};
+        const actual_ver = nb.cellar.detectKegVersion(f.name, f.version) orelse f.version;
+        db.recordInstall(f.name, actual_ver, f.bottle_sha256) catch {};
     }
 
     const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
