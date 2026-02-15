@@ -14,9 +14,17 @@ pub const Keg = struct {
     sha256: []const u8 = "",
 };
 
+pub const CaskRecord = struct {
+    token: []const u8,
+    version: []const u8,
+    apps: []const []const u8,
+    binaries: []const []const u8,
+};
+
 pub const Database = struct {
     alloc: std.mem.Allocator,
     kegs: std.ArrayList(Keg),
+    casks: std.ArrayList(CaskRecord),
 
     pub fn open() !Database {
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -25,6 +33,7 @@ pub const Database = struct {
         var db = Database{
             .alloc = alloc,
             .kegs = .empty,
+            .casks = .empty,
         };
 
         const file = std.fs.openFileAbsolute(DB_PATH, .{}) catch return db;
@@ -51,6 +60,45 @@ pub const Database = struct {
                                 .sha256 = alloc.dupe(u8, ksha) catch continue,
                             }) catch {};
                         }
+                    }
+                }
+            }
+            // Parse casks (backward compatible — missing key = empty list)
+            if (parsed.value.object.get("casks")) |casks_val| {
+                if (casks_val == .array) {
+                    for (casks_val.array.items) |item| {
+                        if (item != .object) continue;
+                        const ctoken = getStr(item.object, "token") orelse continue;
+                        const cver = getStr(item.object, "version") orelse continue;
+
+                        var capps: std.ArrayList([]const u8) = .empty;
+                        if (item.object.get("apps")) |apps_val| {
+                            if (apps_val == .array) {
+                                for (apps_val.array.items) |a| {
+                                    if (a == .string) {
+                                        capps.append(alloc, alloc.dupe(u8, a.string) catch continue) catch {};
+                                    }
+                                }
+                            }
+                        }
+
+                        var cbins: std.ArrayList([]const u8) = .empty;
+                        if (item.object.get("binaries")) |bins_val| {
+                            if (bins_val == .array) {
+                                for (bins_val.array.items) |b| {
+                                    if (b == .string) {
+                                        cbins.append(alloc, alloc.dupe(u8, b.string) catch continue) catch {};
+                                    }
+                                }
+                            }
+                        }
+
+                        db.casks.append(alloc, .{
+                            .token = alloc.dupe(u8, ctoken) catch continue,
+                            .version = alloc.dupe(u8, cver) catch continue,
+                            .apps = capps.toOwnedSlice(alloc) catch continue,
+                            .binaries = cbins.toOwnedSlice(alloc) catch continue,
+                        }) catch {};
                     }
                 }
             }
@@ -107,6 +155,58 @@ pub const Database = struct {
         return result;
     }
 
+    pub fn recordCaskInstall(self: *Database, token: []const u8, version: []const u8, apps: []const []const u8, binaries: []const []const u8) !void {
+        // Remove existing entry for this token
+        var i: usize = 0;
+        while (i < self.casks.items.len) {
+            if (std.mem.eql(u8, self.casks.items[i].token, token)) {
+                _ = self.casks.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+
+        // Dupe all strings
+        const dapps = try self.alloc.alloc([]const u8, apps.len);
+        for (apps, 0..) |a, idx| dapps[idx] = try self.alloc.dupe(u8, a);
+        const dbins = try self.alloc.alloc([]const u8, binaries.len);
+        for (binaries, 0..) |b, idx| dbins[idx] = try self.alloc.dupe(u8, b);
+
+        try self.casks.append(self.alloc, .{
+            .token = try self.alloc.dupe(u8, token),
+            .version = try self.alloc.dupe(u8, version),
+            .apps = dapps,
+            .binaries = dbins,
+        });
+        try self.save();
+    }
+
+    pub fn recordCaskRemoval(self: *Database, token: []const u8, alloc: std.mem.Allocator) !void {
+        _ = alloc;
+        var i: usize = 0;
+        while (i < self.casks.items.len) {
+            if (std.mem.eql(u8, self.casks.items[i].token, token)) {
+                _ = self.casks.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+        try self.save();
+    }
+
+    pub fn findCask(self: *Database, token: []const u8) ?CaskRecord {
+        for (self.casks.items) |c| {
+            if (std.mem.eql(u8, c.token, token)) return c;
+        }
+        return null;
+    }
+
+    pub fn listInstalledCasks(self: *Database, alloc: std.mem.Allocator) ![]CaskRecord {
+        const result = try alloc.alloc(CaskRecord, self.casks.items.len);
+        @memcpy(result, self.casks.items);
+        return result;
+    }
+
     fn save(self: *Database) !void {
         const file = try std.fs.createFileAbsolute(DB_PATH, .{});
         defer file.close();
@@ -118,6 +218,23 @@ pub const Database = struct {
             writer.print("{{\"name\":\"{s}\",\"version\":\"{s}\",\"sha256\":\"{s}\"}}", .{
                 keg.name, keg.version, keg.sha256,
             }) catch {};
+        }
+        writer.writeAll("],\"casks\":[") catch return;
+        for (self.casks.items, 0..) |c, i| {
+            if (i > 0) writer.writeAll(",") catch {};
+            writer.print("{{\"token\":\"{s}\",\"version\":\"{s}\",\"apps\":[", .{
+                c.token, c.version,
+            }) catch {};
+            for (c.apps, 0..) |a, j| {
+                if (j > 0) writer.writeAll(",") catch {};
+                writer.print("\"{s}\"", .{a}) catch {};
+            }
+            writer.writeAll("],\"binaries\":[") catch {};
+            for (c.binaries, 0..) |b, j| {
+                if (j > 0) writer.writeAll(",") catch {};
+                writer.print("\"{s}\"", .{b}) catch {};
+            }
+            writer.writeAll("]}") catch {};
         }
         writer.writeAll("]}") catch {};
     }
