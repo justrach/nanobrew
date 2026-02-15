@@ -25,6 +25,7 @@ pub const blob_cache = @import("store/blob_cache.zig");
 pub const store = @import("store/store.zig");
 pub const cellar = @import("cellar/cellar.zig");
 pub const linker = @import("linker/linker.zig");
+pub const relocate = @import("macho/relocate.zig");
 pub const database = @import("db/database.zig");
 
 // Reused from zigrep

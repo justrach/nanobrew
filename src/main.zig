@@ -177,17 +177,31 @@ fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
     // Phase 4: Materialize into Cellar
     stdout.print("==> Installing...\n", .{}) catch {};
     for (install_order) |f| {
-        nb.cellar.materialize(f.bottle_sha256, f.name, f.version) catch |err| {
+        var ver_buf: [128]u8 = undefined;
+        const ver = f.effectiveVersion(&ver_buf);
+        nb.cellar.materialize(f.bottle_sha256, f.name, ver) catch |err| {
             stderr.print("nb: materialize failed for {s}: {}\n", .{ f.name, err }) catch {};
+        };
+    }
+
+    // Phase 4.5: Relocate Mach-O paths (replace Homebrew placeholders)
+    stdout.print("==> Relocating...\n", .{}) catch {};
+    for (install_order) |f| {
+        var ver_buf: [128]u8 = undefined;
+        const ver = f.effectiveVersion(&ver_buf);
+        nb.relocate.relocateKeg(alloc, f.name, ver) catch |err| {
+            stderr.print("nb: relocate failed for {s}: {}\n", .{ f.name, err }) catch {};
         };
     }
 
     // Phase 5: Link binaries
     stdout.print("==> Linking...\n", .{}) catch {};
     for (install_order) |f| {
-        nb.linker.linkKeg(f.name, f.version) catch |err| {
+        var ver_buf: [128]u8 = undefined;
+        const ver = f.effectiveVersion(&ver_buf);
+        nb.linker.linkKeg(f.name, ver) catch |err| {
             stderr.print("nb: link failed for {s}: {}\n", .{ f.name, err }) catch {};
-        };
+    };
     }
 
     // Phase 6: Record in database
@@ -197,7 +211,9 @@ fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
     };
     defer db.close();
     for (install_order) |f| {
-        db.recordInstall(f.name, f.version, f.bottle_sha256) catch {};
+        var ver_buf: [128]u8 = undefined;
+        const ver = f.effectiveVersion(&ver_buf);
+        db.recordInstall(f.name, ver, f.bottle_sha256) catch {};
     }
 
     const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
