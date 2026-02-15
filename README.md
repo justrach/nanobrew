@@ -15,8 +15,6 @@ Inspired by [zerobrew](https://github.com/lucasgelfond/zerobrew) and [uv](https:
 > Cold speedups shown as vs Homebrew / vs Zerobrew. Warm speedups same format.
 > All benchmarks on Apple Silicon (M-series), macOS 15, same network.
 
-nanobrew's warm installs complete in **under 4ms** — that's faster than `echo`.
-
 ## Install
 
 Requires [Zig 0.15+](https://ziglang.org/download/):
@@ -24,20 +22,29 @@ Requires [Zig 0.15+](https://ziglang.org/download/):
 ```bash
 git clone https://github.com/justrach/nanobrew.git
 cd nanobrew
-zig build
-
-# Create the directory tree
-sudo mkdir -p /opt/nanobrew
-sudo chown -R $(whoami) /opt/nanobrew
-./zig-out/bin/nb init
-
-# Add to your shell profile (.zshrc / .bashrc):
-export PATH="/opt/nanobrew/prefix/bin:$PATH"
+./install.sh
 ```
 
+That builds nanobrew, creates the directory tree, and adds `nb` to your PATH.
+
+Or manually:
+
+```bash
+zig build
+sudo mkdir -p /opt/nanobrew && sudo chown -R $(whoami) /opt/nanobrew
+./zig-out/bin/nb init
+export PATH="/opt/nanobrew/prefix/bin:$PATH"  # add to .zshrc
 ## Quick start
 
 ```bash
+nb install jq                   # install one package
+nb i ffmpeg wget curl           # short alias, multiple packages
+nb remove jq                    # uninstall
+nb ui ffmpeg                    # short alias for uninstall
+nb list                         # list installed packages
+nb info <formula>               # show formula info
+nb help                         # show help
+```
 nb install jq                   # install one package
 nb install ffmpeg wget curl     # install multiple (parallel deps)
 nb remove jq                    # uninstall
@@ -46,14 +53,16 @@ nb info <formula>               # show formula info
 nb help                         # show help
 ```
 
-## Relationship with Homebrew
-
-nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely on:
-
-- Homebrew's formula definitions (homebrew-core)
-- Homebrew's pre-built bottles (hosted on GHCR)
-- Homebrew's package metadata and API infrastructure
-
+- **Parallel pipeline** — concurrent downloads, extraction, and relocation
+- **Native HTTP client** — Zig's `std.http.Client` for downloads (no curl subprocess)
+- **Streaming SHA256** — verified during download in a single pass (no re-read)
+- **Native Mach-O parsing** — reads load commands directly, no otool subprocess
+- **Content-addressable storage** for deduplication (reinstalls skip everything)
+- **APFS clonefiles** for zero-overhead copying
+- **BFS parallel dependency resolution** — fetch all deps per level concurrently
+- **Batched codesign** — single `codesign` call for all modified binaries in a keg
+- **API + token caching** — avoid redundant network calls
+- **Live progress UI** — animated spinners and checkmarks during install
 Our innovations focus on:
 
 - **Parallel pipeline** — concurrent downloads, extraction, and relocation
@@ -72,16 +81,17 @@ nanobrew is experimental. We recommend running it alongside Homebrew rather than
 nb install ffmpeg
   |
   v
-1. BFS parallel dependency resolution
-   Fetch formula metadata from formulae.brew.sh/api
-   Each BFS level fetches all deps concurrently
-  |
-  v
-2. Skip already-installed packages
-   Check Cellar for existing kegs — warm installs exit here (3.5ms)
-  |
-  v
 3. Parallel download + extract (streaming)
+   All bottles download concurrently via native HTTP (no curl)
+   Streaming SHA256 verification during download (single pass)
+   Each extracts immediately on completion
+     -> /opt/nanobrew/store/<sha256>/
+  |
+  v
+4. Parallel materialize + relocate
+   APFS clonefile into Cellar (COW, zero disk cost)
+   Native Mach-O header parsing (no otool subprocess)
+   Batched codesign: single call for all modified binaries per keg
    All bottles download concurrently via GHCR
    Each extracts immediately on completion
    Built-in SHA256 verification (no shasum process)
@@ -91,17 +101,17 @@ nb install ffmpeg
 4. Parallel materialize + relocate
    APFS clonefile into Cellar (COW, zero disk cost)
    Batch Mach-O relocation: single otool + install_name_tool per binary
-   Ad-hoc codesign for macOS enforcement
-     -> /opt/nanobrew/prefix/Cellar/<name>/<version>/
-  |
-  v
-5. Link + record
-   Symlink binaries into prefix/bin/
-   Record in local JSON database
-     -> /opt/nanobrew/prefix/bin/ffmpeg
-```
-
-### Why it's fast
+- **Skip-installed fast path** — already-installed packages detected in microseconds, warm installs complete in 3.5ms
+- **Parallel everything** — downloads, extraction, materialization, relocation, and dependency resolution all run concurrently
+- **Native HTTP downloads** — Zig's `std.http.Client` replaces curl subprocess spawns
+- **Streaming SHA256** — hash verified during download in single pass, no re-read of file
+- **Native Mach-O parsing** — reads load commands directly from binary headers, no otool
+- **Content-addressable store** — SHA256-keyed dedup means reinstalls skip download + extract entirely
+- **APFS clonefile** — copy-on-write materialization, zero disk overhead
+- **Batched codesign** — one `codesign` call per keg (not per binary)
+- **BFS parallel resolution** — dependency tree resolved in 2-3 parallel rounds instead of N serial API calls
+- **API + GHCR token caching** — cached to disk with TTL, avoids redundant network calls
+- **Single static binary** — no Ruby runtime, no interpreter startup, no config sprawl
 
 - **Skip-installed fast path** — already-installed packages detected in microseconds, warm installs complete in 3.5ms
 - **Parallel everything** — downloads, extraction, materialization, relocation, and dependency resolution all run concurrently
@@ -149,7 +159,7 @@ src/
   resolve/
     deps.zig            # BFS parallel dependency resolver (Kahn's topo sort)
   net/
-    downloader.zig      # Parallel bottle downloader with GHCR auth + SHA256
+    downloader.zig      # Native HTTP bottle downloader with streaming SHA256
   extract/
     tar.zig             # Tar/gzip extraction
   store/
@@ -160,7 +170,7 @@ src/
   linker/
     linker.zig          # Symlink creation for bin/ and opt/
   macho/
-    relocate.zig        # Mach-O binary relocation (batched)
+    relocate.zig        # Native Mach-O parsing + batched relocation
   db/
     database.zig        # JSON-based install state tracking
   kernel/

@@ -23,6 +23,16 @@ pub const Formula = struct {
         }
         return self.version;
     }
+    pub fn deinit(self: Formula, alloc: std.mem.Allocator) void {
+        for (self.dependencies) |dep| alloc.free(dep);
+        alloc.free(self.dependencies);
+        alloc.free(self.name);
+        alloc.free(self.version);
+        alloc.free(self.desc);
+        alloc.free(self.bottle_url);
+        alloc.free(self.bottle_sha256);
+    }
+
 
     /// Build the bottle URL for this formula.
     pub fn bottleUrl(self: *const Formula) []const u8 {

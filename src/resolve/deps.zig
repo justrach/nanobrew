@@ -22,6 +22,8 @@ pub const DepResolver = struct {
     }
 
     pub fn deinit(self: *DepResolver) void {
+        var it = self.formulae.valueIterator();
+        while (it.next()) |f| f.deinit(self.alloc);
         self.formulae.deinit();
         self.edges.deinit();
     }
@@ -68,11 +70,13 @@ pub const DepResolver = struct {
             frontier.clearRetainingCapacity();
             for (results) |maybe_f| {
                 const f = maybe_f orelse continue;
-                if (self.formulae.contains(f.name)) continue;
-
-                const owned_name = self.alloc.dupe(u8, f.name) catch continue;
-                self.formulae.put(owned_name, f) catch continue;
-                self.edges.put(owned_name, f.dependencies) catch continue;
+                if (self.formulae.contains(f.name)) {
+                    var dup = f;
+                    dup.deinit(self.alloc);
+                    continue;
+                }
+                self.formulae.put(f.name, f) catch continue;
+                self.edges.put(f.name, f.dependencies) catch continue;
 
                 // Queue any unseen deps for next BFS level
                 for (f.dependencies) |dep| {

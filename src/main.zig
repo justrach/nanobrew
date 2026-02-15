@@ -70,8 +70,11 @@ fn parseCommand(arg: []const u8) ?Command {
     const cmds = .{
         .{ "init", Command.init },
         .{ "install", Command.install },
+        .{ "i", Command.install },
         .{ "remove", Command.remove },
         .{ "uninstall", Command.remove },
+        .{ "rm", Command.remove },
+        .{ "ui", Command.remove },
         .{ "list", Command.list },
         .{ "ls", Command.list },
         .{ "info", Command.info },
@@ -161,6 +164,7 @@ fn runInstall(alloc: std.mem.Allocator, formulae: []const []const u8) void {
         stderr.print("nb: dependency cycle detected\n", .{}) catch {};
         std.process.exit(1);
     };
+    defer alloc.free(all_formulae);
 
     // Filter out already-installed packages (keg exists in Cellar)
     var to_install: std.ArrayList(nb.formula.Formula) = .empty;
