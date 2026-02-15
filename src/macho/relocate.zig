@@ -341,3 +341,40 @@ fn runProcess(alloc: std.mem.Allocator, argv: []const []const u8) ![]u8 {
     if (term.Exited != 0) { alloc.free(output); return error.ProcessFailed; }
     return output;
 }
+
+const testing = std.testing;
+
+test "hasPlaceholder - detects HOMEBREW prefix" {
+    try testing.expect(hasPlaceholder("@@HOMEBREW_PREFIX@@/lib/libfoo.dylib"));
+    try testing.expect(hasPlaceholder("@@HOMEBREW_CELLAR@@/ffmpeg/7.1/lib/libavcodec.dylib"));
+}
+
+test "hasPlaceholder - rejects normal paths" {
+    try testing.expect(!hasPlaceholder("/usr/lib/libSystem.B.dylib"));
+    try testing.expect(!hasPlaceholder("/opt/nanobrew/prefix/lib/libfoo.dylib"));
+    try testing.expect(!hasPlaceholder(""));
+}
+
+test "replacePlaceholders - PREFIX" {
+    const result = try replacePlaceholders(testing.allocator, "@@HOMEBREW_PREFIX@@/lib/libz.dylib");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("/opt/nanobrew/prefix/lib/libz.dylib", result);
+}
+
+test "replacePlaceholders - CELLAR" {
+    const result = try replacePlaceholders(testing.allocator, "@@HOMEBREW_CELLAR@@/ffmpeg/7.1/lib/libavcodec.dylib");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("/opt/nanobrew/prefix/Cellar/ffmpeg/7.1/lib/libavcodec.dylib", result);
+}
+
+test "replacePlaceholders - both in one string" {
+    const result = try replacePlaceholders(testing.allocator, "@@HOMEBREW_CELLAR@@/x265/4.0/lib:@@HOMEBREW_PREFIX@@/lib");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("/opt/nanobrew/prefix/Cellar/x265/4.0/lib:/opt/nanobrew/prefix/lib", result);
+}
+
+test "replacePlaceholders - no placeholders returns copy" {
+    const result = try replacePlaceholders(testing.allocator, "/usr/lib/libSystem.B.dylib");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("/usr/lib/libSystem.B.dylib", result);
+}

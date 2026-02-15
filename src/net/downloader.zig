@@ -278,3 +278,23 @@ fn fileExists(path: []const u8) bool {
     std.fs.accessAbsolute(path, .{}) catch return false;
     return true;
 }
+
+const testing = std.testing;
+
+test "scopeToCacheName - replaces slashes with underscores" {
+    var buf: [256]u8 = undefined;
+    const name = scopeToCacheName("homebrew/core/ffmpeg", &buf).?;
+    try testing.expectEqualStrings("homebrew_core_ffmpeg", name);
+}
+
+test "scopeToCacheName - single segment unchanged" {
+    var buf: [256]u8 = undefined;
+    const name = scopeToCacheName("homebrew", &buf).?;
+    try testing.expectEqualStrings("homebrew", name);
+}
+
+test "scopeToCacheName - repo too long returns null" {
+    var buf: [256]u8 = undefined;
+    const long = "a" ** 257;
+    try testing.expectEqual(@as(?[]const u8, null), scopeToCacheName(long, &buf));
+}

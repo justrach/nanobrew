@@ -44,3 +44,17 @@ pub fn removeEntry(sha256: []const u8) void {
     const p = std.fmt.bufPrint(&buf, "{s}/{s}", .{ STORE_DIR, sha256 }) catch return;
     std.fs.deleteTreeAbsolute(p) catch {};
 }
+
+const testing = std.testing;
+
+test "entryPath - formats store path correctly" {
+    var buf: [512]u8 = undefined;
+    const p = entryPath("abc123deadbeef", &buf);
+    try testing.expectEqualStrings("/opt/nanobrew/store/abc123deadbeef", p);
+}
+
+test "entryPath - empty sha returns store dir slash" {
+    var buf: [512]u8 = undefined;
+    const p = entryPath("", &buf);
+    try testing.expectEqualStrings("/opt/nanobrew/store/", p);
+}

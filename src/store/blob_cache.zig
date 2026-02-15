@@ -34,3 +34,15 @@ pub fn evict(sha256: []const u8) void {
     const p = std.fmt.bufPrint(&buf, "{s}/{s}", .{ BLOBS_DIR, sha256 }) catch return;
     std.fs.deleteFileAbsolute(p) catch {};
 }
+
+const testing = std.testing;
+
+test "blobPath - formats cache blob path correctly" {
+    const p = blobPath("abc123deadbeef");
+    try testing.expectEqualStrings("/opt/nanobrew/cache/blobs/abc123deadbeef", p);
+}
+
+test "blobPath - empty sha returns blobs dir slash" {
+    const p = blobPath("");
+    try testing.expectEqualStrings("/opt/nanobrew/cache/blobs/", p);
+}

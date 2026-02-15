@@ -57,3 +57,33 @@ pub const BOTTLE_FALLBACKS = [_][]const u8{
     "arm64_monterey",
     "all",
 };
+
+const testing = std.testing;
+
+test "effectiveVersion - no rebuild returns base version" {
+    const f = Formula{ .name = "ffmpeg", .version = "7.1", .rebuild = 0 };
+    var buf: [128]u8 = undefined;
+    const v = f.effectiveVersion(&buf);
+    try testing.expectEqualStrings("7.1", v);
+}
+
+test "effectiveVersion - rebuild appends suffix" {
+    const f = Formula{ .name = "ffmpeg", .version = "7.1", .rebuild = 2 };
+    var buf: [128]u8 = undefined;
+    const v = f.effectiveVersion(&buf);
+    try testing.expectEqualStrings("7.1_2", v);
+}
+
+test "cellarPath - formats name and version" {
+    const f = Formula{ .name = "lame", .version = "3.100" };
+    var buf: [512]u8 = undefined;
+    const p = f.cellarPath(&buf);
+    try testing.expectEqualStrings("/opt/nanobrew/prefix/Cellar/lame/3.100", p);
+}
+
+test "cellarPath - includes rebuild suffix" {
+    const f = Formula{ .name = "x265", .version = "4.0", .rebuild = 1 };
+    var buf: [512]u8 = undefined;
+    const p = f.cellarPath(&buf);
+    try testing.expectEqualStrings("/opt/nanobrew/prefix/Cellar/x265/4.0_1", p);
+}

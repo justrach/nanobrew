@@ -159,3 +159,82 @@ fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
 fn allocDupe(alloc: std.mem.Allocator, s: []const u8) ![]const u8 {
     return alloc.dupe(u8, s);
 }
+
+const testing = std.testing;
+
+test "parseFormulaJson - parses complete formula" {
+    const json =
+        \\{"name":"lame","desc":"MP3 encoder","versions":{"stable":"3.100"},"revision":0,
+        \\"dependencies":["gcc"],
+        \\"bottle":{"stable":{"rebuild":0,"files":{"arm64_sonoma":{"url":"https://ghcr.io/bottle/lame","sha256":"deadbeef"}}}}}
+    ;
+    const f = try parseFormulaJson(testing.allocator, json);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqualStrings("lame", f.name);
+    try testing.expectEqualStrings("3.100", f.version);
+    try testing.expectEqualStrings("MP3 encoder", f.desc);
+    try testing.expectEqual(@as(u32, 0), f.revision);
+    try testing.expectEqual(@as(u32, 0), f.rebuild);
+    try testing.expectEqualStrings("https://ghcr.io/bottle/lame", f.bottle_url);
+    try testing.expectEqualStrings("deadbeef", f.bottle_sha256);
+}
+
+test "parseFormulaJson - parses dependencies array" {
+    const json =
+        \\{"name":"ffmpeg","desc":"","versions":{"stable":"7.1"},"revision":0,
+        \\"dependencies":["lame","opus","x265"],
+        \\"bottle":{"stable":{"rebuild":0,"files":{"arm64_sonoma":{"url":"https://ghcr.io/bottle/ffmpeg","sha256":"cafe"}}}}}
+    ;
+    const f = try parseFormulaJson(testing.allocator, json);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 3), f.dependencies.len);
+    try testing.expectEqualStrings("lame", f.dependencies[0]);
+    try testing.expectEqualStrings("opus", f.dependencies[1]);
+    try testing.expectEqualStrings("x265", f.dependencies[2]);
+}
+
+test "parseFormulaJson - missing name returns error" {
+    const json =
+        \\{"desc":"","versions":{"stable":"1.0"},"dependencies":[],
+        \\"bottle":{"stable":{"rebuild":0,"files":{"arm64_sonoma":{"url":"u","sha256":"s"}}}}}
+    ;
+    try testing.expectError(error.MissingField, parseFormulaJson(testing.allocator, json));
+}
+
+test "parseFormulaJson - missing versions returns error" {
+    const json =
+        \\{"name":"foo","desc":"","dependencies":[],
+        \\"bottle":{"stable":{"rebuild":0,"files":{"arm64_sonoma":{"url":"u","sha256":"s"}}}}}
+    ;
+    try testing.expectError(error.MissingField, parseFormulaJson(testing.allocator, json));
+}
+
+test "findBottleTag - primary tag found" {
+    const json =
+        \\{"arm64_sonoma":{"url":"u1"},"all":{"url":"u2"}}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+    const result = findBottleTag(parsed.value.object);
+    try testing.expect(result != null);
+}
+
+test "findBottleTag - fallback to all" {
+    const json =
+        \\{"x86_64_linux":{"url":"u1"},"all":{"url":"u2"}}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+    const result = findBottleTag(parsed.value.object);
+    try testing.expect(result != null);
+}
+
+test "findBottleTag - no matching tag returns null" {
+    const json =
+        \\{"x86_64_linux":{"url":"u1"}}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json, .{});
+    defer parsed.deinit();
+    const result = findBottleTag(parsed.value.object);
+    try testing.expectEqual(@as(?std.json.Value, null), result);
+}
