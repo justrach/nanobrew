@@ -2,7 +2,7 @@ class Nanobrew < Formula
   desc "The fastest macOS package manager. Written in Zig."
   homepage "https://github.com/justrach/nanobrew"
   license "Apache-2.0"
-  version "0.1.0"
+  version "0.1.01"
 
   on_macos do
     if Hardware::CPU.arm?

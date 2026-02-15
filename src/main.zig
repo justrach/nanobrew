@@ -377,18 +377,22 @@ fn renderProgress(
 /// Full per-package pipeline: download → extract → materialize → relocate → link
 /// Runs in its own thread — no barriers between phases.
 fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *std.atomic.Value(bool), phase: *std.atomic.Value(u8)) void {
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
     // 1. Download (skip if blob cached)
     phase.store(@intFromEnum(Phase.downloading), .release);
     const blob_dir = "/opt/nanobrew/cache/blobs";
     var blob_buf: [512]u8 = undefined;
     const blob_path = std.fmt.bufPrint(&blob_buf, "{s}/{s}", .{ blob_dir, f.bottle_sha256 }) catch {
+        stderr.print("nb: {s}: path too long for blob\n", .{f.name}) catch {};
         had_error.store(true, .release);
         phase.store(@intFromEnum(Phase.failed), .release);
         return;
     };
 
     if (!fileExists(blob_path)) {
-        nb.downloader.downloadOne(alloc, .{ .url = f.bottleUrl(), .expected_sha256 = f.bottle_sha256 }) catch {
+        nb.downloader.downloadOne(alloc, .{ .url = f.bottleUrl(), .expected_sha256 = f.bottle_sha256 }) catch |err| {
+            stderr.print("nb: {s}: download failed: {}\n", .{ f.name, err }) catch {};
             had_error.store(true, .release);
             phase.store(@intFromEnum(Phase.failed), .release);
             return;
@@ -398,7 +402,8 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     // 2. Extract into store (skip if already there)
     phase.store(@intFromEnum(Phase.extracting), .release);
     if (!nb.store.hasEntry(f.bottle_sha256)) {
-        nb.store.ensureEntry(alloc, blob_path, f.bottle_sha256) catch {
+        nb.store.ensureEntry(alloc, blob_path, f.bottle_sha256) catch |err| {
+            stderr.print("nb: {s}: extract failed: {}\n", .{ f.name, err }) catch {};
             had_error.store(true, .release);
             phase.store(@intFromEnum(Phase.failed), .release);
             return;
@@ -407,7 +412,8 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
 
     // 3. Materialize (clonefile into Cellar)
     phase.store(@intFromEnum(Phase.installing), .release);
-    nb.cellar.materialize(f.bottle_sha256, f.name, f.version) catch {
+    nb.cellar.materialize(f.bottle_sha256, f.name, f.version) catch |err| {
+        stderr.print("nb: {s}: materialize failed: {}\n", .{ f.name, err }) catch {};
         had_error.store(true, .release);
         phase.store(@intFromEnum(Phase.failed), .release);
         return;
@@ -417,11 +423,15 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     phase.store(@intFromEnum(Phase.relocating), .release);
     var ver_buf: [256]u8 = undefined;
     const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf) orelse f.version;
-    nb.relocate.relocateKeg(alloc, f.name, actual_ver) catch {};
+    nb.relocate.relocateKeg(alloc, f.name, actual_ver) catch |err| {
+        stderr.print("nb: {s}: relocate failed: {}\n", .{ f.name, err }) catch {};
+    };
 
     // 5. Link binaries
     phase.store(@intFromEnum(Phase.linking), .release);
-    nb.linker.linkKeg(f.name, actual_ver) catch {};
+    nb.linker.linkKeg(f.name, actual_ver) catch |err| {
+        stderr.print("nb: {s}: link failed: {}\n", .{ f.name, err }) catch {};
+    };
 
     phase.store(@intFromEnum(Phase.done), .release);
 }
