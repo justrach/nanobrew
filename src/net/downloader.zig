@@ -1,12 +1,12 @@
-// nanobrew — Parallel bottle downloader
+// nanobrew — Native HTTP bottle downloader (zero curl subprocess spawns)
 //
-// Downloads bottle tarballs from Homebrew CDN.
+// Downloads bottle tarballs from Homebrew GHCR.
 // Features:
-//   - Parallel downloads (one thread per bottle)
-//   - SHA256 streaming verification (no second pass)
+//   - Native Zig HTTP client (no curl fork/exec overhead)
+//   - Streaming SHA256 verification (hashed reader — single pass)
 //   - Atomic writes (tmp -> rename to blobs/)
 //   - Skip if blob already cached
-//   - Streaming extract (download → extract per package, in parallel)
+//   - GHCR token caching (4 min TTL)
 
 const std = @import("std");
 const store = @import("../store/store.zig");
@@ -66,15 +66,11 @@ pub const StreamingInstaller = struct {
         return .{ .alloc = alloc };
     }
 
-    /// Download + extract all packages in parallel.
-    /// Each package downloads via curl, then immediately extracts.
-    /// Concurrency capped at 8 threads. Returns when all are done.
     pub fn downloadAndExtractAll(self: *StreamingInstaller, packages: []const PackageInfo) !void {
         var to_fetch: std.ArrayList(PackageInfo) = .empty;
         defer to_fetch.deinit(self.alloc);
 
         for (packages) |pkg| {
-            // Skip if already fully extracted in store
             if (store.hasEntry(pkg.sha256)) continue;
             try to_fetch.append(self.alloc, pkg);
         }
@@ -103,14 +99,12 @@ pub const StreamingInstaller = struct {
 };
 
 fn downloadAndExtractOne(alloc: std.mem.Allocator, pkg: PackageInfo, had_error: *std.atomic.Value(bool)) void {
-    // Build blob path on thread-local stack (blob_cache.blobPath uses a global buffer, not thread-safe)
     var blob_buf: [512]u8 = undefined;
     const blob_path = std.fmt.bufPrint(&blob_buf, "{s}/{s}", .{ BLOBS_DIR, pkg.sha256 }) catch {
         had_error.store(true, .release);
         return;
     };
 
-    // Download if blob not already cached
     if (!fileExists(blob_path)) {
         downloadOne(alloc, .{ .url = pkg.url, .expected_sha256 = pkg.sha256 }) catch {
             had_error.store(true, .release);
@@ -118,7 +112,6 @@ fn downloadAndExtractOne(alloc: std.mem.Allocator, pkg: PackageInfo, had_error: 
         };
     }
 
-    // Extract into store
     store.ensureEntry(alloc, blob_path, pkg.sha256) catch {
         had_error.store(true, .release);
         return;
@@ -127,8 +120,7 @@ fn downloadAndExtractOne(alloc: std.mem.Allocator, pkg: PackageInfo, had_error: 
 
 const TOKEN_CACHE_DIR = "/opt/nanobrew/cache/tokens";
 
-fn fetchGhcrToken(alloc: std.mem.Allocator, url: []const u8) !?[]const u8 {
-    // Extract repo scope from ghcr.io URL: /v2/homebrew/core/<pkg>/blobs/...
+fn fetchGhcrToken(alloc: std.mem.Allocator, client: *std.http.Client, url: []const u8) !?[]const u8 {
     const ghcr_prefix = "https://ghcr.io/v2/";
     if (!std.mem.startsWith(u8, url, ghcr_prefix)) return null;
 
@@ -138,15 +130,14 @@ fn fetchGhcrToken(alloc: std.mem.Allocator, url: []const u8) !?[]const u8 {
 
     // Check token cache (4 min TTL)
     var cache_name_buf: [256]u8 = undefined;
-    const cache_name = scopeToCacheName(repo, &cache_name_buf) orelse return fetchGhcrTokenUncached(alloc, repo);
+    const cache_name = scopeToCacheName(repo, &cache_name_buf) orelse return fetchGhcrTokenUncached(alloc, client, repo);
     var cache_path_buf: [512]u8 = undefined;
     const cache_path = std.fmt.bufPrint(&cache_path_buf, "{s}/{s}", .{ TOKEN_CACHE_DIR, cache_name }) catch
-        return fetchGhcrTokenUncached(alloc, repo);
+        return fetchGhcrTokenUncached(alloc, client, repo);
 
     if (readCachedToken(alloc, cache_path)) |cached| return cached;
 
-    // Cache miss — fetch and save
-    const token = try fetchGhcrTokenUncached(alloc, repo);
+    const token = try fetchGhcrTokenUncached(alloc, client, repo);
     if (token) |t| {
         std.fs.makeDirAbsolute(TOKEN_CACHE_DIR) catch {};
         if (std.fs.createFileAbsolute(cache_path, .{})) |file| {
@@ -157,25 +148,29 @@ fn fetchGhcrToken(alloc: std.mem.Allocator, url: []const u8) !?[]const u8 {
     return token;
 }
 
-fn fetchGhcrTokenUncached(alloc: std.mem.Allocator, repo: []const u8) !?[]const u8 {
+fn fetchGhcrTokenUncached(alloc: std.mem.Allocator, client: *std.http.Client, repo: []const u8) !?[]const u8 {
     var token_url_buf: [512]u8 = undefined;
     const token_url = std.fmt.bufPrint(&token_url_buf, "https://ghcr.io/token?scope=repository:{s}:pull", .{repo}) catch return null;
 
-    const result = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "curl", "-s", "--http2", token_url },
-    }) catch return null;
-    defer alloc.free(result.stderr);
+    const uri = std.Uri.parse(token_url) catch return null;
+    var req = client.request(.GET, uri, .{}) catch return null;
+    defer req.deinit();
+    req.sendBodiless() catch return null;
 
-    const parsed = std.json.parseFromSlice(std.json.Value, alloc, result.stdout, .{}) catch {
-        alloc.free(result.stdout);
-        return null;
-    };
+    var redirect_buf: [8192]u8 = undefined;
+    var response = req.receiveHead(&redirect_buf) catch return null;
+    if (response.head.status != .ok) return null;
+
+    var body: std.ArrayList(u8) = .empty;
+    defer body.deinit(alloc);
+    var reader = response.reader(&.{});
+    reader.appendRemainingUnlimited(alloc, &body) catch return null;
+
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, body.items, .{}) catch return null;
     defer parsed.deinit();
-    alloc.free(result.stdout);
 
     if (parsed.value.object.get("token")) |tok| {
-        if (tok == .string) return try alloc.dupe(u8, tok.string);
+        if (tok == .string) return alloc.dupe(u8, tok.string) catch null;
     }
     return null;
 }
@@ -186,12 +181,11 @@ fn readCachedToken(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
     const stat = file.stat() catch return null;
     const now = std.time.nanoTimestamp();
     const age_ns = now - stat.mtime;
-    if (age_ns > 240 * std.time.ns_per_s) return null; // 4 min TTL
+    if (age_ns > 240 * std.time.ns_per_s) return null;
     return file.readToEndAlloc(alloc, 64 * 1024) catch null;
 }
 
 fn scopeToCacheName(repo: []const u8, buf: *[256]u8) ?[]const u8 {
-    // Replace '/' with '_' for filesystem safety
     if (repo.len > buf.len) return null;
     @memcpy(buf[0..repo.len], repo);
     for (buf[0..repo.len]) |*c| {
@@ -204,96 +198,62 @@ pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
     var dest_path_buf: [512]u8 = undefined;
     const dest_path = std.fmt.bufPrint(&dest_path_buf, "{s}/{s}", .{ BLOBS_DIR, req.expected_sha256 }) catch return error.PathTooLong;
 
-    // Fetch GHCR bearer token if needed (ghcr.io requires auth even for public pulls)
-    const token = try fetchGhcrToken(alloc, req.url);
+    // Each thread gets its own HTTP client (thread-local connections)
+    var client: std.http.Client = .{ .allocator = alloc };
+    defer client.deinit();
+
+    // Fetch GHCR bearer token if needed
+    const token = try fetchGhcrToken(alloc, &client, req.url);
     defer if (token) |t| alloc.free(t);
 
-    // CDN racing: spawn 2 curl processes, first to finish wins
-    const RACERS = 1;
-    var winner = std.atomic.Value(u32).init(RACERS); // no winner yet
-    var racer_threads: [RACERS]?std.Thread = .{null} ** RACERS;
+    // Build auth header
+    var auth_buf: [4096]u8 = undefined;
+    const extra_headers: []const std.http.Header = if (token) |t| blk: {
+        const auth = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{t}) catch break :blk &.{};
+        break :blk &.{.{ .name = "Authorization", .value = auth }};
+    } else &.{};
 
-    const RacerCtx = struct {
-        alloc: std.mem.Allocator,
-        url: []const u8,
-        sha256: []const u8,
-        token: ?[]const u8,
-        racer_id: u32,
-        winner: *std.atomic.Value(u32),
-        success: std.atomic.Value(bool),
+    // Download with native HTTP + streaming SHA256
+    const uri = std.Uri.parse(req.url) catch return error.DownloadFailed;
+    var http_req = client.request(.GET, uri, .{
+        .redirect_behavior = @enumFromInt(5),
+        .extra_headers = extra_headers,
+    }) catch return error.DownloadFailed;
+    defer http_req.deinit();
 
-        fn run(ctx: *@This()) void {
-            // Each racer writes to a unique tmp file
-            var tmp_buf: [512]u8 = undefined;
-            const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}/{s}.r{d}", .{ TMP_DIR, ctx.sha256, ctx.racer_id }) catch return;
+    http_req.sendBodiless() catch return error.DownloadFailed;
 
-            var auth_hdr_buf: [4096]u8 = undefined;
-            const curl_result = if (ctx.token) |t| blk: {
-                const auth_hdr = std.fmt.bufPrint(&auth_hdr_buf, "Authorization: Bearer {s}", .{t}) catch return;
-                break :blk std.process.Child.run(.{
-                    .allocator = ctx.alloc,
-                    .argv = &.{ "curl", "-sL", "--http2", "-H", auth_hdr, "-o", tmp_path, ctx.url },
-                }) catch return;
-            } else blk: {
-                break :blk std.process.Child.run(.{
-                    .allocator = ctx.alloc,
-                    .argv = &.{ "curl", "-sL", "--http2", "-o", tmp_path, ctx.url },
-                }) catch return;
-            };
-            ctx.alloc.free(curl_result.stdout);
-            ctx.alloc.free(curl_result.stderr);
+    var redirect_buf: [8192]u8 = undefined;
+    var response = http_req.receiveHead(&redirect_buf) catch return error.DownloadFailed;
+    if (response.head.status != .ok) return error.DownloadFailed;
 
-            if (curl_result.term.Exited != 0) {
-                std.fs.deleteFileAbsolute(tmp_path) catch {};
-                return;
-            }
-
-            // Try to claim victory
-            if (ctx.winner.cmpxchgStrong(RACERS, ctx.racer_id, .acq_rel, .acquire) == null) {
-                ctx.success.store(true, .release);
-                // Winner keeps file — will be verified + renamed by caller
-            } else {
-                // Loser — clean up
-                std.fs.deleteFileAbsolute(tmp_path) catch {};
-            }
-        }
-    };
-
-    var ctxs: [RACERS]RacerCtx = undefined;
-    for (0..RACERS) |i| {
-        ctxs[i] = .{
-            .alloc = alloc,
-            .url = req.url,
-            .sha256 = req.expected_sha256,
-            .token = token,
-            .racer_id = @intCast(i),
-            .winner = &winner,
-            .success = std.atomic.Value(bool).init(false),
-        };
-        racer_threads[i] = std.Thread.spawn(.{}, RacerCtx.run, .{&ctxs[i]}) catch null;
-    }
-    for (&racer_threads) |*t| {
-        if (t.*) |thread| thread.join();
-    }
-
-    // Check if any racer won
-    const winning_id = winner.load(.acquire);
-    if (winning_id >= RACERS) return error.DownloadFailed;
-
-    // Verify SHA256 of winner's file
+    // Stream body to tmp file with SHA256 hashing in single pass
     var tmp_path_buf: [512]u8 = undefined;
-    const tmp_path = std.fmt.bufPrint(&tmp_path_buf, "{s}/{s}.r{d}", .{ TMP_DIR, req.expected_sha256, winning_id }) catch return error.PathTooLong;
+    const tmp_path = std.fmt.bufPrint(&tmp_path_buf, "{s}/{s}.dl", .{ TMP_DIR, req.expected_sha256 }) catch return error.PathTooLong;
 
     {
-        const file = std.fs.openFileAbsolute(tmp_path, .{}) catch return error.ChecksumFailed;
-        defer file.close();
+        var file = std.fs.createFileAbsolute(tmp_path, .{}) catch return error.DownloadFailed;
+        var file_writer_buf: [65536]u8 = undefined;
+        var file_writer = file.writer(&file_writer_buf);
+
+        var reader = response.reader(&.{});
+        var hash_buf: [65536]u8 = undefined;
         var hasher = std.crypto.hash.sha2.Sha256.init(.{});
-        var read_buf: [32768]u8 = undefined;
-        while (true) {
-            const n = file.read(&read_buf) catch return error.ChecksumFailed;
-            if (n == 0) break;
-            hasher.update(read_buf[0..n]);
-        }
+        var hashed = reader.hashed(&hasher, &hash_buf);
+
+        _ = hashed.reader.streamRemaining(&file_writer.interface) catch {
+            file.close();
+            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            return error.DownloadFailed;
+        };
+        file_writer.interface.flush() catch {
+            file.close();
+            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            return error.DownloadFailed;
+        };
+        file.close();
+
+        // Verify SHA256
         const digest = hasher.finalResult();
         const charset = "0123456789abcdef";
         var hex: [64]u8 = undefined;
@@ -307,7 +267,7 @@ pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
         }
     }
 
-    // Atomic rename winner to final path
+    // Atomic rename to final path
     std.fs.renameAbsolute(tmp_path, dest_path) catch |err| {
         if (err == error.PathAlreadyExists) return;
         return err;
