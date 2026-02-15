@@ -4,6 +4,8 @@ The fastest macOS package manager. Written in Zig.
 
 Inspired by [zerobrew](https://github.com/lucasgelfond/zerobrew) and [uv](https://github.com/astral-sh/uv) — proving that systems languages and smart caching can make package management feel instant.
 
+nanobrew's warm installs complete in **under 4ms** — that's faster than `echo`.
+
 ## Performance snapshot
 
 | Package | Homebrew | Zerobrew | nanobrew (cold) | nanobrew (warm) | Cold Speedup | Warm Speedup |
@@ -35,6 +37,7 @@ git clone https://github.com/justrach/nanobrew.git
 cd nanobrew
 ./install.sh
 ```
+
 ## Quick start
 
 ```bash
@@ -47,33 +50,19 @@ nb info <formula>               # show formula info
 nb help                         # show help
 ```
 
-## Relationship with Homebrew
-
-nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely on:
-
-- Homebrew's formula definitions (homebrew-core)
-- Homebrew's pre-built bottles (hosted on GHCR)
-- Homebrew's package metadata and API infrastructure
-
-Our innovations focus on:
-
-- **Parallel pipeline** — concurrent downloads, extraction, and relocation
-- **Native HTTP client** — Zig's `std.http.Client` for downloads (no curl subprocess)
-- **Streaming SHA256** — verified during download in a single pass (no re-read)
-- **Native Mach-O parsing** — reads load commands directly, no otool subprocess
-- **Content-addressable storage** for deduplication (reinstalls skip everything)
-- **APFS clonefiles** for zero-overhead copying
-- **BFS parallel dependency resolution** — fetch all deps per level concurrently
-- **Batched codesign** — single `codesign` call for all modified binaries in a keg
-- **API + token caching** — avoid redundant network calls
-- **Live progress UI** — animated spinners and checkmarks during install
-
-nanobrew is experimental. We recommend running it alongside Homebrew rather than as a replacement. Homebrew formulas that require source builds, cask installs, or post-install scripts are not yet supported.
-
 ## How it works
 
 ```
 nb install ffmpeg
+  |
+  v
+1. BFS parallel dependency resolution
+   Fetch formula metadata from formulae.brew.sh/api
+   Each BFS level fetches all deps concurrently
+  |
+  v
+2. Skip already-installed packages
+   Check Cellar for existing kegs — warm installs exit here (3.5ms)
   |
   v
 3. Parallel download + extract (streaming)
@@ -87,15 +76,17 @@ nb install ffmpeg
    APFS clonefile into Cellar (COW, zero disk cost)
    Native Mach-O header parsing (no otool subprocess)
    Batched codesign: single call for all modified binaries per keg
-   All bottles download concurrently via GHCR
-   Each extracts immediately on completion
-   Built-in SHA256 verification (no shasum process)
-     -> /opt/nanobrew/store/<sha256>/
+     -> /opt/nanobrew/prefix/Cellar/<name>/<version>/
   |
   v
-4. Parallel materialize + relocate
-   APFS clonefile into Cellar (COW, zero disk cost)
-   Batch Mach-O relocation: single otool + install_name_tool per binary
+5. Link + record
+   Symlink binaries into prefix/bin/
+   Record in local JSON database
+     -> /opt/nanobrew/prefix/bin/ffmpeg
+```
+
+### Why it's fast
+
 - **Skip-installed fast path** — already-installed packages detected in microseconds, warm installs complete in 3.5ms
 - **Parallel everything** — downloads, extraction, materialization, relocation, and dependency resolution all run concurrently
 - **Native HTTP downloads** — Zig's `std.http.Client` replaces curl subprocess spawns
@@ -108,20 +99,14 @@ nb install ffmpeg
 - **API + GHCR token caching** — cached to disk with TTL, avoids redundant network calls
 - **Single static binary** — no Ruby runtime, no interpreter startup, no config sprawl
 
-- **Skip-installed fast path** — already-installed packages detected in microseconds, warm installs complete in 3.5ms
-- **Parallel everything** — downloads, extraction, materialization, relocation, and dependency resolution all run concurrently
-- **Content-addressable store** — SHA256-keyed dedup means reinstalls skip download + extract entirely
-- **APFS clonefile** — copy-on-write materialization, zero disk overhead
-- **Batched process spawns** — one `otool -l` + one `install_name_tool` per binary (not 5+ calls)
-- **Built-in SHA256** — Zig's `std.crypto.hash.sha2` instead of spawning `shasum`
-- **BFS parallel resolution** — dependency tree resolved in 2-3 parallel rounds instead of N serial API calls
-- **API + GHCR token caching** — cached to disk with TTL, avoids redundant network calls
-- **Single static binary** — no Ruby runtime, no interpreter startup, no config sprawl
-
 ### Inspiration
 
 - [zerobrew](https://github.com/lucasgelfond/zerobrew) — proved that a Rust rewrite of Homebrew's bottle pipeline could be 2-20x faster. nanobrew takes the same architecture (content-addressable store + APFS clonefile + parallel downloads) and pushes it further with Zig's comptime and zero-overhead abstractions.
 - [uv](https://github.com/astral-sh/uv) — showed that rewriting a package manager in a systems language (Rust for pip) can deliver 10-100x speedups. Same philosophy here: the bottleneck in `brew install` isn't the network, it's the toolchain.
+
+## Relationship with Homebrew
+
+nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely on Homebrew's formula definitions, pre-built bottles (GHCR), and API infrastructure. nanobrew is experimental — we recommend running it alongside Homebrew rather than as a replacement. Source builds, cask installs, and post-install scripts are not yet supported.
 
 ## Directory layout
 
@@ -139,26 +124,23 @@ nb install ffmpeg
     opt/            # Symlinks to keg directories
   db/
     state.json      # Installed package state
-  locks/            # (reserved for concurrent access)
 ```
 
 ## Architecture
 
 ```
 src/
-  main.zig              # CLI entry point and command dispatch
-  root.zig              # Library root (re-exports all modules)
+  main.zig              # CLI entry point, command dispatch, live progress UI
   api/
-    client.zig          # Homebrew JSON API client (curl + std.json)
+    client.zig          # Homebrew JSON API client
     formula.zig         # Formula struct and bottle tag constants
   resolve/
     deps.zig            # BFS parallel dependency resolver (Kahn's topo sort)
   net/
-    downloader.zig      # Native HTTP bottle downloader with streaming SHA256
+    downloader.zig      # Native HTTP downloader with streaming SHA256
   extract/
     tar.zig             # Tar/gzip extraction
   store/
-    blob_cache.zig      # Blob cache path utilities
     store.zig           # Content-addressable store management
   cellar/
     cellar.zig          # APFS clonefile materialization
@@ -168,14 +150,6 @@ src/
     relocate.zig        # Native Mach-O parsing + batched relocation
   db/
     database.zig        # JSON-based install state tracking
-  kernel/
-    simd_scanner.zig    # Comptime SIMD byte/substring scanner
-    mmap_reader.zig     # Zero-copy mmap file reader
-  mem/
-    arena.zig           # Thread-local arena allocator + ring buffer
-  exec/
-    thread_pool.zig     # Chase-Lev work-stealing thread pool
-    dir_queue.zig       # Lock-free MPMC work queue
 ```
 
 ## Project status

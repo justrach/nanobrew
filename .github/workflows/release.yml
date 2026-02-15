@@ -12,13 +12,11 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: macos-14
-            arch: arm64
-            target: aarch64-macos
-          - os: macos-13
-            arch: x86_64
-            target: x86_64-macos
-    runs-on: ${{ matrix.os }}
+          - arch: arm64
+            zig_target: aarch64-macos
+          - arch: x86_64
+            zig_target: x86_64-macos
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
@@ -28,7 +26,7 @@ jobs:
           version: 0.15.1
 
       - name: Build
-        run: zig build -Doptimize=ReleaseFast
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
 
       - name: Package
         run: |
@@ -120,7 +118,6 @@ jobs:
           end
           FORMULA
 
-          # Remove leading whitespace from heredoc
           sed -i 's/^          //' Formula/nanobrew.rb
 
       - name: Commit formula
