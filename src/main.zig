@@ -47,7 +47,7 @@ const Phase = enum(u8) {
 
 const ROOT = "/opt/nanobrew";
 const PREFIX = ROOT ++ "/prefix";
-const VERSION = "0.1.051";
+const VERSION = "0.1.052";
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -1714,20 +1714,17 @@ fn checkForUpdate(alloc: std.mem.Allocator) void {
         f.writeAll(ts_str) catch {};
     } else |_| {}
 
-    // Fetch latest release tag from GitHub (quick curl call)
+    // Fetch latest version from Cloudflare worker (plain text response)
     const result = std.process.Child.run(.{
         .allocator = alloc,
-        .argv = &.{ "curl", "-fsSL", "--max-time", "3", "https://api.github.com/repos/justrach/nanobrew/releases/latest" },
+        .argv = &.{ "curl", "-fsSL", "--max-time", "3", "https://nanobrew.trilok.ai/version" },
     }) catch return;
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
     if (result.term.Exited != 0) return;
 
-    // Parse "tag_name" from JSON response
-    const latest_tag = parseTagName(result.stdout) orelse return;
-
-    // Strip leading 'v' if present
-    const latest_ver = if (latest_tag.len > 0 and latest_tag[0] == 'v') latest_tag[1..] else latest_tag;
+    const latest_ver = std.mem.trimRight(u8, result.stdout, "\n \t");
+    if (latest_ver.len == 0 or std.mem.eql(u8, latest_ver, "error")) return;
 
     // Compare with current version
     if (std.mem.eql(u8, latest_ver, VERSION)) return;
@@ -1751,26 +1748,8 @@ fn checkForUpdate(alloc: std.mem.Allocator) void {
 }
 
 fn padSpaces(used: usize) []const u8 {
-    // Target: 19 chars for "x.x.xx -> x.x.xx" area, pad remaining
     const target = 19;
     if (used >= target) return "";
-    const spaces = "                   "; // 19 spaces
+    const spaces = "                   ";
     return spaces[0 .. target - used];
-}
-
-fn parseTagName(json: []const u8) ?[]const u8 {
-    // Simple: find "tag_name": "..." in the JSON
-    const needle = "\"tag_name\"";
-    const idx = std.mem.indexOf(u8, json, needle) orelse return null;
-    const after = json[idx + needle.len ..];
-
-    // Skip whitespace and colon
-    var i: usize = 0;
-    while (i < after.len and (after[i] == ' ' or after[i] == ':' or after[i] == '\t' or after[i] == '\n')) : (i += 1) {}
-    if (i >= after.len or after[i] != '"') return null;
-    i += 1; // skip opening quote
-    const start = i;
-    while (i < after.len and after[i] != '"') : (i += 1) {}
-    if (i >= after.len) return null;
-    return after[start..i];
 }

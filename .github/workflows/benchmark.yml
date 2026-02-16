@@ -1,0 +1,120 @@
+name: Benchmark
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"  # weekly Monday 6am UTC
+
+permissions:
+  contents: write
+
+jobs:
+  benchmark:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Build nanobrew
+        run: zig build -Doptimize=ReleaseFast
+
+      - name: Init nanobrew
+        run: |
+          sudo mkdir -p /opt/nanobrew
+          sudo chown -R $USER /opt/nanobrew
+          ./zig-out/bin/nb init
+
+      - name: Benchmark tree
+        id: tree
+        run: |
+          # Cold install with nanobrew
+          NB_COLD=$(TIMEFORMAT='%R'; { time ./zig-out/bin/nb install tree 2>&1; } 2>&1 | tail -1)
+          ./zig-out/bin/nb remove tree
+
+          # Warm install with nanobrew (store still has the data)
+          NB_WARM=$(TIMEFORMAT='%R'; { time ./zig-out/bin/nb install tree 2>&1; } 2>&1 | tail -1)
+          ./zig-out/bin/nb remove tree
+
+          # Homebrew install
+          brew uninstall tree 2>/dev/null || true
+          BREW_TIME=$(TIMEFORMAT='%R'; { time brew install tree 2>&1; } 2>&1 | tail -1)
+          brew uninstall tree 2>/dev/null || true
+
+          echo "brew=${BREW_TIME}s" >> "$GITHUB_OUTPUT"
+          echo "cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
+          echo "warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
+
+      - name: Benchmark wget
+        id: wget
+        run: |
+          NB_COLD=$(TIMEFORMAT='%R'; { time ./zig-out/bin/nb install wget 2>&1; } 2>&1 | tail -1)
+          ./zig-out/bin/nb remove wget
+
+          NB_WARM=$(TIMEFORMAT='%R'; { time ./zig-out/bin/nb install wget 2>&1; } 2>&1 | tail -1)
+          ./zig-out/bin/nb remove wget
+
+          brew uninstall wget 2>/dev/null || true
+          BREW_TIME=$(TIMEFORMAT='%R'; { time brew install wget 2>&1; } 2>&1 | tail -1)
+          brew uninstall wget 2>/dev/null || true
+
+          echo "brew=${BREW_TIME}s" >> "$GITHUB_OUTPUT"
+          echo "cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
+          echo "warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
+
+      - name: Benchmark ffmpeg
+        id: ffmpeg
+        run: |
+          NB_COLD=$(TIMEFORMAT='%R'; { time ./zig-out/bin/nb install ffmpeg 2>&1; } 2>&1 | tail -1)
+          ./zig-out/bin/nb remove ffmpeg
+
+          NB_WARM=$(TIMEFORMAT='%R'; { time ./zig-out/bin/nb install ffmpeg 2>&1; } 2>&1 | tail -1)
+          ./zig-out/bin/nb remove ffmpeg
+
+          brew uninstall ffmpeg 2>/dev/null || true
+          BREW_TIME=$(TIMEFORMAT='%R'; { time brew install ffmpeg 2>&1; } 2>&1 | tail -1)
+          brew uninstall ffmpeg 2>/dev/null || true
+
+          echo "brew=${BREW_TIME}s" >> "$GITHUB_OUTPUT"
+          echo "cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
+          echo "warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
+
+      - name: Update README
+        run: |
+          # Count deps for display
+          TREE_DEPS="0 deps"
+          WGET_DEPS="6 deps"
+          FFMPEG_DEPS="11 deps"
+
+          # Build the new table
+          TABLE="| Package | Homebrew | nanobrew (cold) | nanobrew (warm) |
+          |---------|----------|-----------------|-----------------|
+          | **tree** ($TREE_DEPS) | ${{ steps.tree.outputs.brew }} | **${{ steps.tree.outputs.cold }}** | **${{ steps.tree.outputs.warm }}** |
+          | **ffmpeg** ($FFMPEG_DEPS) | ${{ steps.ffmpeg.outputs.brew }} | **${{ steps.ffmpeg.outputs.cold }}** | **${{ steps.ffmpeg.outputs.warm }}** |
+          | **wget** ($WGET_DEPS) | ${{ steps.wget.outputs.brew }} | **${{ steps.wget.outputs.cold }}** | **${{ steps.wget.outputs.warm }}** |"
+
+          # Replace the table in README (between the markers)
+          python3 -c "
+          import re, sys
+          readme = open('README.md').read()
+          # Match the table block (header + separator + 3 data rows)
+          pattern = r'\| Package \| Homebrew.*?\| \*\*wget\*\*.*?\|'
+          replacement = '''$TABLE'''
+          readme = re.sub(pattern, replacement, readme, flags=re.DOTALL)
+          open('README.md', 'w').write(readme)
+          "
+
+          # Update the benchmark note
+          DATE=$(date -u +"%Y-%m-%d")
+          sed -i '' "s/> Benchmarks on .*/> Benchmarks on Apple Silicon (GitHub Actions macos-14), $DATE./" README.md
+
+      - name: Commit results
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add README.md
+          git diff --cached --quiet || git commit -m "bench: update benchmark results $(date -u +%Y-%m-%d)"
+          git push

@@ -740,6 +740,8 @@ document.querySelectorAll('.bg').forEach(function(el) { obs.observe(el); });
 </body>
 </html>`;
 
+const VERSION_CACHE_TTL = 300; // 5 minutes
+
 export default {
   async fetch(request) {
     const url = new URL(request.url);
@@ -753,6 +755,28 @@ export default {
           "cache-control": "public, max-age=300",
         },
       });
+    }
+
+    if (url.pathname === "/version") {
+      try {
+        const gh = await fetch("https://api.github.com/repos/" + REPO + "/releases/latest", {
+          headers: { "User-Agent": "nanobrew-worker" },
+          cf: { cacheTtl: VERSION_CACHE_TTL },
+        });
+        if (!gh.ok) return new Response("error", { status: 502 });
+        const data = await gh.json();
+        const tag = data.tag_name || "";
+        const ver = tag.startsWith("v") ? tag.slice(1) : tag;
+        return new Response(ver, {
+          headers: {
+            "content-type": "text/plain; charset=utf-8",
+            "cache-control": "public, max-age=" + VERSION_CACHE_TTL,
+            "access-control-allow-origin": "*",
+          },
+        });
+      } catch {
+        return new Response("error", { status: 502 });
+      }
     }
 
     if (url.pathname === "/") {

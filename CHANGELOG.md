@@ -2,6 +2,17 @@
 
 All notable changes to nanobrew are documented here.
 
+## [0.1.052] - 2026-02-16
+
+### Added
+- **Update checker** — `nb` now checks for new versions once per day (via Cloudflare edge cache) and shows a colored banner when an update is available.
+- **Version display** — `nb help` header shows the current version.
+- **Cloudflare `/version` endpoint** — Worker returns latest release version with 5-min CF cache, so the Zig client never hits GitHub directly.
+- **GitHub Actions benchmark workflow** — Weekly CI job benchmarks `nb install` vs `brew install` for tree, wget, ffmpeg and auto-updates the README table.
+
+### Fixed
+- Release workflow no longer generates duplicate `license` lines in Formula.
+
 ## [0.1.05] - 2026-02-16
 
 ### Added
