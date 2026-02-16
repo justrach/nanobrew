@@ -4,7 +4,7 @@
 
 # nanobrew
 
-A fast macOS package manager. Written in Zig. Uses Homebrew's bottles and formulas under the hood.
+A fast package manager for macOS and Linux. Written in Zig. Uses Homebrew's bottles and formulas under the hood, plus native .deb support for Docker containers.
 
 ## Why nanobrew?
 
@@ -12,6 +12,7 @@ A fast macOS package manager. Written in Zig. Uses Homebrew's bottles and formul
 - **Parallel downloads** — all dependencies download and extract at the same time
 - **No Ruby runtime** — single static binary, instant startup
 - **Drop-in Homebrew replacement** — same formulas, same bottles, same casks
+- **Linux + Docker** — native .deb support, 2.8x faster than apt-get
 
 | Package | Homebrew | zerobrew (cold) | zerobrew (warm) | nanobrew (cold) | nanobrew (warm) |
 |---------|----------|-----------------|-----------------|-----------------|-----------------|
@@ -26,6 +27,15 @@ A fast macOS package manager. Written in Zig. Uses Homebrew's bottles and formul
 | **Binary size** | **1.2 MB** | 7.9 MB | 57 MB (Ruby runtime) |
 
 > nanobrew is **6.8x smaller** than zerobrew and **47x smaller** than Homebrew. See how these are measured in the [benchmark workflow](.github/workflows/benchmark.yml).
+
+### Linux / Docker (deb packages vs apt-get)
+
+| Command | apt-get | nanobrew --deb | Speedup |
+|---------|---------|----------------|---------|
+| **curl** (32 deps) | 34.1s | 12.2s | **2.8x** |
+| **curl wget git** (60+ deps) | 49.7s | 25.0s | **2.0x** |
+
+> Benchmarks in Docker (ubuntu:24.04, GitHub Actions ubuntu-latest), 2026-02-16. Auto-updated weekly.
 
 ## Install
 
@@ -62,6 +72,22 @@ nb install --cask firefox     # install a .dmg/.pkg/.zip app
 nb remove --cask firefox      # uninstall it
 nb upgrade --cask             # upgrade all casks
 ```
+
+### Linux / Docker (deb packages)
+
+```bash
+nb install --deb curl wget git    # install from Ubuntu repos (2.8x faster than apt-get)
+```
+
+```dockerfile
+# Replace slow apt-get in Dockerfiles
+COPY --from=nanobrew/nb /nb /usr/local/bin/nb
+RUN nb init && nb install --deb curl wget git
+```
+
+- Resolves dependencies, downloads .debs with streaming SHA256 verification
+- Content-addressable cache — warm installs are instant
+- Produces byte-identical files to `dpkg-deb` extraction
 
 ### Keep packages up to date
 
@@ -118,7 +144,7 @@ nb help                       # show all commands
 ## How it works
 
 ```
-nb install ffmpeg
+nb install ffmpeg                        # macOS: Homebrew bottles
   │
   ├─ 1. Resolve dependencies (BFS, parallel API calls)
   ├─ 2. Skip anything already installed (warm path: ~3.5ms)
@@ -127,14 +153,23 @@ nb install ffmpeg
   ├─ 5. Clone into Cellar via APFS clonefile (zero-copy, instant)
   ├─ 6. Relocate Mach-O headers + batch codesign
   └─ 7. Symlink binaries into /opt/nanobrew/prefix/bin/
+
+nb install --deb curl                    # Linux: .deb packages
+  │
+  ├─ 1. Fetch + decompress package index (native gzip)
+  ├─ 2. Resolve dependencies (BFS topological sort)
+  ├─ 3. Download .debs with streaming SHA256 verification
+  ├─ 4. Parse ar archive, decompress data.tar natively (zstd/gzip)
+  └─ 5. Extract to / (tar --skip-old-files)
 ```
 
 Key design choices:
 - **Content-addressable store** — deduplicates bottles by SHA256. Reinstalls are instant because the data is already there.
-- **APFS clonefile** — copy-on-write means no extra disk space when materializing from the store.
+- **APFS clonefile** — copy-on-write on macOS means no extra disk space when materializing from the store.
 - **Streaming SHA256** — hash is verified during download, no second pass over the file.
-- **Native Mach-O parsing** — reads binary headers directly instead of spawning `otool`.
-- **Single static binary** — no runtime dependencies.
+- **Native binary parsing** — reads Mach-O (macOS) and ELF (Linux) headers directly instead of spawning `otool`/`patchelf`.
+- **Native ar + decompression** — .deb extraction without `dpkg`, `ar`, or `zstd` binaries. Only needs `tar`.
+- **Single static binary** — no runtime dependencies. 1.2 MB.
 
 ## Directory layout
 
@@ -171,6 +206,7 @@ License: [Apache 2.0](./LICENSE)
 |---------|-------|-------------|
 | `nb install <pkg>` | `nb i` | Install packages |
 | `nb install --cask <app>` | | Install macOS apps |
+| `nb install --deb <pkg>` | | Install .deb packages (Linux/Docker) |
 | `nb remove <pkg>` | `nb ui` | Uninstall packages |
 | `nb list` | `nb ls` | List installed packages |
 | `nb info <pkg>` | | Show package details |
