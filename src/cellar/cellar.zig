@@ -1,25 +1,19 @@
-// nanobrew — Cellar materialization via APFS clonefile(2)
+// nanobrew — Cellar materialization via platform-specific COW copy
 //
 // Materializes package kegs from the store into:
 //   /opt/nanobrew/prefix/Cellar/<name>/<version>/
 //
-// Uses the macOS clonefile(2) syscall directly for zero-cost APFS copy-on-write.
-// No process spawns — single syscall per package.
+// macOS: Uses clonefile(2) for zero-cost APFS copy-on-write.
+// Linux: Uses cp --reflink=auto for btrfs/xfs COW, regular cp otherwise.
 
 const std = @import("std");
-
-const STORE_DIR = "/opt/nanobrew/store";
-const CELLAR_DIR = "/opt/nanobrew/prefix/Cellar";
-
-// macOS clonefile(2) — direct syscall, no process spawn
-extern "c" fn clonefile(src: [*:0]const u8, dst: [*:0]const u8, flags: c_uint) c_int;
-const CLONE_NOFOLLOW: c_uint = 0x0001;
-const CLONE_NOOWNERCOPY: c_uint = 0x0002;
+const paths = @import("../platform/paths.zig");
+const copy = @import("../platform/copy.zig");
 
 /// Materialize a keg from the store into the Cellar.
 pub fn materialize(sha256: []const u8, name: []const u8, version: []const u8) !void {
     var name_dir_buf: [512]u8 = undefined;
-    const name_dir = std.fmt.bufPrint(&name_dir_buf, "{s}/{s}/{s}", .{ STORE_DIR, sha256, name }) catch return error.PathTooLong;
+    const name_dir = std.fmt.bufPrint(&name_dir_buf, "{s}/{s}/{s}", .{ paths.STORE_DIR, sha256, name }) catch return error.PathTooLong;
 
     var ver_buf: [256]u8 = undefined;
     const actual_version = detectStoreVersion(name_dir, version, &ver_buf) orelse version;
@@ -28,11 +22,11 @@ pub fn materialize(sha256: []const u8, name: []const u8, version: []const u8) !v
     const src_dir = std.fmt.bufPrint(&src_buf, "{s}/{s}", .{ name_dir, actual_version }) catch return error.PathTooLong;
 
     var dest_buf: [512]u8 = undefined;
-    const dest_dir = std.fmt.bufPrint(&dest_buf, "{s}/{s}/{s}", .{ CELLAR_DIR, name, actual_version }) catch return error.PathTooLong;
+    const dest_dir = std.fmt.bufPrint(&dest_buf, "{s}/{s}/{s}", .{ paths.CELLAR_DIR, name, actual_version }) catch return error.PathTooLong;
 
     // Ensure parent dir exists
     var parent_buf: [512]u8 = undefined;
-    const parent_dir = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ CELLAR_DIR, name }) catch return error.PathTooLong;
+    const parent_dir = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ paths.CELLAR_DIR, name }) catch return error.PathTooLong;
     std.fs.makeDirAbsolute(parent_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
@@ -41,7 +35,7 @@ pub fn materialize(sha256: []const u8, name: []const u8, version: []const u8) !v
     // Remove existing keg if present
     std.fs.deleteTreeAbsolute(dest_dir) catch {};
 
-    // clonefile(2) — single syscall, clones entire directory tree with APFS COW
+    // Try COW clone first (macOS clonefile / Linux: always false -> fallback)
     var src_z: [512:0]u8 = undefined;
     @memcpy(src_z[0..src_dir.len], src_dir);
     src_z[src_dir.len] = 0;
@@ -50,33 +44,27 @@ pub fn materialize(sha256: []const u8, name: []const u8, version: []const u8) !v
     @memcpy(dst_z[0..dest_dir.len], dest_dir);
     dst_z[dest_dir.len] = 0;
 
-    const rc = clonefile(&src_z, &dst_z, CLONE_NOFOLLOW | CLONE_NOOWNERCOPY);
-    if (rc == 0) return;
+    if (copy.cloneTree(&src_z, &dst_z)) return;
 
-    // Fallback: cp -R if clonefile fails (non-APFS filesystem)
-    const result = std.process.Child.run(.{
-        .allocator = std.heap.page_allocator,
-        .argv = &.{ "cp", "-R", src_dir, dest_dir },
-    }) catch return error.CopyFailed;
-    std.heap.page_allocator.free(result.stdout);
-    std.heap.page_allocator.free(result.stderr);
+    // Fallback: cp (--reflink=auto on Linux, plain -R on macOS)
+    try copy.cpFallback(src_dir, dest_dir);
 }
 
 /// Find the actual installed version for a keg in the Cellar.
 pub fn detectKegVersion(name: []const u8, version: []const u8, result_buf: *[256]u8) ?[]const u8 {
     var parent_buf: [512]u8 = undefined;
-    const parent_dir = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ CELLAR_DIR, name }) catch return null;
+    const parent_dir = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ paths.CELLAR_DIR, name }) catch return null;
     return detectStoreVersion(parent_dir, version, result_buf);
 }
 
 /// Remove a keg from the Cellar.
 pub fn remove(name: []const u8, version: []const u8) !void {
     var buf: [512]u8 = undefined;
-    const keg_dir = std.fmt.bufPrint(&buf, "{s}/{s}/{s}", .{ CELLAR_DIR, name, version }) catch return error.PathTooLong;
+    const keg_dir = std.fmt.bufPrint(&buf, "{s}/{s}/{s}", .{ paths.CELLAR_DIR, name, version }) catch return error.PathTooLong;
     std.fs.deleteTreeAbsolute(keg_dir) catch {};
 
     var parent_buf: [512]u8 = undefined;
-    const parent_dir = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ CELLAR_DIR, name }) catch return;
+    const parent_dir = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ paths.CELLAR_DIR, name }) catch return;
     var dir = std.fs.openDirAbsolute(parent_dir, .{ .iterate = true }) catch return;
     defer dir.close();
     var iter = dir.iterate();
