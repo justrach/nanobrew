@@ -34,6 +34,7 @@ const Command = enum {
     deps,
     services,
     completions,
+    nuke,
 };
 
 const Phase = enum(u8) {
@@ -91,6 +92,7 @@ pub fn main() !void {
         .deps => runDeps(alloc, args[2..]),
         .services => runServices(alloc, args[2..]),
         .completions => runCompletions(args[2..]),
+        .nuke => runNuke(args[2..]),
     }
 
     // Check for updates (once per day, non-blocking)
@@ -131,6 +133,8 @@ fn parseCommand(arg: []const u8) ?Command {
         .{ "services", Command.services },
         .{ "service", Command.services },
         .{ "completions", Command.completions },
+        .{ "nuke", Command.nuke },
+        .{ "uninstall-self", Command.nuke },
     };
     inline for (cmds) |pair| {
         if (std.mem.eql(u8, arg, pair[0])) return pair[1];
@@ -567,9 +571,11 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
     };
     defer db.close();
 
-    for (tokens.items) |name| {
+    for (tokens.items) |raw_name| {
+        // Support tap refs: "user/tap/formula" -> look up "formula"
+        const name = if (std.mem.lastIndexOfScalar(u8, raw_name, '/')) |pos| raw_name[pos + 1 ..] else raw_name;
         const keg = db.findKeg(name) orelse {
-            stderr.print("nb: '{s}' is not installed\n", .{name}) catch {};
+            stderr.print("nb: '{s}' is not installed\n", .{raw_name}) catch {};
             continue;
         };
 
@@ -1053,7 +1059,7 @@ fn printUsage() void {
         \\                           Manage background services
         \\  completions [zsh|bash|fish]
         \\                           Generate shell completions
-        \\  help                     Show this help
+        \\  nuke                     Completely uninstall nanobrew and all packages
         \\  help                     Show this help
         \\
         \\EXAMPLES:
@@ -1062,7 +1068,8 @@ fn printUsage() void {
         \\  nb install ffmpeg python node
         \\  nb install --cask firefox
         \\  nb install --deb curl wget git
-        \\  nb search ripgrep
+        \\  nb install --deb curl wget git
+        \\  nb install steipete/tap/sag
         \\  nb upgrade
         \\  nb upgrade tree
         \\  nb upgrade --cask
@@ -1262,6 +1269,65 @@ fn runCleanup(alloc: std.mem.Allocator, args: []const []const u8) void {
     } else {
         stdout.print("\n==> Nothing to clean up\n", .{}) catch {};
     }
+}
+
+fn runNuke(args: []const []const u8) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    var force = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--yes") or std.mem.eql(u8, arg, "-y")) force = true;
+    }
+
+    stdout.print(
+        "\n\x1b[31;1m  WARNING: This will completely remove nanobrew and all installed packages.\x1b[0m\n\n" ++
+        "  The following will be deleted:\n" ++
+        "    - /opt/nanobrew          (all packages, cache, database)\n" ++
+        "    - ~/.local/bin/nb        (nanobrew binary)\n\n"
+    , .{}) catch {};
+
+    if (!force) {
+        stdout.print("  Type \x1b[1myes\x1b[0m to confirm: ", .{}) catch {};
+
+        var buf: [16]u8 = undefined;
+        const stdin = std.fs.File.stdin();
+        const n = stdin.read(&buf) catch {
+            stderr.print("nb: failed to read input\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        const input = std.mem.trimRight(u8, buf[0..n], "\n\r \t");
+        if (!std.mem.eql(u8, input, "yes")) {
+            stdout.print("\n  Aborted.\n", .{}) catch {};
+            return;
+        }
+    }
+
+    stdout.print("\n==> Removing nanobrew...\n", .{}) catch {};
+
+    // 1. Remove /opt/nanobrew
+    stdout.print("  Removing /opt/nanobrew...\n", .{}) catch {};
+    std.fs.deleteTreeAbsolute("/opt/nanobrew") catch |err| {
+        stderr.print("nb: failed to remove /opt/nanobrew: {}\n", .{err}) catch {};
+        stderr.print("nb: try: sudo nb nuke\n", .{}) catch {};
+        std.process.exit(1);
+    };
+
+    // 2. Remove nb binary from ~/.local/bin
+    stdout.print("  Removing ~/.local/bin/nb...\n", .{}) catch {};
+    if (std.posix.getenv("HOME")) |home| {
+        var path_buf: [512]u8 = undefined;
+        const nb_path = std.fmt.bufPrint(&path_buf, "{s}/.local/bin/nb", .{home}) catch "";
+        if (nb_path.len > 0) {
+            std.fs.deleteFileAbsolute(nb_path) catch {};
+        }
+    }
+
+    stdout.print(
+        "\n\x1b[32;1m  nanobrew has been removed.\x1b[0m\n\n" ++
+        "  You may also want to remove the PATH entry from your shell config:\n" ++
+        "    ~/.zshrc or ~/.bashrc — delete the line containing /opt/nanobrew\n\n"
+    , .{}) catch {};
 }
 
 fn cleanupCacheDir(dir_path: []const u8, dry_run: bool, reclaimed: *u64, stdout: anytype) void {
