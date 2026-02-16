@@ -10,10 +10,11 @@
 
 const std = @import("std");
 const store = @import("../store/store.zig");
+const paths = @import("../platform/paths.zig");
 
-const CACHE_DIR = "/opt/nanobrew/cache";
-const BLOBS_DIR = CACHE_DIR ++ "/blobs";
-const TMP_DIR = CACHE_DIR ++ "/tmp";
+const CACHE_DIR = paths.CACHE_DIR;
+const BLOBS_DIR = paths.BLOBS_DIR;
+const TMP_DIR = paths.TMP_DIR;
 
 pub const DownloadRequest = struct {
     url: []const u8,
@@ -117,8 +118,7 @@ fn downloadAndExtractOne(alloc: std.mem.Allocator, pkg: PackageInfo, had_error: 
         return;
     };
 }
-
-const TOKEN_CACHE_DIR = "/opt/nanobrew/cache/tokens";
+const TOKEN_CACHE_DIR = paths.TOKEN_CACHE_DIR;
 
 fn fetchGhcrToken(alloc: std.mem.Allocator, client: *std.http.Client, url: []const u8) !?[]const u8 {
     const ghcr_prefix = "https://ghcr.io/v2/";
