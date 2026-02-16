@@ -6,7 +6,7 @@
 const std = @import("std");
 const Formula = @import("../api/formula.zig").Formula;
 
-const CACHE_TMP = "/opt/nanobrew/cache/tmp";
+const CACHE_TMP = @import("../platform/paths.zig").TMP_DIR;
 
 const BuildSystem = enum {
     cmake,
