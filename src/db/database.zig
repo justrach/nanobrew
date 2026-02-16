@@ -12,6 +12,8 @@ pub const Keg = struct {
     name: []const u8,
     version: []const u8,
     sha256: []const u8 = "",
+    pinned: bool = false,
+    installed_at: i64 = 0,
 };
 
 pub const CaskRecord = struct {
@@ -21,10 +23,17 @@ pub const CaskRecord = struct {
     binaries: []const []const u8,
 };
 
+pub const HistoryEntry = struct {
+    version: []const u8,
+    sha256: []const u8,
+    installed_at: i64,
+};
+
 pub const Database = struct {
     alloc: std.mem.Allocator,
     kegs: std.ArrayList(Keg),
     casks: std.ArrayList(CaskRecord),
+    history: std.StringHashMap(std.ArrayList(HistoryEntry)),
 
     pub fn open() !Database {
         var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -34,6 +43,7 @@ pub const Database = struct {
             .alloc = alloc,
             .kegs = .empty,
             .casks = .empty,
+            .history = std.StringHashMap(std.ArrayList(HistoryEntry)).init(alloc),
         };
 
         const file = std.fs.openFileAbsolute(DB_PATH, .{}) catch return db;
@@ -54,10 +64,14 @@ pub const Database = struct {
                             const kname = getStr(item.object, "name") orelse continue;
                             const kver = getStr(item.object, "version") orelse continue;
                             const ksha = getStr(item.object, "sha256") orelse "";
+                            const kpinned = getBool(item.object, "pinned");
+                            const kinst = getInt(item.object, "installed_at");
                             db.kegs.append(alloc, .{
                                 .name = alloc.dupe(u8, kname) catch continue,
                                 .version = alloc.dupe(u8, kver) catch continue,
                                 .sha256 = alloc.dupe(u8, ksha) catch continue,
+                                .pinned = kpinned,
+                                .installed_at = kinst,
                             }) catch {};
                         }
                     }
@@ -102,6 +116,30 @@ pub const Database = struct {
                     }
                 }
             }
+            // Parse history (backward compatible — missing key = empty)
+            if (parsed.value.object.get("history")) |hist_val| {
+                if (hist_val == .object) {
+                    var hist_iter = hist_val.object.iterator();
+                    while (hist_iter.next()) |entry| {
+                        const pkg_name = alloc.dupe(u8, entry.key_ptr.*) catch continue;
+                        var entries: std.ArrayList(HistoryEntry) = .empty;
+                        if (entry.value_ptr.* == .array) {
+                            for (entry.value_ptr.array.items) |h_item| {
+                                if (h_item != .object) continue;
+                                const hver = getStr(h_item.object, "version") orelse continue;
+                                const hsha = getStr(h_item.object, "sha256") orelse "";
+                                const hinst = getInt(h_item.object, "installed_at");
+                                entries.append(alloc, .{
+                                    .version = alloc.dupe(u8, hver) catch continue,
+                                    .sha256 = alloc.dupe(u8, hsha) catch continue,
+                                    .installed_at = hinst,
+                                }) catch {};
+                            }
+                        }
+                        db.history.put(pkg_name, entries) catch {};
+                    }
+                }
+            }
         }
 
         return db;
@@ -112,9 +150,15 @@ pub const Database = struct {
     }
 
     pub fn recordInstall(self: *Database, name: []const u8, version: []const u8, sha256: []const u8) !void {
+        const now = std.time.timestamp();
+
+        // Push old version to history before replacing
         var i: usize = 0;
         while (i < self.kegs.items.len) {
             if (std.mem.eql(u8, self.kegs.items[i].name, name)) {
+                const old = self.kegs.items[i];
+                // Save to history (best-effort)
+                self.pushHistory(name, old) catch {};
                 _ = self.kegs.orderedRemove(i);
             } else {
                 i += 1;
@@ -125,8 +169,21 @@ pub const Database = struct {
             .name = try self.alloc.dupe(u8, name),
             .version = try self.alloc.dupe(u8, version),
             .sha256 = try self.alloc.dupe(u8, sha256),
+            .pinned = false,
+            .installed_at = now,
         });
         try self.save();
+    }
+
+    fn pushHistory(self: *Database, name: []const u8, old: Keg) !void {
+        const hist_name = try self.alloc.dupe(u8, name);
+        var hist_list = self.history.get(name) orelse std.ArrayList(HistoryEntry).empty;
+        try hist_list.append(self.alloc, .{
+            .version = self.alloc.dupe(u8, old.version) catch "",
+            .sha256 = self.alloc.dupe(u8, old.sha256) catch "",
+            .installed_at = old.installed_at,
+        });
+        try self.history.put(hist_name, hist_list);
     }
 
     pub fn recordRemoval(self: *Database, name: []const u8, alloc: std.mem.Allocator) !void {
@@ -207,6 +264,24 @@ pub const Database = struct {
         return result;
     }
 
+    pub fn setPinned(self: *Database, name: []const u8, pinned: bool) !void {
+        for (self.kegs.items) |*keg| {
+            if (std.mem.eql(u8, keg.name, name)) {
+                keg.pinned = pinned;
+                try self.save();
+                return;
+            }
+        }
+        return error.NotFound;
+    }
+
+    pub fn getHistory(self: *Database, name: []const u8) []const HistoryEntry {
+        if (self.history.get(name)) |list| {
+            return list.items;
+        }
+        return &.{};
+    }
+
     fn save(self: *Database) !void {
         const file = try std.fs.createFileAbsolute(DB_PATH, .{});
         defer file.close();
@@ -215,8 +290,8 @@ pub const Database = struct {
         writer.writeAll("{\"kegs\":[") catch return;
         for (self.kegs.items, 0..) |keg, i| {
             if (i > 0) writer.writeAll(",") catch {};
-            writer.print("{{\"name\":\"{s}\",\"version\":\"{s}\",\"sha256\":\"{s}\"}}", .{
-                keg.name, keg.version, keg.sha256,
+            writer.print("{{\"name\":\"{s}\",\"version\":\"{s}\",\"sha256\":\"{s}\",\"pinned\":{s},\"installed_at\":{d}}}", .{
+                keg.name, keg.version, keg.sha256, if (keg.pinned) "true" else "false", keg.installed_at,
             }) catch {};
         }
         writer.writeAll("],\"casks\":[") catch return;
@@ -236,7 +311,23 @@ pub const Database = struct {
             }
             writer.writeAll("]}") catch {};
         }
-        writer.writeAll("]}") catch {};
+        // Serialize history
+        writer.writeAll("],\"history\":{") catch return;
+        var hist_iter = self.history.iterator();
+        var hist_first = true;
+        while (hist_iter.next()) |entry| {
+            if (!hist_first) writer.writeAll(",") catch {};
+            hist_first = false;
+            writer.print("\"{s}\":[", .{entry.key_ptr.*}) catch {};
+            for (entry.value_ptr.items, 0..) |h, hi| {
+                if (hi > 0) writer.writeAll(",") catch {};
+                writer.print("{{\"version\":\"{s}\",\"sha256\":\"{s}\",\"installed_at\":{d}}}", .{
+                    h.version, h.sha256, h.installed_at,
+                }) catch {};
+            }
+            writer.writeAll("]") catch {};
+        }
+        writer.writeAll("}}") catch {};
     }
 };
 
@@ -245,4 +336,18 @@ fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
         if (val == .string) return val.string;
     }
     return null;
+}
+
+fn getBool(obj: std.json.ObjectMap, key: []const u8) bool {
+    if (obj.get(key)) |val| {
+        if (val == .bool) return val.bool;
+    }
+    return false;
+}
+
+fn getInt(obj: std.json.ObjectMap, key: []const u8) i64 {
+    if (obj.get(key)) |val| {
+        if (val == .integer) return val.integer;
+    }
+    return 0;
 }

@@ -22,6 +22,16 @@ const Command = enum {
     upgrade,
     update,
     help,
+    doctor,
+    cleanup,
+    outdated,
+    pin,
+    unpin,
+    rollback,
+    bundle,
+    deps,
+    services,
+    completions,
 };
 
 const Phase = enum(u8) {
@@ -68,6 +78,16 @@ pub fn main() !void {
         .upgrade => runUpgrade(alloc, args[2..]),
         .update => runUpdate(),
         .help => printUsage(),
+        .doctor => runDoctor(alloc),
+        .cleanup => runCleanup(alloc, args[2..]),
+        .outdated => runOutdated(alloc),
+        .pin => runPin(alloc, args[2..], true),
+        .unpin => runPin(alloc, args[2..], false),
+        .rollback => runRollback(alloc, args[2..]),
+        .bundle => runBundle(alloc, args[2..]),
+        .deps => runDeps(alloc, args[2..]),
+        .services => runServices(alloc, args[2..]),
+        .completions => runCompletions(args[2..]),
     }
 }
 
@@ -91,6 +111,20 @@ fn parseCommand(arg: []const u8) ?Command {
         .{ "help", Command.help },
         .{ "--help", Command.help },
         .{ "-h", Command.help },
+        .{ "doctor", Command.doctor },
+        .{ "dr", Command.doctor },
+        .{ "cleanup", Command.cleanup },
+        .{ "clean", Command.cleanup },
+        .{ "outdated", Command.outdated },
+        .{ "pin", Command.pin },
+        .{ "unpin", Command.unpin },
+        .{ "rollback", Command.rollback },
+        .{ "rb", Command.rollback },
+        .{ "bundle", Command.bundle },
+        .{ "deps", Command.deps },
+        .{ "services", Command.services },
+        .{ "service", Command.services },
+        .{ "completions", Command.completions },
     };
     inline for (cmds) |pair| {
         if (std.mem.eql(u8, arg, pair[0])) return pair[1];
@@ -560,7 +594,8 @@ fn runList(alloc: std.mem.Allocator) void {
     }
 
     for (kegs) |keg| {
-        stdout.print("{s} {s}\n", .{ keg.name, keg.version }) catch {};
+        const pin_tag = if (keg.pinned) " [pinned]" else "";
+        stdout.print("{s} {s}{s}\n", .{ keg.name, keg.version, pin_tag }) catch {};
     }
     for (casks) |c| {
         stdout.print("{s} {s} (cask)\n", .{ c.token, c.version }) catch {};
@@ -655,6 +690,69 @@ fn runSearch(alloc: std.mem.Allocator, args: []const []const u8) void {
     stdout.print("\n==> {d} result(s)\n", .{results.len}) catch {};
 }
 
+const Outdated = struct {
+    name: []const u8,
+    old_ver: []const u8,
+    new_ver: []const u8,
+    is_cask_pkg: bool,
+    is_pinned: bool,
+};
+
+fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filter_names: []const []const u8, check_casks: bool, check_kegs: bool) std.ArrayList(Outdated) {
+    var result: std.ArrayList(Outdated) = .empty;
+
+    if (check_casks) {
+        const installed_casks = db.listInstalledCasks(alloc) catch &.{};
+        defer alloc.free(installed_casks);
+        for (installed_casks) |c| {
+            if (filter_names.len > 0) {
+                var found = false;
+                for (filter_names) |n| {
+                    if (std.mem.eql(u8, n, c.token)) { found = true; break; }
+                }
+                if (!found) continue;
+            }
+            const latest = nb.api_client.fetchCask(alloc, c.token) catch continue;
+            defer latest.deinit(alloc);
+            if (!std.mem.eql(u8, c.version, latest.version)) {
+                result.append(alloc, .{
+                    .name = alloc.dupe(u8, c.token) catch continue,
+                    .old_ver = alloc.dupe(u8, c.version) catch continue,
+                    .new_ver = alloc.dupe(u8, latest.version) catch continue,
+                    .is_cask_pkg = true,
+                    .is_pinned = false,
+                }) catch {};
+            }
+        }
+    }
+
+    if (check_kegs) {
+        const installed_kegs = db.listInstalled(alloc) catch &.{};
+        defer alloc.free(installed_kegs);
+        for (installed_kegs) |k| {
+            if (filter_names.len > 0) {
+                var found = false;
+                for (filter_names) |n| {
+                    if (std.mem.eql(u8, n, k.name)) { found = true; break; }
+                }
+                if (!found) continue;
+            }
+            const latest = nb.api_client.fetchFormula(alloc, k.name) catch continue;
+            defer latest.deinit(alloc);
+            if (!std.mem.eql(u8, k.version, latest.version)) {
+                result.append(alloc, .{
+                    .name = alloc.dupe(u8, k.name) catch continue,
+                    .old_ver = alloc.dupe(u8, k.version) catch continue,
+                    .new_ver = alloc.dupe(u8, latest.version) catch continue,
+                    .is_cask_pkg = false,
+                    .is_pinned = k.pinned,
+                }) catch {};
+            }
+        }
+    }
+
+    return result;
+}
 
 fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
@@ -680,77 +778,43 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
     };
     defer db.close();
 
-    // Collect outdated packages
-    const Outdated = struct { name: []const u8, old_ver: []const u8, new_ver: []const u8, is_cask_pkg: bool };
-    var outdated: std.ArrayList(Outdated) = .empty;
+    const check_casks = is_cask or names.items.len == 0;
+    const check_kegs = !is_cask or names.items.len == 0;
+    var outdated = getOutdatedPackages(alloc, &db, names.items, check_casks, check_kegs);
     defer outdated.deinit(alloc);
 
-    if (is_cask or names.items.len == 0) {
-        // Check all installed casks
-        const installed_casks = db.listInstalledCasks(alloc) catch &.{};
-        defer alloc.free(installed_casks);
-        for (installed_casks) |c| {
-            if (names.items.len > 0) {
-                var found = false;
-                for (names.items) |n| {
-                    if (std.mem.eql(u8, n, c.token)) { found = true; break; }
-                }
-                if (!found) continue;
-            }
-            const latest = nb.api_client.fetchCask(alloc, c.token) catch continue;
-            defer latest.deinit(alloc);
-            if (!std.mem.eql(u8, c.version, latest.version)) {
-                outdated.append(alloc, .{
-                    .name = alloc.dupe(u8, c.token) catch continue,
-                    .old_ver = alloc.dupe(u8, c.version) catch continue,
-                    .new_ver = alloc.dupe(u8, latest.version) catch continue,
-                    .is_cask_pkg = true,
-                }) catch {};
-            }
+    // Filter out pinned packages
+    var upgradeable: std.ArrayList(Outdated) = .empty;
+    defer upgradeable.deinit(alloc);
+    var pinned_count: usize = 0;
+    for (outdated.items) |pkg| {
+        if (pkg.is_pinned) {
+            pinned_count += 1;
+            stdout.print("    {s} ({s} -> {s}) [pinned, skipping]\n", .{ pkg.name, pkg.old_ver, pkg.new_ver }) catch {};
+        } else {
+            upgradeable.append(alloc, pkg) catch {};
         }
     }
 
-    if (!is_cask or names.items.len == 0) {
-        // Check all installed kegs
-        const installed_kegs = db.listInstalled(alloc) catch &.{};
-        defer alloc.free(installed_kegs);
-        for (installed_kegs) |k| {
-            if (names.items.len > 0) {
-                var found = false;
-                for (names.items) |n| {
-                    if (std.mem.eql(u8, n, k.name)) { found = true; break; }
-                }
-                if (!found) continue;
-            }
-            const latest = nb.api_client.fetchFormula(alloc, k.name) catch continue;
-            defer latest.deinit(alloc);
-            if (!std.mem.eql(u8, k.version, latest.version)) {
-                outdated.append(alloc, .{
-                    .name = alloc.dupe(u8, k.name) catch continue,
-                    .old_ver = alloc.dupe(u8, k.version) catch continue,
-                    .new_ver = alloc.dupe(u8, latest.version) catch continue,
-                    .is_cask_pkg = false,
-                }) catch {};
-            }
+    if (upgradeable.items.len == 0) {
+        if (pinned_count > 0) {
+            stdout.print("==> All packages are up to date ({d} pinned)\n", .{pinned_count}) catch {};
+        } else {
+            stdout.print("==> All packages are up to date\n", .{}) catch {};
         }
-    }
-
-    if (outdated.items.len == 0) {
-        stdout.print("==> All packages are up to date\n", .{}) catch {};
         return;
     }
 
     // Print upgrade plan
-    stdout.print("==> Upgrading {d} package(s):\n", .{outdated.items.len}) catch {};
-    for (outdated.items) |pkg| {
+    stdout.print("==> Upgrading {d} package(s):\n", .{upgradeable.items.len}) catch {};
+    for (upgradeable.items) |pkg| {
         const tag = if (pkg.is_cask_pkg) " (cask)" else "";
         stdout.print("    {s} ({s} -> {s}){s}\n", .{ pkg.name, pkg.old_ver, pkg.new_ver, tag }) catch {};
     }
 
     // Execute upgrades
-    for (outdated.items) |pkg| {
+    for (upgradeable.items) |pkg| {
         if (pkg.is_cask_pkg) {
-            // Remove old cask
             if (db.findCask(pkg.name)) |record| {
                 nb.cask_installer.removeCask(alloc, pkg.name, record.version, record.apps, record.binaries) catch |err| {
                     stderr.print("nb: {s}: remove failed: {}\n", .{ pkg.name, err }) catch {};
@@ -758,17 +822,14 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
                 };
                 db.recordCaskRemoval(pkg.name, alloc) catch {};
             }
-            // Install new version
             const names_slice: []const []const u8 = &.{pkg.name};
             runCaskInstall(alloc, names_slice);
         } else {
-            // Remove old keg
             if (db.findKeg(pkg.name)) |keg| {
                 nb.linker.unlinkKeg(pkg.name, keg.version) catch {};
                 nb.cellar.remove(pkg.name, keg.version) catch {};
                 db.recordRemoval(pkg.name, alloc) catch {};
             }
-            // Install new version via full pipeline
             const names_slice: []const []const u8 = &.{pkg.name};
             runInstall(alloc, names_slice);
         }
@@ -933,6 +994,18 @@ fn printUsage() void {
         \\  upgrade [formula]        Upgrade packages (or all if none specified)
         \\  upgrade --cask [app]     Upgrade casks (or all if none specified)
         \\  update                   Self-update nanobrew to the latest version
+        \\  doctor                   Check installation health
+        \\  cleanup [--dry-run]      Remove stale caches and orphaned files
+        \\  outdated                 List packages with newer versions available
+        \\  pin <package>            Pin a package (skip during upgrade)
+        \\  unpin <package>          Unpin a package
+        \\  rollback <package>       Rollback to previous version
+        \\  bundle [dump|install]    Export/import package lists (Brewfile-compatible)
+        \\  deps [--tree] <formula>  Show dependency tree
+        \\  services [list|start|stop|restart] [name]
+        \\                           Manage launchctl services
+        \\  completions [zsh|bash|fish]
+        \\                           Generate shell completions
         \\  help                     Show this help
         \\
         \\EXAMPLES:
@@ -947,6 +1020,667 @@ fn printUsage() void {
         \\  nb list
         \\  nb remove ripgrep
         \\  nb remove --cask firefox
+        \\  nb doctor
+        \\  nb cleanup --dry-run
+        \\  nb pin tree
+        \\  nb rollback ffmpeg
+        \\  nb bundle dump > Nanobrew
+        \\  nb deps --tree ffmpeg
+        \\  nb services list
+        \\  nb completions zsh >> ~/.zshrc
         \\
     , .{}) catch {};
+}
+
+// ── nb doctor ──
+
+// ── nb doctor ──
+
+fn runDoctor(alloc: std.mem.Allocator) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    var issues: usize = 0;
+
+    stdout.print("==> Checking nanobrew installation...\n", .{}) catch {};
+
+    // 1. Check /opt/nanobrew is writable
+    if (std.fs.accessAbsolute(ROOT, .{ .mode = .read_write })) {
+        stdout.print("  ✓ {s} is writable\n", .{ROOT}) catch {};
+    } else |_| {
+        stdout.print("  ✗ {s} is not writable\n", .{ROOT}) catch {};
+        issues += 1;
+    }
+
+    // 2. Check key dirs exist
+    const key_dirs = [_][]const u8{
+        ROOT ++ "/cache/api",
+        ROOT ++ "/cache/blobs",
+        ROOT ++ "/store",
+        PREFIX ++ "/Cellar",
+        PREFIX ++ "/bin",
+        ROOT ++ "/db",
+    };
+    for (key_dirs) |dir| {
+        if (std.fs.openDirAbsolute(dir, .{})) |d| {
+            var dd = d;
+            dd.close();
+        } else |_| {
+            stdout.print("  ✗ Missing directory: {s}\n", .{dir}) catch {};
+            issues += 1;
+        }
+    }
+
+    // 3. Check for broken symlinks in prefix/bin/
+    {
+        var broken_links: usize = 0;
+        if (std.fs.openDirAbsolute(PREFIX ++ "/bin", .{ .iterate = true })) |d| {
+            var dir = d;
+            defer dir.close();
+            var iter = dir.iterate();
+            while (iter.next() catch null) |entry| {
+                if (entry.kind != .sym_link) continue;
+                var link_buf: [1024]u8 = undefined;
+                const link_path = std.fmt.bufPrint(&link_buf, "{s}/bin/{s}", .{ PREFIX, entry.name }) catch continue;
+                var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const target = std.fs.readLinkAbsolute(link_path, &target_buf) catch continue;
+                std.fs.accessAbsolute(target, .{}) catch {
+                    if (broken_links < 5) {
+                        stdout.print("  ✗ Broken symlink: {s} -> {s}\n", .{ entry.name, target }) catch {};
+                    }
+                    broken_links += 1;
+                };
+            }
+        } else |_| {}
+        if (broken_links > 5) {
+            stdout.print("  ✗ ...and {d} more broken symlinks\n", .{broken_links - 5}) catch {};
+        }
+        if (broken_links > 0) issues += broken_links;
+    }
+
+    // 4. DB entries with missing Cellar dirs + 5. Orphaned store entries
+    {
+        var db = nb.database.Database.open() catch {
+            stdout.print("  ✗ Could not open database\n", .{}) catch {};
+            issues += 1;
+            printDoctorSummary(stdout, issues);
+            return;
+        };
+        defer db.close();
+
+        const kegs = db.listInstalled(alloc) catch &.{};
+        defer if (kegs.len > 0) alloc.free(kegs);
+        for (kegs) |keg| {
+            var buf: [512]u8 = undefined;
+            const cellar_path = std.fmt.bufPrint(&buf, "{s}/Cellar/{s}/{s}", .{ PREFIX, keg.name, keg.version }) catch continue;
+            std.fs.accessAbsolute(cellar_path, .{}) catch {
+                stdout.print("  ✗ DB entry '{s}' has no Cellar dir\n", .{keg.name}) catch {};
+                issues += 1;
+            };
+        }
+
+        if (std.fs.openDirAbsolute(ROOT ++ "/store", .{ .iterate = true })) |d| {
+            var dir = d;
+            defer dir.close();
+            var iter = dir.iterate();
+            while (iter.next() catch null) |entry| {
+                if (entry.kind != .directory) continue;
+                var found = false;
+                for (kegs) |keg| {
+                    if (std.mem.eql(u8, keg.sha256, entry.name)) { found = true; break; }
+                }
+                if (!found) {
+                    for (kegs) |keg| {
+                        const hist = db.getHistory(keg.name);
+                        for (hist) |h| {
+                            if (std.mem.eql(u8, h.sha256, entry.name)) { found = true; break; }
+                        }
+                        if (found) break;
+                    }
+                }
+                if (!found) {
+                    stdout.print("  ✗ Orphaned store entry: {s}\n", .{entry.name}) catch {};
+                    issues += 1;
+                }
+            }
+        } else |_| {}
+    }
+
+    printDoctorSummary(stdout, issues);
+}
+
+fn printDoctorSummary(stdout: anytype, issues: usize) void {
+    if (issues == 0) {
+        stdout.print("\n==> No issues found. Your nanobrew installation is healthy!\n", .{}) catch {};
+    } else {
+        stdout.print("\n==> Found {d} issue(s). Run `nb cleanup` to fix some of them.\n", .{issues}) catch {};
+    }
+}
+// ── nb cleanup ──
+
+fn runCleanup(alloc: std.mem.Allocator, args: []const []const u8) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    var dry_run = false;
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--dry-run") or std.mem.eql(u8, arg, "-n")) dry_run = true;
+    }
+    var reclaimed: u64 = 0;
+
+    stdout.print("==> Cleaning up...\n", .{}) catch {};
+
+    // 1. Clean cache dirs
+    stdout.print("  Checking API cache...\n", .{}) catch {};
+    cleanupCacheDir(ROOT ++ "/cache/api", dry_run, &reclaimed, stdout);
+
+    stdout.print("  Checking token cache...\n", .{}) catch {};
+    cleanupCacheDir(ROOT ++ "/cache/tokens", dry_run, &reclaimed, stdout);
+
+    stdout.print("  Checking tmp files...\n", .{}) catch {};
+    cleanupCacheDir(ROOT ++ "/cache/tmp", dry_run, &reclaimed, stdout);
+
+    // 2. Orphaned blobs and store entries
+    stdout.print("  Checking orphaned entries...\n", .{}) catch {};
+    cleanupOrphans(alloc, dry_run, &reclaimed, stdout);
+
+    if (reclaimed > 0) {
+        const mb = @as(f64, @floatFromInt(reclaimed)) / (1024.0 * 1024.0);
+        if (dry_run) {
+            stdout.print("\n==> Would reclaim {d:.1} MB\n", .{mb}) catch {};
+        } else {
+            stdout.print("\n==> Reclaimed {d:.1} MB\n", .{mb}) catch {};
+        }
+    } else {
+        stdout.print("\n==> Nothing to clean up\n", .{}) catch {};
+    }
+}
+
+fn cleanupCacheDir(dir_path: []const u8, dry_run: bool, reclaimed: *u64, stdout: anytype) void {
+    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+    var iter = dir.iterate();
+    while (iter.next() catch null) |entry| {
+        if (entry.kind == .directory) continue;
+        var path_buf: [1024]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
+        reclaimed.* += 1024;
+        if (dry_run) {
+            stdout.print("  Would remove: {s}\n", .{entry.name}) catch {};
+        } else {
+            std.fs.deleteFileAbsolute(path) catch {};
+        }
+    }
+}
+
+fn cleanupOrphans(alloc: std.mem.Allocator, dry_run: bool, reclaimed: *u64, stdout: anytype) void {
+    var db = nb.database.Database.open() catch return;
+    defer db.close();
+
+    const kegs = db.listInstalled(alloc) catch return;
+    defer alloc.free(kegs);
+
+    var valid_shas = std.StringHashMap(void).init(alloc);
+    defer valid_shas.deinit();
+    for (kegs) |keg| {
+        if (keg.sha256.len > 0) valid_shas.put(keg.sha256, {}) catch {};
+        const hist = db.getHistory(keg.name);
+        for (hist) |h| {
+            if (h.sha256.len > 0) valid_shas.put(h.sha256, {}) catch {};
+        }
+    }
+
+    if (std.fs.openDirAbsolute(ROOT ++ "/cache/blobs", .{ .iterate = true })) |d| {
+        var dir = d;
+        defer dir.close();
+        var iter = dir.iterate();
+        while (iter.next() catch null) |entry| {
+            if (!valid_shas.contains(entry.name)) {
+                var path_buf: [1024]u8 = undefined;
+                const path = std.fmt.bufPrint(&path_buf, "{s}/cache/blobs/{s}", .{ ROOT, entry.name }) catch continue;
+                reclaimed.* += 10 * 1024 * 1024;
+                if (dry_run) {
+                    stdout.print("  Would remove orphaned blob: {s}\n", .{entry.name}) catch {};
+                } else {
+                    std.fs.deleteFileAbsolute(path) catch {};
+                }
+            }
+        }
+    } else |_| {}
+
+    if (std.fs.openDirAbsolute(ROOT ++ "/store", .{ .iterate = true })) |d| {
+        var dir = d;
+        defer dir.close();
+        var iter = dir.iterate();
+        while (iter.next() catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            if (!valid_shas.contains(entry.name)) {
+                if (dry_run) {
+                    stdout.print("  Would remove orphaned store entry: {s}\n", .{entry.name}) catch {};
+                } else {
+                    var path_buf: [1024]u8 = undefined;
+                    const path = std.fmt.bufPrint(&path_buf, "{s}/store/{s}", .{ ROOT, entry.name }) catch continue;
+                    std.fs.deleteTreeAbsolute(path) catch {};
+                }
+            }
+        }
+    } else |_| {}
+}
+// ── nb rollback ──
+
+fn runRollback(alloc: std.mem.Allocator, args: []const []const u8) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    if (args.len == 0) {
+        stderr.print("nb: no package specified\nUsage: nb rollback <package>\n", .{}) catch {};
+        std.process.exit(1);
+    }
+
+    var db = nb.database.Database.open() catch {
+        stderr.print("nb: could not open database\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer db.close();
+
+    for (args) |name| {
+        const keg = db.findKeg(name) orelse {
+            stderr.print("nb: '{s}' is not installed\n", .{name}) catch {};
+            continue;
+        };
+
+        const hist = db.getHistory(name);
+        if (hist.len == 0) {
+            stderr.print("nb: no previous version found for '{s}'\n", .{name}) catch {};
+            continue;
+        }
+
+        const prev = hist[hist.len - 1];
+
+        if (prev.sha256.len > 0 and !nb.store.hasEntry(prev.sha256)) {
+            stderr.print("nb: store entry for previous version of '{s}' is missing\n", .{name}) catch {};
+            continue;
+        }
+
+        stdout.print("==> Rolling back {s} ({s} -> {s})\n", .{ name, keg.version, prev.version }) catch {};
+
+        nb.linker.unlinkKeg(name, keg.version) catch {};
+        nb.cellar.remove(name, keg.version) catch {};
+
+        if (prev.sha256.len > 0) {
+            nb.cellar.materialize(prev.sha256, name, prev.version) catch |err| {
+                stderr.print("nb: {s}: materialize failed: {}\n", .{ name, err }) catch {};
+                continue;
+            };
+        }
+
+        var ver_buf: [256]u8 = undefined;
+        const actual_ver = nb.cellar.detectKegVersion(name, prev.version, &ver_buf) orelse prev.version;
+        nb.relocate.relocateKeg(alloc, name, actual_ver) catch {};
+        nb.linker.linkKeg(name, actual_ver) catch {};
+        db.recordInstall(name, prev.version, prev.sha256) catch {};
+
+        stdout.print("==> Rolled back {s} to {s}\n", .{ name, prev.version }) catch {};
+    }
+}
+// ── nb bundle ──
+
+fn runBundle(alloc: std.mem.Allocator, args: []const []const u8) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    const subcmd = if (args.len > 0) args[0] else "dump";
+
+    if (std.mem.eql(u8, subcmd, "dump")) {
+        runBundleDump(alloc, stdout, stderr);
+    } else if (std.mem.eql(u8, subcmd, "install")) {
+        const file_path = if (args.len > 1) args[1] else "Nanobrew";
+        runBundleInstall(alloc, file_path, stdout, stderr);
+    } else {
+        stderr.print("nb: unknown bundle subcommand '{s}'\nUsage: nb bundle [dump|install] [file]\n", .{subcmd}) catch {};
+        std.process.exit(1);
+    }
+}
+
+fn runBundleDump(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype) void {
+    _ = stderr;
+    var db = nb.database.Database.open() catch {
+        return;
+    };
+    defer db.close();
+
+    const kegs = db.listInstalled(alloc) catch &.{};
+    defer if (kegs.len > 0) alloc.free(kegs);
+    const casks_result = db.listInstalledCasks(alloc);
+    const casks_list: []const nb.database.CaskRecord = if (casks_result) |c| c else |_| &.{};
+    defer if (casks_result) |c| alloc.free(c) else |_| {};
+
+    stdout.print("# Nanobrew\n", .{}) catch {};
+    for (kegs) |keg| {
+        stdout.print("brew \"{s}\"\n", .{keg.name}) catch {};
+    }
+    for (casks_list) |c| {
+        stdout.print("cask \"{s}\"\n", .{c.token}) catch {};
+    }
+}
+
+fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: anytype, stderr: anytype) void {
+    _ = stderr;
+    const file_content = std.fs.cwd().readFileAlloc(alloc, file_path, 1024 * 1024) catch {
+        return;
+    };
+    defer alloc.free(file_content);
+
+    var formulas: std.ArrayList([]const u8) = .empty;
+    defer formulas.deinit(alloc);
+    var cask_tokens: std.ArrayList([]const u8) = .empty;
+    defer cask_tokens.deinit(alloc);
+
+    var lines = std.mem.splitScalar(u8, file_content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0 or trimmed[0] == '#') continue;
+
+        if (std.mem.startsWith(u8, trimmed, "brew \"")) {
+            const after_q = trimmed[6..];
+            if (std.mem.indexOf(u8, after_q, "\"")) |end| {
+                formulas.append(alloc, after_q[0..end]) catch {};
+            }
+        } else if (std.mem.startsWith(u8, trimmed, "cask \"")) {
+            const after_q = trimmed[6..];
+            if (std.mem.indexOf(u8, after_q, "\"")) |end| {
+                cask_tokens.append(alloc, after_q[0..end]) catch {};
+            }
+        }
+    }
+
+    stdout.print("==> Installing from bundle: {d} formulas, {d} casks\n", .{ formulas.items.len, cask_tokens.items.len }) catch {};
+
+    if (formulas.items.len > 0) {
+        runInstall(alloc, formulas.items);
+    }
+    if (cask_tokens.items.len > 0) {
+        runCaskInstall(alloc, cask_tokens.items);
+    }
+}
+
+// ── nb outdated ──
+
+fn runOutdated(alloc: std.mem.Allocator) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    var db = nb.database.Database.open() catch {
+        stderr.print("nb: could not open database\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer db.close();
+
+    stdout.print("==> Checking for outdated packages...\n", .{}) catch {};
+    var outdated = getOutdatedPackages(alloc, &db, &.{}, true, true);
+    defer outdated.deinit(alloc);
+
+    if (outdated.items.len == 0) {
+        stdout.print("All packages are up to date.\n", .{}) catch {};
+        return;
+    }
+
+    for (outdated.items) |pkg| {
+        const tag = if (pkg.is_cask_pkg) " (cask)" else "";
+        const pin_tag = if (pkg.is_pinned) " [pinned]" else "";
+        stdout.print("{s} ({s} -> {s}){s}{s}\n", .{ pkg.name, pkg.old_ver, pkg.new_ver, tag, pin_tag }) catch {};
+    }
+
+    stdout.print("\n==> {d} outdated package(s)\n", .{outdated.items.len}) catch {};
+}
+
+// ── nb pin / nb unpin ──
+
+fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) void {
+    _ = alloc;
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    if (args.len == 0) {
+        const verb = if (pin) "pin" else "unpin";
+        stderr.print("nb: no package specified\nUsage: nb {s} <package>\n", .{verb}) catch {};
+        std.process.exit(1);
+    }
+
+    var db = nb.database.Database.open() catch {
+        stderr.print("nb: could not open database\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer db.close();
+
+    for (args) |name| {
+        db.setPinned(name, pin) catch |err| {
+            if (err == error.NotFound) {
+                stderr.print("nb: '{s}' is not installed\n", .{name}) catch {};
+            } else {
+                stderr.print("nb: failed to update '{s}': {}\n", .{ name, err }) catch {};
+            }
+            continue;
+        };
+        if (pin) {
+            stdout.print("==> Pinned {s}\n", .{name}) catch {};
+        } else {
+            stdout.print("==> Unpinned {s}\n", .{name}) catch {};
+        }
+    }
+}
+
+// ── nb deps ──
+
+fn runDeps(alloc: std.mem.Allocator, args: []const []const u8) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    var tree_mode = false;
+    var formula_name: ?[]const u8 = null;
+
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--tree") or std.mem.eql(u8, arg, "-t")) {
+            tree_mode = true;
+        } else {
+            formula_name = arg;
+        }
+    }
+
+    const name = formula_name orelse {
+        stderr.print("nb: no formula specified\nUsage: nb deps [--tree] <formula>\n", .{}) catch {};
+        std.process.exit(1);
+    };
+
+    stdout.print("==> Resolving dependencies for {s}...\n", .{name}) catch {};
+
+    var resolver = nb.deps.DepResolver.init(alloc);
+    defer resolver.deinit();
+
+    resolver.resolve(name) catch |err| {
+        stderr.print("nb: failed to resolve '{s}': {}\n", .{ name, err }) catch {};
+        std.process.exit(1);
+    };
+
+    if (tree_mode) {
+        renderDepTree(stdout, &resolver, name, "", true);
+    } else {
+        const sorted = resolver.topologicalSort() catch {
+            stderr.print("nb: dependency cycle detected\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        defer alloc.free(sorted);
+
+        var count: usize = 0;
+        for (sorted) |f| {
+            if (std.mem.eql(u8, f.name, name)) continue;
+            stdout.print("{s}\n", .{f.name}) catch {};
+            count += 1;
+        }
+        if (count == 0) {
+            stdout.print("(no dependencies)\n", .{}) catch {};
+        }
+    }
+}
+
+fn renderDepTree(stdout: anytype, resolver: *nb.deps.DepResolver, name: []const u8, prefix: []const u8, is_root: bool) void {
+    if (is_root) {
+        stdout.print("{s}\n", .{name}) catch {};
+    }
+
+    const empty_deps = &[_][]const u8{};
+    const dep_list = resolver.edges.get(name) orelse empty_deps;
+    for (dep_list, 0..) |dep, idx| {
+        const is_last = (idx == dep_list.len - 1);
+        const connector = if (is_last) "└── " else "├── ";
+        stdout.print("{s}{s}{s}\n", .{ prefix, connector, dep }) catch {};
+
+        var child_prefix_buf: [512]u8 = undefined;
+        const extension = if (is_last) "    " else "│   ";
+        const child_prefix = std.fmt.bufPrint(&child_prefix_buf, "{s}{s}", .{ prefix, extension }) catch continue;
+        renderDepTree(stdout, resolver, dep, child_prefix, false);
+    }
+}
+
+// ── nb services ──
+
+fn runServices(alloc: std.mem.Allocator, args: []const []const u8) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    const subcmd = if (args.len > 0) args[0] else "list";
+    const svc_name = if (args.len > 1) args[1] else null;
+
+    const services_list = nb.services.discoverServices(alloc) catch {
+        stderr.print("nb: failed to discover services\n", .{}) catch {};
+        return;
+    };
+    defer alloc.free(services_list);
+
+    if (std.mem.eql(u8, subcmd, "list")) {
+        if (services_list.len == 0) {
+            stdout.print("No services found.\n", .{}) catch {};
+            return;
+        }
+        stdout.print("==> Services:\n", .{}) catch {};
+        for (services_list) |svc| {
+            const status = if (nb.services.isRunning(alloc, svc.label)) "running" else "stopped";
+            stdout.print("  {s} ({s}) [{s}]\n", .{ svc.name, svc.keg_name, status }) catch {};
+        }
+    } else if (std.mem.eql(u8, subcmd, "start") or std.mem.eql(u8, subcmd, "stop") or std.mem.eql(u8, subcmd, "restart")) {
+        const target = svc_name orelse {
+            stderr.print("nb: no service specified\nUsage: nb services {s} <name>\n", .{subcmd}) catch {};
+            return;
+        };
+
+        var found_svc: ?nb.services.Service = null;
+        for (services_list) |svc| {
+            if (std.mem.eql(u8, svc.name, target) or std.mem.eql(u8, svc.keg_name, target)) {
+                found_svc = svc;
+                break;
+            }
+        }
+
+        const svc = found_svc orelse {
+            stderr.print("nb: service '{s}' not found\n", .{target}) catch {};
+            return;
+        };
+
+        if (std.mem.eql(u8, subcmd, "stop") or std.mem.eql(u8, subcmd, "restart")) {
+            nb.services.stop(alloc, svc.plist_path) catch |err| {
+                stderr.print("nb: failed to stop {s}: {}\n", .{ svc.name, err }) catch {};
+                if (std.mem.eql(u8, subcmd, "stop")) return;
+            };
+            if (std.mem.eql(u8, subcmd, "stop")) {
+                stdout.print("==> Stopped {s}\n", .{svc.name}) catch {};
+                return;
+            }
+        }
+
+        if (std.mem.eql(u8, subcmd, "start") or std.mem.eql(u8, subcmd, "restart")) {
+            nb.services.start(alloc, svc.plist_path) catch |err| {
+                stderr.print("nb: failed to start {s}: {}\n", .{ svc.name, err }) catch {};
+                return;
+            };
+            stdout.print("==> Started {s}\n", .{svc.name}) catch {};
+        }
+    } else {
+        stderr.print("nb: unknown services subcommand '{s}'\nUsage: nb services [list|start|stop|restart] [name]\n", .{subcmd}) catch {};
+    }
+}
+
+// ── nb completions ──
+
+fn runCompletions(args: []const []const u8) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    const shell = if (args.len > 0) args[0] else "zsh";
+
+    if (std.mem.eql(u8, shell, "zsh")) {
+        stdout.print(
+            \\#compdef nb
+            \\
+            \\_nb() {{
+            \\  local -a commands
+            \\  commands=(
+            \\    'init:Create /opt/nanobrew/ directory tree'
+            \\    'install:Install packages'
+            \\    'remove:Uninstall packages'
+            \\    'list:List installed packages'
+            \\    'info:Show formula info'
+            \\    'search:Search for packages'
+            \\    'upgrade:Upgrade packages'
+            \\    'update:Self-update nanobrew'
+            \\    'doctor:Check installation health'
+            \\    'cleanup:Remove stale caches'
+            \\    'outdated:List outdated packages'
+            \\    'pin:Pin a package'
+            \\    'unpin:Unpin a package'
+            \\    'rollback:Rollback to previous version'
+            \\    'bundle:Export/import package lists'
+            \\    'deps:Show dependency tree'
+            \\    'services:Manage services'
+            \\    'completions:Generate shell completions'
+            \\    'help:Show help'
+            \\  )
+            \\  _describe 'command' commands
+            \\}}
+            \\
+            \\compdef _nb nb
+            \\
+        , .{}) catch {};
+    } else if (std.mem.eql(u8, shell, "bash")) {
+        stdout.print(
+            \\_nb_completions() {{
+            \\  local commands="init install remove list info search upgrade update doctor cleanup outdated pin unpin rollback bundle deps services completions help"
+            \\  COMPREPLY=($(compgen -W "$commands" -- "${{COMP_WORDS[COMP_CWORD]}}"))
+            \\}}
+            \\
+            \\complete -F _nb_completions nb
+            \\
+        , .{}) catch {};
+    } else if (std.mem.eql(u8, shell, "fish")) {
+        stdout.print(
+            \\complete -c nb -f
+            \\complete -c nb -n '__fish_use_subcommand' -a 'init' -d 'Create /opt/nanobrew/ directory tree'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'install' -d 'Install packages'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'remove' -d 'Uninstall packages'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'list' -d 'List installed packages'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'info' -d 'Show formula info'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'search' -d 'Search for packages'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'upgrade' -d 'Upgrade packages'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'update' -d 'Self-update nanobrew'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'doctor' -d 'Check installation health'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'cleanup' -d 'Remove stale caches'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'outdated' -d 'List outdated packages'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'pin' -d 'Pin a package'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'unpin' -d 'Unpin a package'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'rollback' -d 'Rollback to previous version'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'bundle' -d 'Export/import package lists'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'deps' -d 'Show dependency tree'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'services' -d 'Manage services'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'completions' -d 'Generate shell completions'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'help' -d 'Show help'
+            \\
+        , .{}) catch {};
+    } else {
+        stderr.print("nb: unknown shell '{s}'\nUsage: nb completions [zsh|bash|fish]\n", .{shell}) catch {};
+    }
 }

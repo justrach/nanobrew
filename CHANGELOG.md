@@ -2,6 +2,29 @@
 
 All notable changes to nanobrew are documented here.
 
+## [0.1.05] - 2026-02-16
+
+### Added
+- **`nb doctor`** — Health check that scans for broken symlinks, missing Cellar dirs, orphaned store entries, and permission issues. Alias: `nb dr`.
+- **`nb cleanup`** — Removes expired API/token caches, temp files, and orphaned blobs/store entries. Supports `--dry-run` to preview and `--all` to include history-referenced entries.
+- **`nb outdated`** — Lists packages with newer versions available. Shows `[pinned]` tag for pinned packages.
+- **`nb pin <pkg>` / `nb unpin <pkg>`** — Pin a package to prevent `nb upgrade` from touching it.
+- **`nb rollback <pkg>`** — Revert a package to its previous version using the install history. Alias: `nb rb`.
+- **`nb bundle dump`** — Export all installed kegs and casks to a Brewfile-compatible `Nanobrew` file.
+- **`nb bundle install [file]`** — Install everything listed in a bundle file. Defaults to `./Nanobrew`.
+- **`nb deps [--tree] <formula>`** — Show dependencies. `--tree` renders an ASCII dependency tree with box-drawing characters.
+- **`nb services [list|start|stop|restart] [name]`** — Discover and control launchctl services from installed packages. Scans Cellar for `homebrew.mxcl.*.plist` files.
+- **`nb completions [zsh|bash|fish]`** — Print shell completion scripts to stdout.
+- **Pinned packages** — `pinned` field added to database. Pinned packages are skipped by `nb upgrade` and tagged `[pinned]` in `nb list` and `nb outdated`.
+- **Install history** — Database now tracks previous versions of each package. Used by `nb rollback` and protected by `nb cleanup`.
+
+### Changed
+- `nb list` now shows `[pinned]` tag for pinned packages.
+- `nb upgrade` skips pinned packages (use `nb unpin` first).
+- `nb cleanup` protects store entries referenced by install history.
+- Extracted `getOutdatedPackages` helper used by both `nb upgrade` and `nb outdated`.
+- Database schema extended with `pinned`, `installed_at`, and `history` fields (backward-compatible with older `state.json` files).
+
 ## [0.1.03] - 2026-02-16
 
 ### Added
