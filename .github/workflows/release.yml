@@ -8,7 +8,7 @@ permissions:
   contents: write
 
 jobs:
-  build:
+  build-macos:
     strategy:
       matrix:
         include:
@@ -41,8 +41,43 @@ jobs:
             nb-${{ matrix.arch }}-apple-darwin.tar.gz
             nb-${{ matrix.arch }}-apple-darwin.tar.gz.sha256
 
+  build-linux:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            zig_target: x86_64-linux
+            build_cmd: linux
+          - arch: aarch64
+            zig_target: aarch64-linux
+            build_cmd: linux-arm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Build
+        run: zig build ${{ matrix.build_cmd }} -Doptimize=ReleaseFast
+
+      - name: Package
+        run: |
+          tar -czf nb-${{ matrix.arch }}-linux.tar.gz -C zig-out/bin nb
+          sha256sum nb-${{ matrix.arch }}-linux.tar.gz > nb-${{ matrix.arch }}-linux.tar.gz.sha256
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nb-${{ matrix.arch }}-linux
+          path: |
+            nb-${{ matrix.arch }}-linux.tar.gz
+            nb-${{ matrix.arch }}-linux.tar.gz.sha256
+
   release:
-    needs: build
+    needs: [build-macos, build-linux]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -62,6 +97,10 @@ jobs:
             artifacts/nb-arm64-apple-darwin.tar.gz.sha256
             artifacts/nb-x86_64-apple-darwin.tar.gz
             artifacts/nb-x86_64-apple-darwin.tar.gz.sha256
+            artifacts/nb-x86_64-linux.tar.gz
+            artifacts/nb-x86_64-linux.tar.gz.sha256
+            artifacts/nb-aarch64-linux.tar.gz
+            artifacts/nb-aarch64-linux.tar.gz.sha256
 
   update-formula:
     needs: release
