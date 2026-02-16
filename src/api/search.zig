@@ -7,7 +7,7 @@ const std = @import("std");
 
 const FORMULA_LIST_URL = "https://formulae.brew.sh/api/formula.json";
 const CASK_LIST_URL = "https://formulae.brew.sh/api/cask.json";
-const CACHE_DIR = "/opt/nanobrew/cache/api";
+const CACHE_DIR = @import("../platform/paths.zig").API_CACHE_DIR;
 const FORMULA_CACHE = CACHE_DIR ++ "/_formula_list.json";
 const CASK_CACHE = CACHE_DIR ++ "/_cask_list.json";
 const CACHE_TTL_NS = 3600 * std.time.ns_per_s; // 1 hour
