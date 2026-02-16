@@ -2059,16 +2059,12 @@ fn checkForUpdate(alloc: std.mem.Allocator) void {
         f.writeAll(ts_str) catch {};
     } else |_| {}
 
-    // Fetch latest version from Cloudflare worker (plain text response)
-    const result = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "curl", "-fsSL", "--max-time", "3", "https://nanobrew.trilok.ai/version" },
-    }) catch return;
-    defer alloc.free(result.stdout);
-    defer alloc.free(result.stderr);
-    if (result.term.Exited != 0) return;
+    // Fetch latest version from Cloudflare worker (native HTTP, no curl)
+    const body = nb.fetch.get(alloc, "https://nanobrew.trilok.ai/version") catch return;
+    defer alloc.free(body);
 
-    const latest_ver = std.mem.trimRight(u8, result.stdout, "\n \t");
+
+    const latest_ver = std.mem.trimRight(u8, body, "\n \t");
     if (latest_ver.len == 0 or std.mem.eql(u8, latest_ver, "error")) return;
 
     // Cache latest version for getDisplayVersion()

@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const Formula = @import("../api/formula.zig").Formula;
+const fetch = @import("../net/fetch.zig");
 
 pub fn runPostInstall(alloc: std.mem.Allocator, formula: Formula) !void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
@@ -39,17 +40,13 @@ fn runPostInstallScript(alloc: std.mem.Allocator, formula: Formula) !void {
     }) catch return error.OutOfMemory;
     defer alloc.free(url);
 
-    const run = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "curl", "-sL", url },
-    }) catch return error.CurlFailed;
-    defer alloc.free(run.stderr);
-    defer alloc.free(run.stdout);
+    const ruby_src = fetch.get(alloc, url) catch return;
+    defer alloc.free(ruby_src);
 
-    if (run.term.Exited != 0 or run.stdout.len == 0) return;
+    if (ruby_src.len == 0) return;
 
     // Extract post_install block
-    const block = extractPostInstallBlock(run.stdout) orelse return;
+    const block = extractPostInstallBlock(ruby_src) orelse return;
 
     // Parse and execute commands
     var keg_buf: [512]u8 = undefined;

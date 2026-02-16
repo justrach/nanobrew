@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const Formula = @import("../api/formula.zig").Formula;
+const fetch = @import("../net/fetch.zig");
 
 const CACHE_TMP = @import("../platform/paths.zig").TMP_DIR;
 
@@ -33,15 +34,7 @@ pub fn buildFromSource(alloc: std.mem.Allocator, formula: Formula) !void {
 
     std.fs.makeDirAbsolute(CACHE_TMP) catch {};
 
-    {
-        const dl = std.process.Child.run(.{
-            .allocator = alloc,
-            .argv = &.{ "curl", "-sL", "-o", tarball_path, formula.source_url },
-        }) catch return error.CurlFailed;
-        alloc.free(dl.stdout);
-        alloc.free(dl.stderr);
-        if (dl.term.Exited != 0) return error.DownloadFailed;
-    }
+    fetch.download(alloc, formula.source_url, tarball_path) catch return error.DownloadFailed;
 
     // 2. Verify SHA256
     if (formula.source_sha256.len > 0) {

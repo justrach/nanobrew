@@ -4,7 +4,7 @@
 // case-insensitive substring matching on name and description.
 
 const std = @import("std");
-
+const fetch = @import("../net/fetch.zig");
 const FORMULA_LIST_URL = "https://formulae.brew.sh/api/formula.json";
 const CASK_LIST_URL = "https://formulae.brew.sh/api/cask.json";
 const CACHE_DIR = @import("../platform/paths.zig").API_CACHE_DIR;
@@ -50,27 +50,17 @@ fn fetchCachedList(alloc: std.mem.Allocator, url: []const u8, cache_path: []cons
     // Check cache with 1-hour TTL
     if (readCachedFile(alloc, cache_path)) |data| return data;
 
-    // Fetch from network
-    const run = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "curl", "-sL", "--http2", url },
-        .max_output_bytes = 64 * 1024 * 1024, // 64MB max
-    }) catch return error.CurlFailed;
-    defer alloc.free(run.stderr);
-
-    if (run.term.Exited != 0 or run.stdout.len == 0) {
-        alloc.free(run.stdout);
-        return error.FetchFailed;
-    }
+    // Fetch from network (native HTTP, no curl)
+    const body = fetch.get(alloc, url) catch return error.FetchFailed;
 
     // Write to cache
     std.fs.makeDirAbsolute(CACHE_DIR) catch {};
     if (std.fs.createFileAbsolute(cache_path, .{})) |file| {
         defer file.close();
-        file.writeAll(run.stdout) catch {};
+        file.writeAll(body) catch {};
     } else |_| {}
 
-    return run.stdout;
+    return body;
 }
 
 fn readCachedFile(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
