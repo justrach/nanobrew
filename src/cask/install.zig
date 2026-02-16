@@ -8,6 +8,7 @@ const Cask = @import("../api/cask.zig").Cask;
 const Artifact = @import("../api/cask.zig").Artifact;
 const DownloadFormat = @import("../api/cask.zig").DownloadFormat;
 const paths = @import("../platform/paths.zig");
+const fetch = @import("../net/fetch.zig");
 const builtin = @import("builtin");
 
 const PREFIX = paths.PREFIX;
@@ -220,16 +221,8 @@ pub fn removeCask(
 }
 
 fn downloadArtifact(alloc: std.mem.Allocator, url: []const u8, dest: []const u8, cask: Cask) !void {
-    // Use curl for download (consistent with existing pattern)
-    const result = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "curl", "-sL", "--http2", "-o", dest, url },
-        .max_output_bytes = 1024,
-    }) catch return error.DownloadFailed;
-    defer alloc.free(result.stdout);
-    defer alloc.free(result.stderr);
-
-    if (result.term.Exited != 0) return error.DownloadFailed;
+    // Native HTTP download (no curl dependency)
+    fetch.download(alloc, url, dest) catch return error.DownloadFailed;
 
     // Verify SHA256 if needed
     if (cask.shouldVerifySha()) {
