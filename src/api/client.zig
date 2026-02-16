@@ -263,6 +263,45 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
     }
     const dependencies = try deps.toOwnedSlice(alloc);
 
+    // Parse build_dependencies
+    var bdeps: std.ArrayList([]const u8) = .empty;
+    defer bdeps.deinit(alloc);
+    if (root.get("build_dependencies")) |bdeps_val| {
+        if (bdeps_val == .array) {
+            for (bdeps_val.array.items) |dep| {
+                if (dep == .string) {
+                    try bdeps.append(alloc, try allocDupe(alloc, dep.string));
+                }
+            }
+        }
+    }
+    const build_deps = try bdeps.toOwnedSlice(alloc);
+
+    // Parse source URL and checksum from urls.stable
+    var source_url: []const u8 = "";
+    var source_sha256: []const u8 = "";
+    if (root.get("urls")) |urls_val| {
+        if (urls_val == .object) {
+            if (urls_val.object.get("stable")) |stable_url| {
+                if (stable_url == .object) {
+                    source_url = try allocDupe(alloc, getStr(stable_url.object, "url") orelse "");
+                    source_sha256 = try allocDupe(alloc, getStr(stable_url.object, "checksum") orelse "");
+                }
+            }
+        }
+    }
+    if (source_url.len == 0) source_url = try allocDupe(alloc, "");
+    if (source_sha256.len == 0) source_sha256 = try allocDupe(alloc, "");
+
+    // Parse caveats (string or null)
+    const caveats = try allocDupe(alloc, getStr(root, "caveats") orelse "");
+
+    // Parse post_install_defined (bool)
+    const post_install_defined = if (root.get("post_install_defined")) |pid|
+        pid == .bool and pid.bool
+    else
+        false;
+
     var bottle_url: []const u8 = "";
     var bottle_sha256: []const u8 = "";
     var rebuild: u32 = 0;
@@ -279,10 +318,11 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
 
                     if (stable.object.get("files")) |files| {
                         if (files == .object) {
-                            const tag = findBottleTag(files.object) orelse return error.NoArm64Bottle;
-                            if (tag == .object) {
-                                bottle_url = try allocDupe(alloc, getStr(tag.object, "url") orelse "");
-                                bottle_sha256 = try allocDupe(alloc, getStr(tag.object, "sha256") orelse "");
+                            if (findBottleTag(files.object)) |tag| {
+                                if (tag == .object) {
+                                    bottle_url = try allocDupe(alloc, getStr(tag.object, "url") orelse "");
+                                    bottle_sha256 = try allocDupe(alloc, getStr(tag.object, "sha256") orelse "");
+                                }
                             }
                         }
                     }
@@ -291,7 +331,10 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
         }
     }
 
-    if (bottle_url.len == 0) return error.NoArm64Bottle;
+    // Only error if BOTH bottle and source are missing
+    if (bottle_url.len == 0 and source_url.len == 0) return error.NoArm64Bottle;
+    if (bottle_url.len == 0) bottle_url = try allocDupe(alloc, "");
+    if (bottle_sha256.len == 0) bottle_sha256 = try allocDupe(alloc, "");
 
     return Formula{
         .name = name,
@@ -302,6 +345,11 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
         .dependencies = dependencies,
         .bottle_url = bottle_url,
         .bottle_sha256 = bottle_sha256,
+        .source_url = source_url,
+        .source_sha256 = source_sha256,
+        .build_deps = build_deps,
+        .caveats = caveats,
+        .post_install_defined = post_install_defined,
     };
 }
 
@@ -371,6 +419,47 @@ test "parseFormulaJson - missing versions returns error" {
         \\"bottle":{"stable":{"rebuild":0,"files":{"arm64_sonoma":{"url":"u","sha256":"s"}}}}}
     ;
     try testing.expectError(error.MissingField, parseFormulaJson(testing.allocator, json));
+}
+
+test "parseFormulaJson - parses source fields and caveats" {
+    const json =
+        \\{"name":"hello","desc":"GNU Hello","versions":{"stable":"2.12.1"},"revision":0,
+        \\"dependencies":[],"build_dependencies":["autoconf"],
+        \\"urls":{"stable":{"url":"https://ftp.gnu.org/hello-2.12.1.tar.gz","checksum":"abc123"}},
+        \\"caveats":"Run hello to see greeting\n","post_install_defined":true,
+        \\"bottle":{"stable":{"rebuild":0,"files":{"arm64_sonoma":{"url":"https://ghcr.io/bottle/hello","sha256":"beef"}}}}}
+    ;
+    const f = try parseFormulaJson(testing.allocator, json);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqualStrings("hello", f.name);
+    try testing.expectEqualStrings("https://ftp.gnu.org/hello-2.12.1.tar.gz", f.source_url);
+    try testing.expectEqualStrings("abc123", f.source_sha256);
+    try testing.expectEqual(@as(usize, 1), f.build_deps.len);
+    try testing.expectEqualStrings("autoconf", f.build_deps[0]);
+    try testing.expectEqualStrings("Run hello to see greeting\n", f.caveats);
+    try testing.expect(f.post_install_defined);
+}
+
+test "parseFormulaJson - source only formula succeeds" {
+    const json =
+        \\{"name":"srconly","desc":"","versions":{"stable":"1.0"},"revision":0,
+        \\"dependencies":[],
+        \\"urls":{"stable":{"url":"https://example.com/srconly-1.0.tar.gz","checksum":"deadbeef"}},
+        \\"bottle":{}}
+    ;
+    const f = try parseFormulaJson(testing.allocator, json);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqualStrings("srconly", f.name);
+    try testing.expectEqualStrings("", f.bottle_url);
+    try testing.expectEqualStrings("https://example.com/srconly-1.0.tar.gz", f.source_url);
+}
+
+test "parseFormulaJson - no bottle no source returns error" {
+    const json =
+        \\{"name":"nothing","desc":"","versions":{"stable":"1.0"},"revision":0,
+        \\"dependencies":[],"bottle":{}}
+    ;
+    try testing.expectError(error.NoArm64Bottle, parseFormulaJson(testing.allocator, json));
 }
 
 test "findBottleTag - primary tag found" {

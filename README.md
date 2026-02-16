@@ -51,6 +51,10 @@ nb install --cask firefox       # install macOS app (.dmg/.zip/.pkg)
 nb remove jq                    # uninstall
 nb remove --cask firefox        # uninstall macOS app
 nb ui ffmpeg                    # short alias for uninstall
+nb search ripgrep               # search formulas and casks
+nb upgrade                      # upgrade all outdated packages
+nb upgrade tree                 # upgrade specific package
+nb upgrade --cask               # upgrade all casks
 nb list                         # list installed packages and casks
 nb info <formula>               # show formula info
 nb help                         # show help
@@ -112,7 +116,7 @@ nb install ffmpeg
 
 ## Relationship with Homebrew
 
-nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely on Homebrew's formula definitions, pre-built bottles (GHCR), cask definitions, and API infrastructure. nanobrew is experimental - we recommend running it alongside Homebrew rather than as a replacement. Source builds and post-install scripts are not yet supported.
+nanobrew is a performance-optimized client for the Homebrew ecosystem. We rely on Homebrew's formula definitions, pre-built bottles (GHCR), cask definitions, and API infrastructure. nanobrew is experimental - we recommend running it alongside Homebrew rather than as a replacement. Source builds are supported for formulae without pre-built bottles, and common post-install scripts are handled automatically.
 
 ## Directory layout
 
@@ -142,6 +146,7 @@ src/
     client.zig          # Homebrew JSON API client (formula + cask)
     formula.zig         # Formula struct and bottle tag constants
     cask.zig            # Cask struct, Artifact types, DownloadFormat
+    search.zig          # Search across all formulas and casks
   resolve/
     deps.zig            # BFS parallel dependency resolver (Kahn's topo sort)
   net/
@@ -154,6 +159,9 @@ src/
     cellar.zig          # APFS clonefile materialization
   cask/
     install.zig         # Cask install/remove pipeline (dmg/zip/pkg/tar.gz)
+  build/
+    source.zig          # Source build pipeline (cmake/autotools/meson/make)
+    postinstall.zig     # Post-install script runner + caveat display
   linker/
     linker.zig          # Symlink creation for bin/ and opt/
   macho/
@@ -168,10 +176,32 @@ src/
 - **Feedback:** If you hit incompatibilities, please open an issue or PR.
 - **License:** [Apache 2.0](./LICENSE)
 
+## Changelog
+
+### v0.1.03 (2026-02-16)
+- **Source builds** — Formulae without bottles now compile from source (cmake/autotools/meson/make)
+- **`nb search`** — Search all Homebrew formulae and casks with `[installed]` tags
+- **`nb upgrade`** — Upgrade outdated kegs and casks (all or specific)
+- **Post-install scripts** — Common Ruby patterns executed after install
+- **Caveat display** — Post-install instructions shown automatically
+
+### v0.1.02 (2025-06-15)
+- **Cask support** — `nb install --cask` for .dmg/.zip/.pkg/.tar.gz apps
+
+### v0.1.01 (2025-06-14)
+- **Self-update** — `nb update` command
+- Error logging + unit tests
+
+### v0.1.00 (2025-06-13)
+- Initial release — parallel installs, APFS clonefile, warm installs in <4ms
+
+See [CHANGELOG.md](./CHANGELOG.md) for full details.
+
+
 ## Roadmap
 
 - [x] Cask support (`nb install --cask <app>`) - install .app/.dmg/.pkg/.tar.gz bundles
-- [ ] Source builds for formulae without bottles
-- [ ] Post-install script execution
-- [ ] `nb search` command
-- [ ] `nb upgrade --all` with diff detection
+- [x] Source builds for formulae without bottles
+- [x] Post-install script execution and caveat display
+- [x] `nb search` command
+- [x] `nb upgrade` with diff detection (kegs and casks)

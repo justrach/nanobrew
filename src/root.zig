@@ -29,6 +29,9 @@ pub const relocate = @import("macho/relocate.zig");
 pub const database = @import("db/database.zig");
 pub const cask = @import("api/cask.zig");
 pub const cask_installer = @import("cask/install.zig");
+pub const source_builder = @import("build/source.zig");
+pub const postinstall = @import("build/postinstall.zig");
+pub const search_api = @import("api/search.zig");
 
 // Reused from zigrep
 pub const simd_scanner = @import("kernel/simd_scanner.zig");

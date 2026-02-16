@@ -6,6 +6,7 @@
 //   nb remove <formula> ...    # Uninstall packages
 //   nb list                    # List installed packages
 //   nb info <formula>          # Show formula info from Homebrew API
+//   nb search <query>          # Search for formulas and casks
 //   nb upgrade [formula]       # Upgrade packages
 //   nb update                  # Self-update nanobrew
 const std = @import("std");
@@ -17,6 +18,7 @@ const Command = enum {
     remove,
     list,
     info,
+    search,
     upgrade,
     update,
     help,
@@ -62,6 +64,7 @@ pub fn main() !void {
         .remove => runRemove(alloc, args[2..]),
         .list => runList(alloc),
         .info => runInfo(alloc, args[2..]),
+        .search => runSearch(alloc, args[2..]),
         .upgrade => runUpgrade(alloc, args[2..]),
         .update => runUpdate(),
         .help => printUsage(),
@@ -80,6 +83,8 @@ fn parseCommand(arg: []const u8) ?Command {
         .{ "list", Command.list },
         .{ "ls", Command.list },
         .{ "info", Command.info },
+        .{ "search", Command.search },
+        .{ "s", Command.search },
         .{ "upgrade", Command.upgrade },
         .{ "update", Command.update },
         .{ "self-update", Command.update },
@@ -402,45 +407,59 @@ fn renderProgress(
 fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *std.atomic.Value(bool), phase: *std.atomic.Value(u8)) void {
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
-    // 1. Download (skip if blob cached)
-    phase.store(@intFromEnum(Phase.downloading), .release);
-    const blob_dir = "/opt/nanobrew/cache/blobs";
-    var blob_buf: [512]u8 = undefined;
-    const blob_path = std.fmt.bufPrint(&blob_buf, "{s}/{s}", .{ blob_dir, f.bottle_sha256 }) catch {
-        stderr.print("nb: {s}: path too long for blob\n", .{f.name}) catch {};
-        had_error.store(true, .release);
-        phase.store(@intFromEnum(Phase.failed), .release);
-        return;
-    };
+    const is_source_build = f.bottle_url.len == 0 and f.source_url.len > 0;
 
-    if (!fileExists(blob_path)) {
-        nb.downloader.downloadOne(alloc, .{ .url = f.bottleUrl(), .expected_sha256 = f.bottle_sha256 }) catch |err| {
-            stderr.print("nb: {s}: download failed: {}\n", .{ f.name, err }) catch {};
+    if (is_source_build) {
+        // Source build path: download + compile from source
+        phase.store(@intFromEnum(Phase.downloading), .release);
+        nb.source_builder.buildFromSource(alloc, f) catch |err| {
+            stderr.print("nb: {s}: source build failed: {}\n", .{ f.name, err }) catch {};
+            had_error.store(true, .release);
+            phase.store(@intFromEnum(Phase.failed), .release);
+            return;
+        };
+    } else {
+        // Bottle path: download pre-built binary
+        // 1. Download (skip if blob cached)
+        phase.store(@intFromEnum(Phase.downloading), .release);
+        const blob_dir = "/opt/nanobrew/cache/blobs";
+        var blob_buf: [512]u8 = undefined;
+        const blob_path = std.fmt.bufPrint(&blob_buf, "{s}/{s}", .{ blob_dir, f.bottle_sha256 }) catch {
+            stderr.print("nb: {s}: path too long for blob\n", .{f.name}) catch {};
+            had_error.store(true, .release);
+            phase.store(@intFromEnum(Phase.failed), .release);
+            return;
+        };
+
+        if (!fileExists(blob_path)) {
+            nb.downloader.downloadOne(alloc, .{ .url = f.bottleUrl(), .expected_sha256 = f.bottle_sha256 }) catch |err| {
+                stderr.print("nb: {s}: download failed: {}\n", .{ f.name, err }) catch {};
+                had_error.store(true, .release);
+                phase.store(@intFromEnum(Phase.failed), .release);
+                return;
+            };
+        }
+
+        // 2. Extract into store (skip if already there)
+        phase.store(@intFromEnum(Phase.extracting), .release);
+        if (!nb.store.hasEntry(f.bottle_sha256)) {
+            nb.store.ensureEntry(alloc, blob_path, f.bottle_sha256) catch |err| {
+                stderr.print("nb: {s}: extract failed: {}\n", .{ f.name, err }) catch {};
+                had_error.store(true, .release);
+                phase.store(@intFromEnum(Phase.failed), .release);
+                return;
+            };
+        }
+
+        // 3. Materialize (clonefile into Cellar)
+        phase.store(@intFromEnum(Phase.installing), .release);
+        nb.cellar.materialize(f.bottle_sha256, f.name, f.version) catch |err| {
+            stderr.print("nb: {s}: materialize failed: {}\n", .{ f.name, err }) catch {};
             had_error.store(true, .release);
             phase.store(@intFromEnum(Phase.failed), .release);
             return;
         };
     }
-
-    // 2. Extract into store (skip if already there)
-    phase.store(@intFromEnum(Phase.extracting), .release);
-    if (!nb.store.hasEntry(f.bottle_sha256)) {
-        nb.store.ensureEntry(alloc, blob_path, f.bottle_sha256) catch |err| {
-            stderr.print("nb: {s}: extract failed: {}\n", .{ f.name, err }) catch {};
-            had_error.store(true, .release);
-            phase.store(@intFromEnum(Phase.failed), .release);
-            return;
-        };
-    }
-
-    // 3. Materialize (clonefile into Cellar)
-    phase.store(@intFromEnum(Phase.installing), .release);
-    nb.cellar.materialize(f.bottle_sha256, f.name, f.version) catch |err| {
-        stderr.print("nb: {s}: materialize failed: {}\n", .{ f.name, err }) catch {};
-        had_error.store(true, .release);
-        phase.store(@intFromEnum(Phase.failed), .release);
-        return;
-    };
 
     // 4. Relocate (fix Homebrew placeholders in Mach-O binaries)
     phase.store(@intFromEnum(Phase.relocating), .release);
@@ -454,6 +473,11 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     phase.store(@intFromEnum(Phase.linking), .release);
     nb.linker.linkKeg(f.name, actual_ver) catch |err| {
         stderr.print("nb: {s}: link failed: {}\n", .{ f.name, err }) catch {};
+    };
+
+    // 6. Post-install (non-fatal)
+    nb.postinstall.runPostInstall(alloc, f) catch |err| {
+        stderr.print("nb: {s}: post-install warning: {}\n", .{ f.name, err }) catch {};
     };
 
     phase.store(@intFromEnum(Phase.done), .release);
@@ -571,11 +595,189 @@ fn runInfo(alloc: std.mem.Allocator, formulae: []const []const u8) void {
 
 // ── nb upgrade ──
 
-fn runUpgrade(alloc: std.mem.Allocator, formulae: []const []const u8) void {
-    _ = alloc;
-    _ = formulae;
+// ── nb search ──
+
+fn runSearch(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
-    stdout.print("nb: upgrade not yet implemented\n", .{}) catch {};
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    if (args.len == 0) {
+        stderr.print("nb: no search query specified\nUsage: nb search <query>\n", .{}) catch {};
+        std.process.exit(1);
+    }
+
+    const query = args[0];
+    stdout.print("==> Searching for \"{s}\"...\n", .{query}) catch {};
+
+    const results = nb.search_api.search(alloc, query) catch |err| {
+        stderr.print("nb: search failed: {}\n", .{err}) catch {};
+        std.process.exit(1);
+    };
+    defer {
+        for (results) |r| r.deinit(alloc);
+        alloc.free(results);
+    }
+
+    if (results.len == 0) {
+        stdout.print("No results found for \"{s}\"\n", .{query}) catch {};
+        return;
+    }
+
+    // Check installed status
+    var db = nb.database.Database.open() catch {
+        // Can still show results without install status
+        for (results) |r| {
+            if (r.is_cask) {
+                stdout.print("{s} {s} (cask) - {s}\n", .{ r.name, r.version, r.desc }) catch {};
+            } else {
+                stdout.print("{s} {s} - {s}\n", .{ r.name, r.version, r.desc }) catch {};
+            }
+        }
+        return;
+    };
+    defer db.close();
+
+    for (results) |r| {
+        const installed = if (r.is_cask)
+            db.findCask(r.name) != null
+        else
+            db.findKeg(r.name) != null;
+
+        const install_tag = if (installed) " [installed]" else "";
+
+        if (r.is_cask) {
+            stdout.print("{s} {s}{s} (cask) - {s}\n", .{ r.name, r.version, install_tag, r.desc }) catch {};
+        } else {
+            stdout.print("{s} {s}{s} - {s}\n", .{ r.name, r.version, install_tag, r.desc }) catch {};
+        }
+    }
+
+    stdout.print("\n==> {d} result(s)\n", .{results.len}) catch {};
+}
+
+
+fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    var timer = std.time.Timer.start() catch null;
+
+    // Parse --cask flag
+    var is_cask = false;
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(alloc);
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--cask")) {
+            is_cask = true;
+        } else {
+            names.append(alloc, arg) catch {};
+        }
+    }
+
+    var db = nb.database.Database.open() catch {
+        stderr.print("nb: could not open database\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer db.close();
+
+    // Collect outdated packages
+    const Outdated = struct { name: []const u8, old_ver: []const u8, new_ver: []const u8, is_cask_pkg: bool };
+    var outdated: std.ArrayList(Outdated) = .empty;
+    defer outdated.deinit(alloc);
+
+    if (is_cask or names.items.len == 0) {
+        // Check all installed casks
+        const installed_casks = db.listInstalledCasks(alloc) catch &.{};
+        defer alloc.free(installed_casks);
+        for (installed_casks) |c| {
+            if (names.items.len > 0) {
+                var found = false;
+                for (names.items) |n| {
+                    if (std.mem.eql(u8, n, c.token)) { found = true; break; }
+                }
+                if (!found) continue;
+            }
+            const latest = nb.api_client.fetchCask(alloc, c.token) catch continue;
+            defer latest.deinit(alloc);
+            if (!std.mem.eql(u8, c.version, latest.version)) {
+                outdated.append(alloc, .{
+                    .name = alloc.dupe(u8, c.token) catch continue,
+                    .old_ver = alloc.dupe(u8, c.version) catch continue,
+                    .new_ver = alloc.dupe(u8, latest.version) catch continue,
+                    .is_cask_pkg = true,
+                }) catch {};
+            }
+        }
+    }
+
+    if (!is_cask or names.items.len == 0) {
+        // Check all installed kegs
+        const installed_kegs = db.listInstalled(alloc) catch &.{};
+        defer alloc.free(installed_kegs);
+        for (installed_kegs) |k| {
+            if (names.items.len > 0) {
+                var found = false;
+                for (names.items) |n| {
+                    if (std.mem.eql(u8, n, k.name)) { found = true; break; }
+                }
+                if (!found) continue;
+            }
+            const latest = nb.api_client.fetchFormula(alloc, k.name) catch continue;
+            defer latest.deinit(alloc);
+            if (!std.mem.eql(u8, k.version, latest.version)) {
+                outdated.append(alloc, .{
+                    .name = alloc.dupe(u8, k.name) catch continue,
+                    .old_ver = alloc.dupe(u8, k.version) catch continue,
+                    .new_ver = alloc.dupe(u8, latest.version) catch continue,
+                    .is_cask_pkg = false,
+                }) catch {};
+            }
+        }
+    }
+
+    if (outdated.items.len == 0) {
+        stdout.print("==> All packages are up to date\n", .{}) catch {};
+        return;
+    }
+
+    // Print upgrade plan
+    stdout.print("==> Upgrading {d} package(s):\n", .{outdated.items.len}) catch {};
+    for (outdated.items) |pkg| {
+        const tag = if (pkg.is_cask_pkg) " (cask)" else "";
+        stdout.print("    {s} ({s} -> {s}){s}\n", .{ pkg.name, pkg.old_ver, pkg.new_ver, tag }) catch {};
+    }
+
+    // Execute upgrades
+    for (outdated.items) |pkg| {
+        if (pkg.is_cask_pkg) {
+            // Remove old cask
+            if (db.findCask(pkg.name)) |record| {
+                nb.cask_installer.removeCask(alloc, pkg.name, record.version, record.apps, record.binaries) catch |err| {
+                    stderr.print("nb: {s}: remove failed: {}\n", .{ pkg.name, err }) catch {};
+                    continue;
+                };
+                db.recordCaskRemoval(pkg.name, alloc) catch {};
+            }
+            // Install new version
+            const names_slice: []const []const u8 = &.{pkg.name};
+            runCaskInstall(alloc, names_slice);
+        } else {
+            // Remove old keg
+            if (db.findKeg(pkg.name)) |keg| {
+                nb.linker.unlinkKeg(pkg.name, keg.version) catch {};
+                nb.cellar.remove(pkg.name, keg.version) catch {};
+                db.recordRemoval(pkg.name, alloc) catch {};
+            }
+            // Install new version via full pipeline
+            const names_slice: []const []const u8 = &.{pkg.name};
+            runInstall(alloc, names_slice);
+        }
+        stdout.print("==> Upgraded {s} ({s} -> {s})\n", .{ pkg.name, pkg.old_ver, pkg.new_ver }) catch {};
+    }
+
+    const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
+    const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+    stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
 }
 
 // ── nb update ──
@@ -727,7 +929,9 @@ fn printUsage() void {
         \\  remove --cask <app>      Uninstall macOS applications
         \\  list                     List installed packages and casks
         \\  info <formula>           Show formula info from Homebrew API
+        \\  search <query>           Search for formulas and casks
         \\  upgrade [formula]        Upgrade packages (or all if none specified)
+        \\  upgrade --cask [app]     Upgrade casks (or all if none specified)
         \\  update                   Self-update nanobrew to the latest version
         \\  help                     Show this help
         \\
@@ -736,6 +940,10 @@ fn printUsage() void {
         \\  nb install ripgrep
         \\  nb install ffmpeg python node
         \\  nb install --cask firefox
+        \\  nb search ripgrep
+        \\  nb upgrade
+        \\  nb upgrade tree
+        \\  nb upgrade --cask
         \\  nb list
         \\  nb remove ripgrep
         \\  nb remove --cask firefox

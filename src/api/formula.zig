@@ -14,6 +14,11 @@ pub const Formula = struct {
     dependencies: []const []const u8 = &.{},
     bottle_url: []const u8 = "",
     bottle_sha256: []const u8 = "",
+    source_url: []const u8 = "",
+    source_sha256: []const u8 = "",
+    build_deps: []const []const u8 = &.{},
+    caveats: []const u8 = "",
+    post_install_defined: bool = false,
 
     /// Effective version string including rebuild suffix for bottle paths.
     /// e.g. "3.1.0" or "3.1.0_1" if rebuild > 0
@@ -26,11 +31,16 @@ pub const Formula = struct {
     pub fn deinit(self: Formula, alloc: std.mem.Allocator) void {
         for (self.dependencies) |dep| alloc.free(dep);
         alloc.free(self.dependencies);
+        for (self.build_deps) |dep| alloc.free(dep);
+        alloc.free(self.build_deps);
         alloc.free(self.name);
         alloc.free(self.version);
         alloc.free(self.desc);
         alloc.free(self.bottle_url);
         alloc.free(self.bottle_sha256);
+        alloc.free(self.source_url);
+        alloc.free(self.source_sha256);
+        alloc.free(self.caveats);
     }
 
 
