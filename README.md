@@ -15,11 +15,11 @@ A fast macOS package manager. Written in Zig. Uses Homebrew's bottles and formul
 
 | Package | Homebrew | zerobrew (cold) | zerobrew (warm) | nanobrew (cold) | nanobrew (warm) |
 |---------|----------|-----------------|-----------------|-----------------|-----------------|
-| **tree** (0 deps) | 4.025s | — | — | **0.633s** | **0.003s** |
-| **ffmpeg** (11 deps) | 14.776s | — | — | **1.393s** | **0.363s** |
-| **wget** (6 deps) | 3.859s | — | — | **2.527s** | **0.026s** |
+| **tree** (0 deps) | 5.527s | 2.280s | 0.238s | **0.681s** | **0.010s** |
+| **ffmpeg** (11 deps) | 19.571s | 5.552s | 3.386s | **2.117s** | **0.564s** |
+| **wget** (6 deps) | 5.849s | 9.364s | 1.056s | **3.090s** | **0.033s** | 3.859s | — | — | **2.527s** | **0.026s** |
 
-> Benchmarks on Apple Silicon (GitHub Actions macos-14). Auto-updated weekly — [see workflow](../../actions/workflows/benchmark.yml).
+> Benchmarks on Apple Silicon (GitHub Actions macos-14), 2026-02-16. Auto-updated weekly.
 
 ## Install
 
