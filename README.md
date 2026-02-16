@@ -75,7 +75,6 @@ nb install indirect/tap/bpb   # taps with bottles work too
 
 nanobrew fetches the Ruby formula directly from GitHub, parses it, and installs — no `brew tap` step needed. Supports bottles, source builds, and pre-built binaries.
 
-
 ### macOS Apps (Casks)
 
 ```bash
