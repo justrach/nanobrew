@@ -46,4 +46,56 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    // ── Linux cross-compilation convenience targets ──
+    const linux_x86 = b.resolveTargetQuery(.{
+        .cpu_arch = .x86_64,
+        .os_tag = .linux,
+        .abi = .musl,
+    });
+    const linux_arm = b.resolveTargetQuery(.{
+        .cpu_arch = .aarch64,
+        .os_tag = .linux,
+        .abi = .musl,
+    });
+
+    const linux_nb_x86 = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = linux_x86,
+        .optimize = .ReleaseFast,
+    });
+    const linux_exe_x86 = b.addExecutable(.{
+        .name = "nb",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = linux_x86,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "nanobrew", .module = linux_nb_x86 },
+            },
+        }),
+    });
+    linux_exe_x86.root_module.strip = true;
+    const linux_step_x86 = b.step("linux", "Cross-compile for x86_64-linux-musl");
+    linux_step_x86.dependOn(&b.addInstallArtifact(linux_exe_x86, .{}).step);
+
+    const linux_nb_arm = b.createModule(.{
+        .root_source_file = b.path("src/root.zig"),
+        .target = linux_arm,
+        .optimize = .ReleaseFast,
+    });
+    const linux_exe_arm = b.addExecutable(.{
+        .name = "nb",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/main.zig"),
+            .target = linux_arm,
+            .optimize = .ReleaseFast,
+            .imports = &.{
+                .{ .name = "nanobrew", .module = linux_nb_arm },
+            },
+        }),
+    });
+    linux_exe_arm.root_module.strip = true;
+    const linux_step_arm = b.step("linux-arm", "Cross-compile for aarch64-linux-musl");
+    linux_step_arm.dependOn(&b.addInstallArtifact(linux_exe_arm, .{}).step);
 }
