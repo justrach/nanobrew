@@ -2,6 +2,19 @@
 
 All notable changes to nanobrew are documented here.
 
+## [0.1.065] - 2026-02-16
+
+### Added
+- **Third-party tap support** — `nb install user/tap/formula` now works. nanobrew is the only fast Homebrew client that supports third-party taps. Example: `nb install steipete/tap/sag` installs in ~2s.
+- **Ruby formula parser** (`src/api/tap.zig`) — line-by-line parser for `.rb` formula files. Extracts version, url, sha256, dependencies, bottle blocks, and handles `#{version}` interpolation and `on_macos`/`on_linux` platform conditionals.
+- **Tap formula fetching** — fetches formulas directly from `raw.githubusercontent.com/<user>/homebrew-<tap>/HEAD/Formula/<name>.rb`. Falls back to `Formula/<letter>/<name>.rb` for sharded repos.
+- **Pre-built binary detection** — when a tap formula has no build system (common for pre-built binary taps), nanobrew scans the extracted tarball for executables and copies them to the keg `bin/` directory.
+- **Native HTTP everywhere** — replaced all remaining curl subprocess calls with Zig's native `std.http.Client`. Zero external dependencies for network operations. Shared HTTP client in dependency resolver for TLS connection reuse.
+
+### Changed
+- Dependency resolver now shares a single HTTP client across all API fetches for TLS connection reuse, reducing resolve time for multi-dep packages.
+- `fetchFormulaWithClient` routes tap refs (names with 2 slashes) to the Ruby formula pipeline automatically — no special flags needed.
+
 ## [0.1.06] - 2026-02-16
 
 ### Added

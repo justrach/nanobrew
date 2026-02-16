@@ -11,6 +11,7 @@ A fast package manager for macOS and Linux. Written in Zig. Uses Homebrew's bott
 - **Fast warm installs** — packages already in the local store reinstall in ~3.5ms
 - **Parallel downloads** — all dependencies download and extract at the same time
 - **No Ruby runtime** — single static binary, instant startup
+- **Third-party taps** — `nb install user/tap/formula` just works. The only fast Homebrew client with tap support
 - **Drop-in Homebrew replacement** — same formulas, same bottles, same casks
 - **Linux + Docker** — native .deb support, 2.8x faster than apt-get
 
@@ -64,6 +65,16 @@ nb list                       # see what's installed
 nb info jq                    # show package details
 nb search ripgrep             # search formulas and casks
 ```
+
+### Third-Party Taps
+
+```bash
+nb install steipete/tap/sag   # install from a third-party tap
+nb install indirect/tap/bpb   # taps with bottles work too
+```
+
+nanobrew fetches the Ruby formula directly from GitHub, parses it, and installs — no `brew tap` step needed. Supports bottles, source builds, and pre-built binaries.
+
 
 ### macOS Apps (Casks)
 
@@ -161,6 +172,14 @@ nb install --deb curl                    # Linux: .deb packages
   ├─ 3. Download .debs with streaming SHA256 verification
   ├─ 4. Parse ar archive, decompress data.tar natively (zstd/gzip)
   └─ 5. Extract to / (tar --skip-old-files)
+
+nb install steipete/tap/sag              # Third-party taps
+  │
+  ├─ 1. Detect tap syntax (user/tap/formula)
+  ├─ 2. Fetch Ruby formula from GitHub (raw.githubusercontent.com)
+  ├─ 3. Parse .rb file (version, url, sha256, deps, bottle blocks)
+  ├─ 4. Resolve dependencies normally (they're homebrew-core names)
+  └─ 5. Install via bottle or source path (same pipeline as above)
 ```
 
 Key design choices:
@@ -207,6 +226,7 @@ License: [Apache 2.0](./LICENSE)
 | `nb install <pkg>` | `nb i` | Install packages |
 | `nb install --cask <app>` | | Install macOS apps |
 | `nb install --deb <pkg>` | | Install .deb packages (Linux/Docker) |
+| `nb install user/tap/formula` | | Install from a third-party tap |
 | `nb remove <pkg>` | `nb ui` | Uninstall packages |
 | `nb list` | `nb ls` | List installed packages |
 | `nb info <pkg>` | | Show package details |
