@@ -21,6 +21,12 @@ A fast macOS package manager. Written in Zig. Uses Homebrew's bottles and formul
 
 > Benchmarks on Apple Silicon (GitHub Actions macos-14), 2026-02-16. Auto-updated weekly.
 
+| | nanobrew | zerobrew | Homebrew |
+|---|---------|----------|----------|
+| **Binary size** | **1.2 MB** | 7.9 MB | 57 MB (Ruby runtime) |
+
+> nanobrew is **6.8x smaller** than zerobrew and **47x smaller** than Homebrew. See how these are measured in the [benchmark workflow](.github/workflows/benchmark.yml).
+
 ## Install
 
 ```bash
