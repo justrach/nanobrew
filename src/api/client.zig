@@ -1,15 +1,15 @@
 // nanobrew — Homebrew JSON API client
 //
 // Fetches formula metadata from https://formulae.brew.sh/api/formula/<name>.json
-// Uses curl for HTTP (Zig 0.15 std.http.Client API is still evolving).
+// Uses native Zig HTTP client (no curl dependency).
 // Parses JSON to extract: name, version, dependencies, bottle URL + SHA256.
-
 const std = @import("std");
 const Formula = @import("formula.zig").Formula;
 const BOTTLE_TAG = @import("formula.zig").BOTTLE_TAG;
 const BOTTLE_FALLBACKS = @import("formula.zig").BOTTLE_FALLBACKS;
 const Cask = @import("cask.zig").Cask;
 const Artifact = @import("cask.zig").Artifact;
+const fetch = @import("../net/fetch.zig");
 
 const API_BASE = "https://formulae.brew.sh/api/formula/";
 const CASK_API_BASE = "https://formulae.brew.sh/api/cask/";
@@ -52,25 +52,16 @@ fn fetchAndCacheCask(alloc: std.mem.Allocator, token: []const u8, cache_path: []
     var url_buf: [512]u8 = undefined;
     const url = std.fmt.bufPrint(&url_buf, "{s}{s}.json", .{ CASK_API_BASE, token }) catch return error.NameTooLong;
 
-    const run = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "curl", "-sL", "--http2", url },
-    }) catch return error.CurlFailed;
-    defer alloc.free(run.stderr);
-
-    if (run.term.Exited != 0 or run.stdout.len == 0) {
-        alloc.free(run.stdout);
-        return error.CaskNotFound;
-    }
+    const body = fetch.get(alloc, url) catch return error.CaskNotFound;
 
     std.fs.makeDirAbsolute(API_CACHE_DIR) catch {};
     if (std.fs.createFileAbsolute(cache_path, .{})) |file| {
         defer file.close();
-        file.writeAll(run.stdout) catch {};
+        file.writeAll(body) catch {};
     } else |_| {}
 
-    defer alloc.free(run.stdout);
-    return parseCaskJson(alloc, run.stdout);
+    defer alloc.free(body);
+    return parseCaskJson(alloc, body);
 }
 
 fn parseCaskJson(alloc: std.mem.Allocator, json_data: []const u8) !Cask {
@@ -197,26 +188,17 @@ fn fetchAndCache(alloc: std.mem.Allocator, name: []const u8, cache_path: []const
     var url_buf: [512]u8 = undefined;
     const url = std.fmt.bufPrint(&url_buf, "{s}{s}.json", .{ API_BASE, name }) catch return error.NameTooLong;
 
-    const run = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "curl", "-sL", "--http2", url },
-    }) catch return error.CurlFailed;
-    defer alloc.free(run.stderr);
-
-    if (run.term.Exited != 0 or run.stdout.len == 0) {
-        alloc.free(run.stdout);
-        return error.FormulaNotFound;
-    }
+    const body = fetch.get(alloc, url) catch return error.FormulaNotFound;
 
     // Write to cache
     std.fs.makeDirAbsolute(API_CACHE_DIR) catch {};
     if (std.fs.createFileAbsolute(cache_path, .{})) |file| {
         defer file.close();
-        file.writeAll(run.stdout) catch {};
+        file.writeAll(body) catch {};
     } else |_| {}
 
-    defer alloc.free(run.stdout);
-    return parseFormulaJson(alloc, run.stdout);
+    defer alloc.free(body);
+    return parseFormulaJson(alloc, body);
 }
 
 fn readCached(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
