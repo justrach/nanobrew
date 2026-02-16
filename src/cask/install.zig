@@ -7,12 +7,19 @@ const std = @import("std");
 const Cask = @import("../api/cask.zig").Cask;
 const Artifact = @import("../api/cask.zig").Artifact;
 const DownloadFormat = @import("../api/cask.zig").DownloadFormat;
+const paths = @import("../platform/paths.zig");
+const builtin = @import("builtin");
 
-const PREFIX = "/opt/nanobrew/prefix";
-const CACHE_TMP = "/opt/nanobrew/cache/tmp";
+const PREFIX = paths.PREFIX;
+const CACHE_TMP = paths.TMP_DIR;
 
 pub fn installCask(alloc: std.mem.Allocator, cask: Cask) !void {
     const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    if (comptime builtin.os.tag == .linux) {
+        stderr.print("nb: casks are not supported on Linux yet\n", .{}) catch {};
+        return error.CaskNotSupported;
+    }
 
     // 1. Download artifact
     const ext: []const u8 = switch (cask.downloadFormat()) {
