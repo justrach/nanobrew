@@ -49,7 +49,7 @@ const Phase = enum(u8) {
 
 const ROOT = paths.ROOT;
 const PREFIX = paths.PREFIX;
-const VERSION = "0.1.053";
+const VERSION = "0.1.062";
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -989,10 +989,36 @@ fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) void {
     }
 }
 
+// ── Version display (cached from endpoint) ──
+
+var display_version_buf: [32]u8 = undefined;
+var display_version_len: usize = 0;
+var display_version_loaded: bool = false;
+
+/// Returns the latest known version: reads from cache file written by checkForUpdate(),
+/// falls back to compile-time VERSION if cache doesn't exist yet.
+fn getDisplayVersion() []const u8 {
+    if (display_version_loaded) {
+        if (display_version_len > 0) return display_version_buf[0..display_version_len];
+        return VERSION;
+    }
+    display_version_loaded = true;
+
+    const cache_path = ROOT ++ "/cache/latest_version";
+    const f = std.fs.openFileAbsolute(cache_path, .{}) catch return VERSION;
+    defer f.close();
+    const n = f.readAll(&display_version_buf) catch return VERSION;
+    if (n == 0) return VERSION;
+    const trimmed = std.mem.trimRight(u8, display_version_buf[0..n], "\n \t\x00");
+    if (trimmed.len == 0 or std.mem.eql(u8, trimmed, "error")) return VERSION;
+    display_version_len = trimmed.len;
+    return display_version_buf[0..display_version_len];
+}
+
 
 fn printUsage() void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
-    stdout.print("\x1b[1mnanobrew\x1b[0m \x1b[90mv{s}\x1b[0m — The fastest package manager\n", .{VERSION}) catch {};
+    stdout.print("\x1b[1mnanobrew\x1b[0m \x1b[90mv{s}\x1b[0m — The fastest package manager\n", .{getDisplayVersion()}) catch {};
     stdout.print(
         \\
         \\  Faster than zerobrew. Faster than homebrew. Written in Zig.
@@ -2044,6 +2070,12 @@ fn checkForUpdate(alloc: std.mem.Allocator) void {
 
     const latest_ver = std.mem.trimRight(u8, result.stdout, "\n \t");
     if (latest_ver.len == 0 or std.mem.eql(u8, latest_ver, "error")) return;
+
+    // Cache latest version for getDisplayVersion()
+    if (std.fs.createFileAbsolute(ROOT ++ "/cache/latest_version", .{})) |vf| {
+        defer vf.close();
+        vf.writeAll(latest_ver) catch {};
+    } else |_| {}
 
     // Compare with current version
     if (std.mem.eql(u8, latest_ver, VERSION)) return;

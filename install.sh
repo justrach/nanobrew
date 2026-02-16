@@ -25,7 +25,7 @@ zig build -Doptimize=ReleaseFast 2>&1
 
 # Create directories
 echo "    Creating directories..."
-sudo mkdir -p "$NANOBREW_BIN" "$NANOBREW_CACHE/blobs" "$NANOBREW_CACHE/tmp" "$NANOBREW_CACHE/tokens" "$NANOBREW_CACHE/api" "$NANOBREW_PREFIX/Cellar" "/opt/nanobrew/store"
+sudo mkdir -p "$NANOBREW_BIN" "$NANOBREW_CACHE/blobs" "$NANOBREW_CACHE/tmp" "$NANOBREW_CACHE/tokens" "$NANOBREW_CACHE/api" "$NANOBREW_PREFIX/Cellar" "$NANOBREW_PREFIX/opt" "/opt/nanobrew/store" "/opt/nanobrew/db" "/opt/nanobrew/locks"
 sudo chown -R "$(whoami)" /opt/nanobrew
 
 # Install binary

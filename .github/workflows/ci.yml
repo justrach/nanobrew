@@ -26,6 +26,12 @@ jobs:
       - name: Smoke test
         run: ./zig-out/bin/nb help
 
+      - name: Test init creates opt/ directory
+        run: |
+          sudo ./zig-out/bin/nb init
+          test -d /opt/nanobrew/prefix/opt || (echo "FAIL: opt/ directory not created by nb init" && exit 1)
+          echo "PASS: opt/ directory exists"
+
       - name: Unit tests
         run: zig build test
 
@@ -53,6 +59,12 @@ jobs:
 
       - name: Smoke test
         run: ./zig-out/bin/nb help
+
+      - name: Test init creates opt/ directory
+        run: |
+          sudo ./zig-out/bin/nb init
+          test -d /opt/nanobrew/prefix/opt || (echo "FAIL: opt/ directory not created by nb init" && exit 1)
+          echo "PASS: opt/ directory exists"
 
       - name: Deb parity test
         run: bash tests/deb-parity.sh ./zig-out/bin/nb
