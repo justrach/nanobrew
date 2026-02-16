@@ -15,11 +15,11 @@ A fast macOS package manager. Written in Zig. Uses Homebrew's bottles and formul
 
 | Package | Homebrew | nanobrew (cold) | nanobrew (warm) |
 |---------|----------|-----------------|-----------------|
-| **tree** (0 deps) | 8.99s | **1.19s** | **3.5ms** |
-| **ffmpeg** (11 deps) | ~24.5s | **22.4s** | **3.5ms** |
-| **wget** (6 deps) | 16.84s | **11.26s** | **3.5ms** |
+| **tree** (0 deps) | 4.025s | **0.633s** | **0.003s** |
+| **ffmpeg** (11 deps) | 14.776s | **1.393s** | **0.363s** |
+| **wget** (6 deps) | 3.859s | **2.527s** | **0.026s** | 16.84s | **11.26s** | **3.5ms** |
 
-> Benchmarks on Apple Silicon, macOS 15, same network.
+> Benchmarks on Apple Silicon (GitHub Actions macos-14), 2026-02-16.
 
 ## Install
 
