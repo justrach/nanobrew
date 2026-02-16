@@ -47,6 +47,7 @@ const Phase = enum(u8) {
 
 const ROOT = "/opt/nanobrew";
 const PREFIX = ROOT ++ "/prefix";
+const VERSION = "0.1.051";
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -89,6 +90,9 @@ pub fn main() !void {
         .services => runServices(alloc, args[2..]),
         .completions => runCompletions(args[2..]),
     }
+
+    // Check for updates (once per day, non-blocking)
+    checkForUpdate(alloc);
 }
 
 fn parseCommand(arg: []const u8) ?Command {
@@ -973,8 +977,8 @@ fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) void {
 
 fn printUsage() void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
+    stdout.print("\x1b[1mnanobrew\x1b[0m \x1b[90mv{s}\x1b[0m — The fastest macOS package manager\n", .{VERSION}) catch {};
     stdout.print(
-        \\nanobrew — The fastest macOS package manager
         \\
         \\  Faster than zerobrew. Faster than homebrew. Written in Zig.
         \\  SIMD extraction + mmap + arena allocators + APFS clonefile.
@@ -1683,4 +1687,90 @@ fn runCompletions(args: []const []const u8) void {
     } else {
         stderr.print("nb: unknown shell '{s}'\nUsage: nb completions [zsh|bash|fish]\n", .{shell}) catch {};
     }
+}
+
+// ── Version update check ──
+
+fn checkForUpdate(alloc: std.mem.Allocator) void {
+    const cache_path = ROOT ++ "/cache/last_update_check";
+    const now = std.time.timestamp();
+
+    // Only check once per day (86400 seconds)
+    if (std.fs.openFileAbsolute(cache_path, .{})) |f| {
+        defer f.close();
+        var buf: [32]u8 = undefined;
+        const n = f.readAll(&buf) catch 0;
+        if (n > 0) {
+            const last_check = std.fmt.parseInt(i64, std.mem.trimRight(u8, buf[0..n], "\n \t"), 10) catch 0;
+            if (now - last_check < 86400) return;
+        }
+    } else |_| {}
+
+    // Write current timestamp (best-effort)
+    if (std.fs.createFileAbsolute(cache_path, .{})) |f| {
+        defer f.close();
+        var ts_buf: [20]u8 = undefined;
+        const ts_str = std.fmt.bufPrint(&ts_buf, "{d}", .{now}) catch return;
+        f.writeAll(ts_str) catch {};
+    } else |_| {}
+
+    // Fetch latest release tag from GitHub (quick curl call)
+    const result = std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "curl", "-fsSL", "--max-time", "3", "https://api.github.com/repos/justrach/nanobrew/releases/latest" },
+    }) catch return;
+    defer alloc.free(result.stdout);
+    defer alloc.free(result.stderr);
+    if (result.term.Exited != 0) return;
+
+    // Parse "tag_name" from JSON response
+    const latest_tag = parseTagName(result.stdout) orelse return;
+
+    // Strip leading 'v' if present
+    const latest_ver = if (latest_tag.len > 0 and latest_tag[0] == 'v') latest_tag[1..] else latest_tag;
+
+    // Compare with current version
+    if (std.mem.eql(u8, latest_ver, VERSION)) return;
+
+    // New version available — print colored banner
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    stdout.print(
+        "\n\x1b[33m╭─────────────────────────────────────────╮\x1b[0m\n" ++
+        "\x1b[33m│\x1b[0m  \x1b[1mUpdate available!\x1b[0m " ++
+        "\x1b[90m{s}\x1b[0m → \x1b[32;1m{s}\x1b[0m" ++
+        "{s}" ++
+        "  \x1b[33m│\x1b[0m\n" ++
+        "\x1b[33m│\x1b[0m  Run \x1b[36;1mnb update\x1b[0m to upgrade" ++
+        "                \x1b[33m│\x1b[0m\n" ++
+        "\x1b[33m╰─────────────────────────────────────────╯\x1b[0m\n"
+    , .{
+        VERSION,
+        latest_ver,
+        padSpaces(VERSION.len + latest_ver.len),
+    }) catch {};
+}
+
+fn padSpaces(used: usize) []const u8 {
+    // Target: 19 chars for "x.x.xx -> x.x.xx" area, pad remaining
+    const target = 19;
+    if (used >= target) return "";
+    const spaces = "                   "; // 19 spaces
+    return spaces[0 .. target - used];
+}
+
+fn parseTagName(json: []const u8) ?[]const u8 {
+    // Simple: find "tag_name": "..." in the JSON
+    const needle = "\"tag_name\"";
+    const idx = std.mem.indexOf(u8, json, needle) orelse return null;
+    const after = json[idx + needle.len ..];
+
+    // Skip whitespace and colon
+    var i: usize = 0;
+    while (i < after.len and (after[i] == ' ' or after[i] == ':' or after[i] == '\t' or after[i] == '\n')) : (i += 1) {}
+    if (i >= after.len or after[i] != '"') return null;
+    i += 1; // skip opening quote
+    const start = i;
+    while (i < after.len and after[i] != '"') : (i += 1) {}
+    if (i >= after.len) return null;
+    return after[start..i];
 }
