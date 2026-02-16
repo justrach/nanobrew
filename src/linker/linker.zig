@@ -70,6 +70,7 @@ pub fn linkKeg(name: []const u8, version: []const u8) !void {
     } else |_| {}
 
     // Create opt/ symlink: prefix/opt/<name> -> Cellar/<name>/<version>
+    std.fs.makeDirAbsolute(OPT_DIR) catch {};
     var opt_buf: [512]u8 = undefined;
     const opt_link = std.fmt.bufPrint(&opt_buf, "{s}/{s}", .{ OPT_DIR, name }) catch return error.PathTooLong;
     std.fs.deleteFileAbsolute(opt_link) catch {};
