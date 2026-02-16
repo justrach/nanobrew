@@ -7,7 +7,7 @@ on:
     branches: [main]
 
 jobs:
-  build:
+  build-macos:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -26,8 +26,55 @@ jobs:
       - name: Smoke test
         run: ./zig-out/bin/nb help
 
+      - name: Unit tests
+        run: zig build test
+
       - name: Upload binary
         uses: actions/upload-artifact@v4
         with:
           name: nb-macos-arm64
           path: zig-out/bin/nb
+
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Cross-compile for Linux x86_64
+        run: zig build linux
+
+      - name: Verify binary
+        run: file zig-out/bin/nb && ls -lh zig-out/bin/nb
+
+      - name: Smoke test
+        run: ./zig-out/bin/nb help
+
+      - name: Deb parity test
+        run: bash tests/deb-parity.sh ./zig-out/bin/nb
+
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: nb-linux-x86_64
+          path: zig-out/bin/nb
+
+  cross-compile:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Cross-compile x86_64-linux
+        run: zig build linux
+
+      - name: Cross-compile aarch64-linux
+        run: zig build linux-arm
