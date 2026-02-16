@@ -18,7 +18,7 @@ A fast package manager for macOS and Linux. Written in Zig. Uses Homebrew's bott
 |---------|----------|-----------------|-----------------|-----------------|-----------------|
 | **tree** (0 deps) | 5.527s | 2.280s | 0.238s | **0.681s** | **0.010s** |
 | **ffmpeg** (11 deps) | 19.571s | 5.552s | 3.386s | **2.117s** | **0.564s** |
-| **wget** (6 deps) | 5.849s | 9.364s | 1.056s | **3.090s** | **0.033s** | 3.859s | — | — | **2.527s** | **0.026s** |
+| **wget** (6 deps) | 5.849s | 9.364s | 1.056s | **3.090s** | **0.033s** |
 
 > Benchmarks on Apple Silicon (GitHub Actions macos-14), 2026-02-16. Auto-updated weekly.
 
@@ -221,7 +221,7 @@ License: [Apache 2.0](./LICENSE)
 | `nb doctor` | `nb dr` | Health check |
 | `nb cleanup` | `nb clean` | Remove old caches |
 | `nb deps [--tree] <pkg>` | | Show dependencies |
-| `nb services` | | Manage launchctl services |
+| `nb services` | | Manage services (launchctl/systemd) |
 | `nb completions <shell>` | | Print shell completions |
 | `nb update` | | Self-update nanobrew |
 | `nb init` | | Create directory structure |
