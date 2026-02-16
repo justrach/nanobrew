@@ -2,6 +2,12 @@
 
 All notable changes to nanobrew are documented here.
 
+## [0.1.067] - 2026-02-16
+
+### Added
+- **`nb nuke`** — completely uninstall nanobrew and all installed packages. Removes `/opt/nanobrew` and `~/.local/bin/nb`. Requires typing `yes` to confirm (or `--yes` to skip). Also available as `nb uninstall-self`.
+- **Tap-aware `nb remove`** — `nb remove steipete/tap/sag` now works (resolves the tap ref to the short package name automatically).
+
 ## [0.1.065] - 2026-02-16
 
 ### Added
