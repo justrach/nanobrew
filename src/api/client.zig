@@ -9,6 +9,7 @@ const BOTTLE_TAG = @import("formula.zig").BOTTLE_TAG;
 const BOTTLE_FALLBACKS = @import("formula.zig").BOTTLE_FALLBACKS;
 const Cask = @import("cask.zig").Cask;
 const Artifact = @import("cask.zig").Artifact;
+const tap = @import("tap.zig");
 const fetch = @import("../net/fetch.zig");
 
 const API_BASE = "https://formulae.brew.sh/api/formula/";
@@ -16,6 +17,16 @@ const CASK_API_BASE = "https://formulae.brew.sh/api/cask/";
 const API_CACHE_DIR = @import("../platform/paths.zig").API_CACHE_DIR;
 
 pub fn fetchFormula(alloc: std.mem.Allocator, name: []const u8) !Formula {
+    return fetchFormulaWithClient(alloc, null, name);
+}
+
+/// Fetch formula using a shared HTTP client (avoids repeated TLS handshakes).
+pub fn fetchFormulaWithClient(alloc: std.mem.Allocator, client: ?*std.http.Client, name: []const u8) !Formula {
+    // Tap formula: "user/tap/formula" -> fetch from GitHub
+    if (isTapRef(name)) {
+        return tap.fetchTapFormula(alloc, client, name);
+    }
+
     // Check cache first (5 minute TTL)
     var cache_path_buf: [512]u8 = undefined;
     const cache_path = std.fmt.bufPrint(&cache_path_buf, "{s}/{s}.json", .{ API_CACHE_DIR, name }) catch return error.NameTooLong;
@@ -23,13 +34,21 @@ pub fn fetchFormula(alloc: std.mem.Allocator, name: []const u8) !Formula {
     if (readCached(alloc, cache_path)) |cached_json| {
         const formula = parseFormulaJson(alloc, cached_json) catch {
             alloc.free(cached_json);
-            return fetchAndCache(alloc, name, cache_path);
+            return fetchAndCache(alloc, client, name, cache_path);
         };
         alloc.free(cached_json);
         return formula;
     }
 
-    return fetchAndCache(alloc, name, cache_path);
+    return fetchAndCache(alloc, client, name, cache_path);
+}
+
+fn isTapRef(name: []const u8) bool {
+    var count: usize = 0;
+    for (name) |c| {
+        if (c == '/') count += 1;
+    }
+    return count == 2;
 }
 
 pub fn fetchCask(alloc: std.mem.Allocator, token: []const u8) !Cask {
@@ -184,11 +203,14 @@ fn parseCaskJson(alloc: std.mem.Allocator, json_data: []const u8) !Cask {
     };
 }
 
-fn fetchAndCache(alloc: std.mem.Allocator, name: []const u8, cache_path: []const u8) !Formula {
+fn fetchAndCache(alloc: std.mem.Allocator, shared_client: ?*std.http.Client, name: []const u8, cache_path: []const u8) !Formula {
     var url_buf: [512]u8 = undefined;
     const url = std.fmt.bufPrint(&url_buf, "{s}{s}.json", .{ API_BASE, name }) catch return error.NameTooLong;
 
-    const body = fetch.get(alloc, url) catch return error.FormulaNotFound;
+    const body = if (shared_client) |c|
+        fetch.getWithClient(alloc, c, url) catch return error.FormulaNotFound
+    else
+        fetch.get(alloc, url) catch return error.FormulaNotFound;
 
     // Write to cache
     std.fs.makeDirAbsolute(API_CACHE_DIR) catch {};
