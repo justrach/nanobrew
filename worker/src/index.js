@@ -8,22 +8,30 @@ INSTALL_DIR="/opt/nanobrew"
 BIN_DIR="$INSTALL_DIR/prefix/bin"
 
 echo ""
-echo "  nanobrew — the fastest macOS package manager"
+echo "  nanobrew — the fastest package manager"
 echo ""
 
-# Check macOS
-if [ "$(uname -s)" != "Darwin" ]; then
-    echo "error: nanobrew only supports macOS"
-    exit 1
-fi
-
-# Detect architecture
+# Detect OS and architecture
+OS="$(uname -s)"
 ARCH="$(uname -m)"
-case "$ARCH" in
-    arm64|aarch64) ARCH_LABEL="arm64" ;;
-    x86_64)        ARCH_LABEL="x86_64" ;;
+
+case "$OS" in
+    Darwin)
+        case "$ARCH" in
+            arm64|aarch64) TARBALL="nb-arm64-apple-darwin.tar.gz" ;;
+            x86_64)        TARBALL="nb-x86_64-apple-darwin.tar.gz" ;;
+            *) echo "error: unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+        ;;
+    Linux)
+        case "$ARCH" in
+            aarch64) TARBALL="nb-aarch64-linux.tar.gz" ;;
+            x86_64)  TARBALL="nb-x86_64-linux.tar.gz" ;;
+            *) echo "error: unsupported architecture: $ARCH"; exit 1 ;;
+        esac
+        ;;
     *)
-        echo "error: unsupported architecture: $ARCH"
+        echo "error: unsupported OS: $OS"
         exit 1
         ;;
 esac
@@ -39,10 +47,9 @@ fi
 echo "  Found $LATEST"
 
 # Download binary
-TARBALL="nb-\${ARCH_LABEL}-apple-darwin.tar.gz"
 URL="https://github.com/$REPO/releases/download/$LATEST/$TARBALL"
 
-echo "  Downloading nb (\${ARCH_LABEL})..."
+echo "  Downloading $TARBALL..."
 TMPDIR_DL="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_DL"' EXIT
 
@@ -70,8 +77,11 @@ chmod +x "$BIN_DIR/nb"
 echo "  Installed nb to $BIN_DIR/nb"
 
 # Add to PATH
-SHELL_RC="$HOME/.zshrc"
-if [ -n "\${BASH_VERSION:-}" ] && [ -f "$HOME/.bashrc" ]; then
+if [ "$OS" = "Linux" ]; then
+    SHELL_RC="$HOME/.bashrc"
+elif [ -n "\${ZSH_VERSION:-}" ] || [ -f "$HOME/.zshrc" ]; then
+    SHELL_RC="$HOME/.zshrc"
+else
     SHELL_RC="$HOME/.bashrc"
 fi
 
@@ -758,24 +768,47 @@ export default {
     }
 
     if (url.pathname === "/version") {
+      // Try CF Cache API first
+      const cache = caches.default;
+      const cacheKey = new Request("https://nanobrew.trilok.ai/_cached/version");
+      const cached = await cache.match(cacheKey);
+      if (cached) return cached;
+
       try {
         const gh = await fetch("https://api.github.com/repos/" + REPO + "/releases/latest", {
           headers: { "User-Agent": "nanobrew-worker" },
-          cf: { cacheTtl: VERSION_CACHE_TTL },
         });
-        if (!gh.ok) return new Response("error", { status: 502 });
+        if (!gh.ok) {
+          // Rate limited — return last known version
+          return new Response("0.1.06", {
+            headers: {
+              "content-type": "text/plain; charset=utf-8",
+              "cache-control": "public, max-age=60",
+              "access-control-allow-origin": "*",
+            },
+          });
+        }
         const data = await gh.json();
         const tag = data.tag_name || "";
         const ver = tag.startsWith("v") ? tag.slice(1) : tag;
-        return new Response(ver, {
+        const resp = new Response(ver, {
           headers: {
             "content-type": "text/plain; charset=utf-8",
             "cache-control": "public, max-age=" + VERSION_CACHE_TTL,
             "access-control-allow-origin": "*",
           },
         });
+        // Store in CF cache for 5 minutes
+        await cache.put(cacheKey, resp.clone());
+        return resp;
       } catch {
-        return new Response("error", { status: 502 });
+        return new Response("0.1.06", {
+          headers: {
+            "content-type": "text/plain; charset=utf-8",
+            "cache-control": "public, max-age=60",
+            "access-control-allow-origin": "*",
+          },
+        });
       }
     }
 
