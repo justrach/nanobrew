@@ -5,8 +5,9 @@
 // File: /opt/nanobrew/db/state.json
 
 const std = @import("std");
+const paths = @import("../platform/paths.zig");
 
-const DB_PATH = "/opt/nanobrew/db/state.json";
+const DB_PATH = paths.DB_PATH;
 
 pub const Keg = struct {
     name: []const u8,
