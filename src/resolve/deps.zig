@@ -3,6 +3,7 @@
 // BFS parallel resolution: fetches each dependency level in parallel,
 // then produces a topological sort (install order).
 // Uses Kahn's algorithm with cycle detection.
+// Shares a single HTTP client across all API fetches to reuse TLS connections.
 
 const std = @import("std");
 const api = @import("../api/client.zig");
@@ -12,16 +13,19 @@ pub const DepResolver = struct {
     alloc: std.mem.Allocator,
     formulae: std.StringHashMap(Formula),
     edges: std.StringHashMap([]const []const u8),
+    client: ?std.http.Client,
 
     pub fn init(alloc: std.mem.Allocator) DepResolver {
         return .{
             .alloc = alloc,
             .formulae = std.StringHashMap(Formula).init(alloc),
             .edges = std.StringHashMap([]const []const u8).init(alloc),
+            .client = std.http.Client{ .allocator = alloc },
         };
     }
 
     pub fn deinit(self: *DepResolver) void {
+        if (self.client) |*c| c.deinit();
         var it = self.formulae.valueIterator();
         while (it.next()) |f| f.deinit(self.alloc);
         self.formulae.deinit();
@@ -30,13 +34,16 @@ pub const DepResolver = struct {
 
     /// Resolve a formula and all its transitive dependencies using BFS.
     /// Each BFS level fetches all unknown deps in parallel.
+    /// Shares one HTTP client across all fetches for TLS connection reuse.
     pub fn resolve(self: *DepResolver, name: []const u8) !void {
-        if (self.formulae.contains(name)) return;
+        if (self.formulae.contains(name) or self.formulae.contains(tapShortName(name))) return;
 
         // Seed the frontier with the requested name
         var frontier: std.ArrayList([]const u8) = .empty;
         defer frontier.deinit(self.alloc);
         try frontier.append(self.alloc, name);
+
+        const client_ptr: ?*std.http.Client = if (self.client != null) &self.client.? else null;
 
         // BFS: each iteration fetches all frontier names in parallel
         while (frontier.items.len > 0) {
@@ -49,16 +56,17 @@ pub const DepResolver = struct {
 
             if (batch_size == 1) {
                 // Single item — no thread overhead
-                results[0] = api.fetchFormula(self.alloc, frontier.items[0]) catch null;
+                results[0] = api.fetchFormulaWithClient(self.alloc, client_ptr, frontier.items[0]) catch null;
             } else {
-                // Parallel fetch
+                // Parallel fetch — each thread gets its own client (HTTP client isn't thread-safe)
+                // but they benefit from DNS/connection caching at the OS level
                 var threads: std.ArrayList(std.Thread) = .empty;
                 defer threads.deinit(self.alloc);
 
                 for (frontier.items, 0..) |dep_name, i| {
                     const t = std.Thread.spawn(.{}, fetchWorker, .{ self.alloc, dep_name, &results[i] }) catch {
                         // Fallback: fetch inline if thread spawn fails
-                        results[i] = api.fetchFormula(self.alloc, dep_name) catch null;
+                        results[i] = api.fetchFormulaWithClient(self.alloc, client_ptr, dep_name) catch null;
                         continue;
                     };
                     threads.append(self.alloc, t) catch continue;
@@ -98,7 +106,17 @@ pub const DepResolver = struct {
         }
     }
 
+    pub fn hasFormula(self: *DepResolver, name: []const u8) bool {
+        return self.formulae.contains(name) or self.formulae.contains(tapShortName(name));
+    }
+
     pub fn topologicalSort(self: *DepResolver) ![]const Formula {
+        // Close the shared client before install phase (frees TLS resources)
+        if (self.client) |*c| {
+            c.deinit();
+            self.client = null;
+        }
+
         var in_degree = std.StringHashMap(u32).init(self.alloc);
         defer in_degree.deinit();
 
@@ -157,6 +175,20 @@ pub const DepResolver = struct {
 
 fn fetchWorker(alloc: std.mem.Allocator, name: []const u8, slot: *?Formula) void {
     slot.* = api.fetchFormula(alloc, name) catch null;
+}
+
+/// For tap refs like "user/tap/formula", return just "formula".
+/// For plain names, return as-is.
+fn tapShortName(name: []const u8) []const u8 {
+    // Find the last slash
+    var last_slash: ?usize = null;
+    for (name, 0..) |c, i| {
+        if (c == '/') last_slash = i;
+    }
+    if (last_slash) |pos| {
+        if (pos + 1 < name.len) return name[pos + 1 ..];
+    }
+    return name;
 }
 
 const testing = std.testing;

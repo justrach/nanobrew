@@ -129,8 +129,36 @@ pub fn buildFromSource(alloc: std.mem.Allocator, formula: Formula) !void {
             try runBuildCmd(alloc, src_root, &.{ "make", std.fmt.allocPrint(alloc, "PREFIX={s}", .{keg_path}) catch return error.OutOfMemory, "install" });
         },
         .unknown => {
-            stderr.print("nb: {s}: no recognized build system found\n", .{formula.name}) catch {};
-            return error.UnknownBuildSystem;
+            // No build system — check for pre-built binaries (common in tap formulas).
+            // Look for executable files in the source root and copy them to keg bin/.
+            var bin_dir_buf: [512]u8 = undefined;
+            const bin_dir = std.fmt.bufPrint(&bin_dir_buf, "{s}/bin", .{keg_path}) catch return error.PathTooLong;
+            std.fs.makeDirAbsolute(bin_dir) catch {};
+
+            var found_binary = false;
+            var dir = std.fs.openDirAbsolute(src_root, .{ .iterate = true }) catch return error.UnknownBuildSystem;
+            defer dir.close();
+            var iter = dir.iterate();
+            while (iter.next() catch null) |entry| {
+                if (entry.kind != .file) continue;
+                // Check if file is executable
+                const stat = dir.statFile(entry.name) catch continue;
+                const mode = stat.mode;
+                if (mode & 0o111 != 0) {
+                    // Copy executable to keg bin/
+                    var src_bin_buf: [512]u8 = undefined;
+                    const src_bin = std.fmt.bufPrint(&src_bin_buf, "{s}/{s}", .{ src_root, entry.name }) catch continue;
+                    var dst_bin_buf: [512]u8 = undefined;
+                    const dst_bin = std.fmt.bufPrint(&dst_bin_buf, "{s}/{s}", .{ bin_dir, entry.name }) catch continue;
+                    std.fs.copyFileAbsolute(src_bin, dst_bin, .{}) catch continue;
+                    found_binary = true;
+                }
+            }
+
+            if (!found_binary) {
+                stderr.print("nb: {s}: no recognized build system found\n", .{formula.name}) catch {};
+                return error.UnknownBuildSystem;
+            }
         },
     }
 

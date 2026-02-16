@@ -32,6 +32,7 @@ pub const cask_installer = @import("cask/install.zig");
 pub const source_builder = @import("build/source.zig");
 pub const postinstall = @import("build/postinstall.zig");
 pub const search_api = @import("api/search.zig");
+pub const tap = @import("api/tap.zig");
 pub const services = @import("services/services.zig");
 
 // Platform abstraction layer
