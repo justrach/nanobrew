@@ -57,15 +57,34 @@ pub const Formula = struct {
     }
 };
 
-/// macOS bottle tag for arm64
-pub const BOTTLE_TAG = "arm64_sonoma";
+/// Bottle tag for the current platform
+pub const BOTTLE_TAG = switch (@import("builtin").os.tag) {
+    .macos => switch (@import("builtin").cpu.arch) {
+        .aarch64 => "arm64_sonoma",
+        .x86_64 => "sonoma",
+        else => "all",
+    },
+    .linux => switch (@import("builtin").cpu.arch) {
+        .x86_64 => "x86_64_linux",
+        .aarch64 => "aarch64_linux",
+        else => "x86_64_linux",
+    },
+    else => "all",
+};
 
 /// Alternate tags to try if primary isn't available
-pub const BOTTLE_FALLBACKS = [_][]const u8{
-    "arm64_sequoia",
-    "arm64_ventura",
-    "arm64_monterey",
-    "all",
+pub const BOTTLE_FALLBACKS = switch (@import("builtin").os.tag) {
+    .macos => [_][]const u8{
+        "arm64_sequoia",
+        "arm64_ventura",
+        "arm64_monterey",
+        "all",
+    },
+    .linux => [_][]const u8{
+        "x86_64_linux",
+        "all",
+    },
+    else => [_][]const u8{"all"},
 };
 
 const testing = std.testing;

@@ -5,8 +5,9 @@
 // v1: Will use mmap + Zig flate.Decompress with Container.gzip for zero-copy.
 
 const std = @import("std");
+const paths = @import("../platform/paths.zig");
 
-const STORE_DIR = "/opt/nanobrew/store";
+const STORE_DIR = paths.STORE_DIR;
 
 /// Extract a gzipped tar blob into the store at store/<sha256>/
 pub fn extractToStore(alloc: std.mem.Allocator, blob_path: []const u8, sha256: []const u8) !void {

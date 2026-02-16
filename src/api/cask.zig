@@ -45,7 +45,7 @@ pub const Cask = struct {
     }
 
     pub fn caskroomPath(self: *const Cask, buf: []u8) []const u8 {
-        return std.fmt.bufPrint(buf, "/opt/nanobrew/prefix/Caskroom/{s}/{s}", .{ self.token, self.version }) catch "";
+        return std.fmt.bufPrint(buf, @import("../platform/paths.zig").CASKROOM_DIR ++ "/{s}/{s}", .{ self.token, self.version }) catch "";
     }
 
     pub fn deinit(self: Cask, alloc: std.mem.Allocator) void {

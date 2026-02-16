@@ -11,7 +11,9 @@
 //   nb update                  # Self-update nanobrew
 const std = @import("std");
 const nb = @import("nanobrew");
-
+const builtin = @import("builtin");
+const platform = nb.platform;
+const paths = platform.paths;
 const Command = enum {
     init,
     install,
@@ -45,9 +47,9 @@ const Phase = enum(u8) {
     failed,
 };
 
-const ROOT = "/opt/nanobrew";
-const PREFIX = ROOT ++ "/prefix";
-const VERSION = "0.1.052";
+const ROOT = paths.ROOT;
+const PREFIX = paths.PREFIX;
+const VERSION = "0.1.053";
 
 pub fn main() !void {
     var gpa = std.heap.GeneralPurposeAllocator(.{}){};
@@ -184,13 +186,16 @@ fn runInit() void {
 fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
-    // Check for --cask flag
+    // Check for --cask and --deb flags
     var is_cask = false;
+    var is_deb = false;
     var formulae: std.ArrayList([]const u8) = .empty;
     defer formulae.deinit(alloc);
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--cask")) {
             is_cask = true;
+        } else if (std.mem.eql(u8, arg, "--deb")) {
+            is_deb = true;
         } else {
             formulae.append(alloc, arg) catch {};
         }
@@ -199,6 +204,11 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     if (formulae.items.len == 0) {
         stderr.print("nb: no formulae specified\n", .{}) catch {};
         std.process.exit(1);
+    }
+
+    if (is_deb) {
+        runDebInstall(alloc, formulae.items);
+        return;
     }
 
     if (is_cask) {
@@ -503,7 +513,7 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     phase.store(@intFromEnum(Phase.relocating), .release);
     var ver_buf: [256]u8 = undefined;
     const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf) orelse f.version;
-    nb.relocate.relocateKeg(alloc, f.name, actual_ver) catch |err| {
+    platform.relocate.relocateKeg(alloc, f.name, actual_ver) catch |err| {
         stderr.print("nb: {s}: relocate failed: {}\n", .{ f.name, err }) catch {};
     };
 
@@ -890,6 +900,11 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
+    if (comptime builtin.os.tag == .linux) {
+        stderr.print("nb: casks are not supported on Linux yet\n", .{}) catch {};
+        return;
+    }
+
     var timer = std.time.Timer.start() catch null;
 
     var db = nb.database.Database.open() catch {
@@ -977,11 +992,12 @@ fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) void {
 
 fn printUsage() void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
-    stdout.print("\x1b[1mnanobrew\x1b[0m \x1b[90mv{s}\x1b[0m — The fastest macOS package manager\n", .{VERSION}) catch {};
+    stdout.print("\x1b[1mnanobrew\x1b[0m \x1b[90mv{s}\x1b[0m — The fastest package manager\n", .{VERSION}) catch {};
     stdout.print(
         \\
         \\  Faster than zerobrew. Faster than homebrew. Written in Zig.
-        \\  SIMD extraction + mmap + arena allocators + APFS clonefile.
+        \\  SIMD extraction + mmap + arena allocators + platform COW copy.
+        \\  Works on macOS and Linux.
         \\
         \\USAGE:
         \\  nb <command> [arguments]
@@ -990,6 +1006,7 @@ fn printUsage() void {
         \\  init                     Create /opt/nanobrew/ directory tree
         \\  install <formula>        Install packages (with full dep resolution)
         \\  install --cask <app>     Install macOS applications
+        \\  install --deb <pkg>      Install .deb packages (Linux, replaces apt-get)
         \\  remove <formula>         Uninstall packages
         \\  remove --cask <app>      Uninstall macOS applications
         \\  list                     List installed packages and casks
@@ -1007,9 +1024,10 @@ fn printUsage() void {
         \\  bundle [dump|install]    Export/import package lists (Brewfile-compatible)
         \\  deps [--tree] <formula>  Show dependency tree
         \\  services [list|start|stop|restart] [name]
-        \\                           Manage launchctl services
+        \\                           Manage background services
         \\  completions [zsh|bash|fish]
         \\                           Generate shell completions
+        \\  help                     Show this help
         \\  help                     Show this help
         \\
         \\EXAMPLES:
@@ -1017,6 +1035,7 @@ fn printUsage() void {
         \\  nb install ripgrep
         \\  nb install ffmpeg python node
         \\  nb install --cask firefox
+        \\  nb install --deb curl wget git
         \\  nb search ripgrep
         \\  nb upgrade
         \\  nb upgrade tree
@@ -1146,6 +1165,29 @@ fn runDoctor(alloc: std.mem.Allocator) void {
                 }
             }
         } else |_| {}
+    }
+
+    // 6. Platform-specific checks
+    if (comptime builtin.os.tag == .linux) {
+        // Check for patchelf (needed for ELF relocation)
+        const pe = std.process.Child.run(.{
+            .allocator = alloc,
+            .argv = &.{ "patchelf", "--version" },
+        }) catch {
+            stdout.print("  ✗ patchelf not found (needed for binary relocation)\n", .{}) catch {};
+            stdout.print("    Install with: apt install patchelf\n", .{}) catch {};
+            issues += 1;
+            printDoctorSummary(stdout, issues);
+            return;
+        };
+        alloc.free(pe.stdout);
+        alloc.free(pe.stderr);
+        if (pe.term.Exited == 0) {
+            stdout.print("  ✓ patchelf installed\n", .{}) catch {};
+        } else {
+            stdout.print("  ✗ patchelf not working\n", .{}) catch {};
+            issues += 1;
+        }
     }
 
     printDoctorSummary(stdout, issues);
@@ -1316,7 +1358,7 @@ fn runRollback(alloc: std.mem.Allocator, args: []const []const u8) void {
 
         var ver_buf: [256]u8 = undefined;
         const actual_ver = nb.cellar.detectKegVersion(name, prev.version, &ver_buf) orelse prev.version;
-        nb.relocate.relocateKeg(alloc, name, actual_ver) catch {};
+        platform.relocate.relocateKeg(alloc, name, actual_ver) catch {};
         nb.linker.linkKeg(name, actual_ver) catch {};
         db.recordInstall(name, prev.version, prev.sha256) catch {};
 
@@ -1690,6 +1732,283 @@ fn runCompletions(args: []const []const u8) void {
 }
 
 // ── Version update check ──
+
+/// Install .deb packages from Ubuntu/Debian repositories (Linux only).
+fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    if (comptime builtin.os.tag != .linux) {
+        stderr.print("nb: --deb is only supported on Linux\n", .{}) catch {};
+        return;
+    }
+
+    var timer = std.time.Timer.start() catch null;
+
+    // --- Step 1: Fetch + decompress package index natively ---
+    stdout.print("==> Fetching package index...\n", .{}) catch {};
+
+    const mirror = "http://archive.ubuntu.com/ubuntu";
+    const dist = "noble";
+    const arch = "amd64";
+
+    var index_url_buf: [512]u8 = undefined;
+    const index_url = std.fmt.bufPrint(&index_url_buf, "{s}/dists/{s}/main/binary-{s}/Packages.gz", .{
+        mirror, dist, arch,
+    }) catch {
+        stderr.print("nb: URL too long\n", .{}) catch {};
+        return;
+    };
+
+    // Native HTTP client — shared across all downloads (connection reuse)
+    var client: std.http.Client = .{ .allocator = alloc };
+    defer client.deinit();
+
+    // Download compressed index via native HTTP (no curl)
+    const index_gz = httpGetToMemory(alloc, &client, index_url) orelse {
+        stderr.print("nb: failed to fetch package index\n", .{}) catch {};
+        return;
+    };
+    defer alloc.free(index_gz);
+
+    // Decompress gzip natively
+    const index_data = nb.deb_extract.decompressGzip(alloc, index_gz) catch {
+        stderr.print("nb: failed to decompress package index\n", .{}) catch {};
+        return;
+    };
+    defer alloc.free(index_data);
+
+    stdout.print("==> Parsing package index ({d} bytes)...\n", .{index_data.len}) catch {};
+
+    // --- Step 2: Parse index + resolve deps ---
+    const all_pkgs = nb.deb_index.parsePackagesIndex(alloc, index_data) catch {
+        stderr.print("nb: failed to parse package index\n", .{}) catch {};
+        return;
+    };
+    defer {
+        for (all_pkgs) |p| p.deinit(alloc);
+        alloc.free(all_pkgs);
+    }
+
+    var index_map = nb.deb_index.buildIndex(alloc, all_pkgs) catch {
+        stderr.print("nb: failed to build package index\n", .{}) catch {};
+        return;
+    };
+    defer index_map.deinit();
+
+    stdout.print("==> Resolving dependencies for {d} package(s)...\n", .{packages.len}) catch {};
+
+    const resolved = nb.deb_resolver.resolveAll(alloc, packages, index_map) catch {
+        stderr.print("nb: dependency resolution failed\n", .{}) catch {};
+        return;
+    };
+    defer alloc.free(resolved);
+
+    // --- Step 3: Download + extract (streaming SHA256 verification) ---
+    stdout.print("==> Installing {d} package(s)...\n", .{resolved.len}) catch {};
+    var installed: usize = 0;
+    var cached: usize = 0;
+
+    for (resolved) |pkg| {
+        var cache_buf: [512]u8 = undefined;
+
+        // Content-addressable cache: check blob store by SHA256
+        if (pkg.sha256.len > 0) {
+            const cache_path = std.fmt.bufPrint(&cache_buf, "{s}/{s}.deb", .{ paths.BLOBS_DIR, pkg.sha256 }) catch continue;
+
+            // Cache hit — extract directly from blob store
+            if (std.fs.accessAbsolute(cache_path, .{})) |_| {
+                nb.deb_extract.extractDebToPrefix(alloc, cache_path) catch {
+                    stderr.print("nb: failed to extract {s}\n", .{pkg.name}) catch {};
+                    continue;
+                };
+                installed += 1;
+                cached += 1;
+                continue;
+            } else |_| {}
+
+            // Cache miss — download with native HTTP + streaming SHA256
+            stdout.print("    {s}...\n", .{pkg.name}) catch {};
+            var url_buf: [1024]u8 = undefined;
+            const dl_url = std.fmt.bufPrint(&url_buf, "{s}/{s}", .{ mirror, pkg.filename }) catch continue;
+
+            downloadDebWithSha256(&client, dl_url, pkg.sha256, cache_path) catch {
+                // Connection may have gone stale — retry with fresh client
+                var retry_client: std.http.Client = .{ .allocator = alloc };
+                defer retry_client.deinit();
+                downloadDebWithSha256(&retry_client, dl_url, pkg.sha256, cache_path) catch {
+                    stderr.print("nb: failed to download {s}\n", .{pkg.name}) catch {};
+                    continue;
+                };
+            };
+
+            // Extract from blob cache
+            nb.deb_extract.extractDebToPrefix(alloc, cache_path) catch {
+                stderr.print("nb: failed to extract {s}\n", .{pkg.name}) catch {};
+                continue;
+            };
+            installed += 1;
+        } else {
+            // No SHA256 — download to tmp and extract
+            stdout.print("    {s} (no checksum)...\n", .{pkg.name}) catch {};
+            var tmp_buf: [512]u8 = undefined;
+            const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}/{s}.deb", .{ paths.TMP_DIR, pkg.name }) catch continue;
+
+            var url_buf: [1024]u8 = undefined;
+            const dl_url = std.fmt.bufPrint(&url_buf, "{s}/{s}", .{ mirror, pkg.filename }) catch continue;
+
+            downloadDebToFile(&client, dl_url, tmp_path) catch {
+                var retry_client: std.http.Client = .{ .allocator = alloc };
+                defer retry_client.deinit();
+                downloadDebToFile(&retry_client, dl_url, tmp_path) catch {
+                    stderr.print("nb: failed to download {s}\n", .{pkg.name}) catch {};
+                    continue;
+                };
+            };
+
+            nb.deb_extract.extractDebToPrefix(alloc, tmp_path) catch {
+                stderr.print("nb: failed to extract {s}\n", .{pkg.name}) catch {};
+                std.fs.deleteFileAbsolute(tmp_path) catch {};
+                continue;
+            };
+            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            installed += 1;
+        }
+    }
+
+    const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
+    const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
+    if (cached > 0) {
+        stdout.print("==> Installed {d}/{d} packages ({d} cached) in {d:.1}ms\n", .{ installed, resolved.len, cached, elapsed_ms }) catch {};
+    } else {
+        stdout.print("==> Installed {d}/{d} packages in {d:.1}ms\n", .{ installed, resolved.len, elapsed_ms }) catch {};
+    }
+}
+
+/// Download a URL to memory using Zig's native HTTP client.
+fn httpGetToMemory(alloc: std.mem.Allocator, client: *std.http.Client, url: []const u8) ?[]u8 {
+    const uri = std.Uri.parse(url) catch return null;
+    var req = client.request(.GET, uri, .{
+        .redirect_behavior = @enumFromInt(5),
+    }) catch return null;
+    defer req.deinit();
+
+    req.sendBodiless() catch return null;
+
+    var redirect_buf: [8192]u8 = undefined;
+    var response = req.receiveHead(&redirect_buf) catch return null;
+    if (response.head.status != .ok) return null;
+
+    // Stream response body to memory
+    var out: std.Io.Writer.Allocating = .init(alloc);
+    defer out.deinit();
+    var reader = response.reader(&.{});
+    _ = reader.streamRemaining(&out.writer) catch return null;
+    return out.toOwnedSlice() catch return null;
+}
+
+/// Download a .deb with streaming SHA256 verification to content-addressable cache.
+fn downloadDebWithSha256(
+    client: *std.http.Client,
+    url: []const u8,
+    expected_sha256: []const u8,
+    dest_path: []const u8,
+) !void {
+    const uri = std.Uri.parse(url) catch return error.DownloadFailed;
+    var req = client.request(.GET, uri, .{
+        .redirect_behavior = @enumFromInt(5),
+    }) catch return error.DownloadFailed;
+    defer req.deinit();
+
+    req.sendBodiless() catch return error.DownloadFailed;
+
+    var redirect_buf: [8192]u8 = undefined;
+    var response = req.receiveHead(&redirect_buf) catch return error.DownloadFailed;
+    if (response.head.status != .ok) return error.DownloadFailed;
+
+    // Stream to tmp file with SHA256 hashing in single pass
+    var tmp_buf: [600]u8 = undefined;
+    const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}.dl", .{dest_path}) catch return error.DownloadFailed;
+
+    {
+        var file = std.fs.createFileAbsolute(tmp_path, .{}) catch return error.DownloadFailed;
+        var file_writer_buf: [65536]u8 = undefined;
+        var file_writer = file.writer(&file_writer_buf);
+
+        var reader = response.reader(&.{});
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        var hash_buf: [65536]u8 = undefined;
+        var hashed = reader.hashed(&hasher, &hash_buf);
+
+        _ = hashed.reader.streamRemaining(&file_writer.interface) catch {
+            file.close();
+            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            return error.DownloadFailed;
+        };
+        file_writer.interface.flush() catch {
+            file.close();
+            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            return error.DownloadFailed;
+        };
+        file.close();
+
+        // Verify SHA256
+        const digest = hasher.finalResult();
+        const charset = "0123456789abcdef";
+        var hex: [64]u8 = undefined;
+        for (digest, 0..) |byte, idx| {
+            hex[idx * 2] = charset[byte >> 4];
+            hex[idx * 2 + 1] = charset[byte & 0x0f];
+        }
+        if (expected_sha256.len >= 64 and !std.mem.eql(u8, &hex, expected_sha256[0..64])) {
+            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            return error.ChecksumMismatch;
+        }
+    }
+
+    // Atomic rename to blob cache
+    std.fs.renameAbsolute(tmp_path, dest_path) catch |err| {
+        if (err == error.PathAlreadyExists) return;
+        std.fs.deleteFileAbsolute(tmp_path) catch {};
+        return error.DownloadFailed;
+    };
+}
+
+/// Download a URL to a file using Zig's native HTTP client (no SHA256 check).
+fn downloadDebToFile(
+    client: *std.http.Client,
+    url: []const u8,
+    dest_path: []const u8,
+) !void {
+    const uri = std.Uri.parse(url) catch return error.DownloadFailed;
+    var req = client.request(.GET, uri, .{
+        .redirect_behavior = @enumFromInt(5),
+    }) catch return error.DownloadFailed;
+    defer req.deinit();
+
+    req.sendBodiless() catch return error.DownloadFailed;
+
+    var redirect_buf: [8192]u8 = undefined;
+    var response = req.receiveHead(&redirect_buf) catch return error.DownloadFailed;
+    if (response.head.status != .ok) return error.DownloadFailed;
+
+    var file = std.fs.createFileAbsolute(dest_path, .{}) catch return error.DownloadFailed;
+    var file_writer_buf: [65536]u8 = undefined;
+    var file_writer = file.writer(&file_writer_buf);
+
+    var reader = response.reader(&.{});
+    _ = reader.streamRemaining(&file_writer.interface) catch {
+        file.close();
+        std.fs.deleteFileAbsolute(dest_path) catch {};
+        return error.DownloadFailed;
+    };
+    file_writer.interface.flush() catch {
+        file.close();
+        std.fs.deleteFileAbsolute(dest_path) catch {};
+        return error.DownloadFailed;
+    };
+    file.close();
+}
 
 fn checkForUpdate(alloc: std.mem.Allocator) void {
     const cache_path = ROOT ++ "/cache/last_update_check";

@@ -8,8 +8,9 @@
 
 const std = @import("std");
 const tar = @import("../extract/tar.zig");
+const paths = @import("../platform/paths.zig");
 
-const STORE_DIR = "/opt/nanobrew/store";
+const STORE_DIR = paths.STORE_DIR;
 
 /// Ensure a store entry exists for the given SHA256.
 /// If not, extract the blob tarball into the store.

@@ -2,6 +2,36 @@
 
 All notable changes to nanobrew are documented here.
 
+## [0.1.06] - 2026-02-16
+
+### Added
+- **Linux support** — nanobrew now runs natively on Linux (x86_64 and aarch64). Same 1.2 MB static binary.
+- **`nb install --deb <pkg>`** — Install packages from Ubuntu repositories. Native `.deb` extraction without `dpkg`, `ar`, or `zstd` binaries — only needs `tar`. 2.8x faster than `apt-get install` in Docker containers.
+- **Platform abstraction layer** (`src/platform/`) — centralized path constants, comptime platform detection, COW copy abstraction (`clonefile` on macOS, `cp --reflink=auto` on Linux).
+- **ELF relocator** (`src/elf/relocate.zig`) — detects ELF binaries, parses headers, uses `patchelf` for RPATH/interpreter fixups, replaces `@@HOMEBREW_PREFIX@@` placeholders in `.pc`/`.cmake`/`.la` config files.
+- **Deb package index parser** (`src/deb/index.zig`) — native RFC 822-style parser for Ubuntu `Packages.gz` indices.
+- **Deb dependency resolver** (`src/deb/resolver.zig`) — BFS + topological sort with support for alternatives and virtual packages.
+- **Native ar + decompression** (`src/deb/extract.zig`) — parses ar archive headers, decompresses `data.tar` with Zig's native zstd and gzip decompressors.
+- **Native HTTP for deb downloads** — `std.http.Client` with connection reuse across all package downloads. Streaming SHA256 verification in a single pass.
+- **Content-addressable deb cache** — downloaded `.deb` files cached by SHA256 hash. Warm installs skip download entirely.
+- **systemd service management** (`src/services/systemd.zig`) — discovers `.service` files in Cellar, wraps `systemctl start/stop/restart`.
+- **Comptime bottle tags** for Linux — `x86_64_linux` and `aarch64_linux` bottle selection in `formula.zig`.
+- **Cross-compilation targets** — `zig build linux` and `zig build linux-arm` in `build.zig`.
+- **Deb parity test** (`tests/deb-parity.sh`) — Docker-based integration test verifying byte-identical extraction vs `dpkg-deb` across 5 test categories.
+- **Linux CI** — `build-linux` job with deb parity test, cross-compile job for both architectures.
+- **Deb benchmark workflow** — automated `nb --deb` vs `apt-get` benchmarks in CI, auto-updates README.
+
+### Changed
+- `install.sh` detects OS and uses `.bashrc` on Linux.
+- Services dispatcher now routes to launchd (macOS) or systemd (Linux) at comptime.
+- Cask commands show a clear error on Linux (casks are macOS-only).
+- Mach-O relocator refactored to share placeholder logic with ELF relocator.
+- `tar` extraction uses `--skip-old-files` for safe overlay in Docker containers.
+
+### Fixed
+- **zstd decompression for large packages** — buffer sized at `default_window_len + block_size_max` (8MB + 128KB). Previously failed on packages like libc6.
+- **HTTP connection reuse failures** — retry with fresh client after ~20 sequential downloads.
+
 ## [0.1.052] - 2026-02-16
 
 ### Added

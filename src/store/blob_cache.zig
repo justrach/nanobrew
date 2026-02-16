@@ -6,8 +6,9 @@
 // This module provides path resolution and cache queries.
 
 const std = @import("std");
+const paths = @import("../platform/paths.zig");
 
-const BLOBS_DIR = "/opt/nanobrew/cache/blobs";
+const BLOBS_DIR = paths.BLOBS_DIR;
 
 /// Get the full path for a cached blob by SHA256.
 pub fn blobPath(sha256: []const u8) []const u8 {

@@ -7,10 +7,11 @@
 // Detects conflicts (another package owns the same binary).
 
 const std = @import("std");
+const paths = @import("../platform/paths.zig");
 
-const CELLAR_DIR = "/opt/nanobrew/prefix/Cellar";
-const BIN_DIR = "/opt/nanobrew/prefix/bin";
-const OPT_DIR = "/opt/nanobrew/prefix/opt";
+const CELLAR_DIR = paths.CELLAR_DIR;
+const BIN_DIR = paths.BIN_DIR;
+const OPT_DIR = paths.OPT_DIR;
 
 /// Link a keg's binaries and create opt/ symlink.
 pub fn linkKeg(name: []const u8, version: []const u8) !void {

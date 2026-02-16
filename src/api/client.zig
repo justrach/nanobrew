@@ -13,7 +13,7 @@ const Artifact = @import("cask.zig").Artifact;
 
 const API_BASE = "https://formulae.brew.sh/api/formula/";
 const CASK_API_BASE = "https://formulae.brew.sh/api/cask/";
-const API_CACHE_DIR = "/opt/nanobrew/cache/api";
+const API_CACHE_DIR = @import("../platform/paths.zig").API_CACHE_DIR;
 
 pub fn fetchFormula(alloc: std.mem.Allocator, name: []const u8) !Formula {
     // Check cache first (5 minute TTL)

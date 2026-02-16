@@ -9,10 +9,14 @@ echo "==> Installing nanobrew..."
 
 # Check for zig
 if ! command -v zig &>/dev/null; then
-    echo "error: zig 0.15+ is required. Install with: brew install zig"
+    echo "error: zig 0.15+ is required."
+    if [ "$(uname -s)" = "Darwin" ]; then
+        echo "       Install with: brew install zig"
+    else
+        echo "       Install from: https://ziglang.org/download/"
+    fi
     exit 1
 fi
-
 # Build
 echo "    Building..."
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -28,10 +32,17 @@ sudo chown -R "$(whoami)" /opt/nanobrew
 echo "    Installing nb binary..."
 cp zig-out/bin/nb "$NANOBREW_BIN/nb"
 
-# Add to PATH if not already there
-SHELL_RC="$HOME/.zshrc"
-if [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bashrc" ]; then
+# Detect shell config file
+if [ "$(uname -s)" = "Linux" ]; then
     SHELL_RC="$HOME/.bashrc"
+    if [ -n "$ZSH_VERSION" ]; then
+        SHELL_RC="$HOME/.zshrc"
+    fi
+else
+    SHELL_RC="$HOME/.zshrc"
+    if [ -n "$BASH_VERSION" ] && [ -f "$HOME/.bashrc" ]; then
+        SHELL_RC="$HOME/.bashrc"
+    fi
 fi
 
 if ! grep -q '/opt/nanobrew/prefix/bin' "$SHELL_RC" 2>/dev/null; then

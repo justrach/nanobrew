@@ -124,7 +124,7 @@ jobs:
           echo "nb_cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
           echo "nb_warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
 
-      - name: Update README
+      - name: Update README (macOS)
         run: |
           TREE_DEPS="0 deps"
           WGET_DEPS="6 deps"
@@ -146,7 +146,106 @@ jobs:
           "
 
           DATE=$(date -u +"%Y-%m-%d")
-          sed -i '' "s/> Benchmarks on .*/> Benchmarks on Apple Silicon (GitHub Actions macos-14), $DATE. Auto-updated weekly./" README.md
+          sed -i '' "s/> Benchmarks on Apple Silicon.*/> Benchmarks on Apple Silicon (GitHub Actions macos-14), $DATE. Auto-updated weekly./" README.md
+
+      - name: Upload README
+        uses: actions/upload-artifact@v4
+        with:
+          name: readme-macos
+          path: README.md
+
+  benchmark-deb:
+    runs-on: ubuntu-latest
+    needs: benchmark
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download README from macOS benchmark
+        uses: actions/download-artifact@v4
+        with:
+          name: readme-macos
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.15.1
+
+      - name: Build Linux binary
+        run: zig build linux
+
+      - name: Benchmark deb curl
+        id: deb_curl
+        run: |
+          NB_ABS=$(pwd)/zig-out/bin/nb
+
+          # nb install --deb curl
+          NB_TIME=$(TIMEFORMAT='%R'; { time docker run --rm \
+            -v "$NB_ABS:/opt/nb:ro" \
+            ubuntu:24.04 bash -c "
+              /opt/nb init >/dev/null 2>&1
+              /opt/nb install --deb curl 2>&1
+            " ; } 2>&1 | tail -1)
+
+          # apt-get install curl
+          APT_TIME=$(TIMEFORMAT='%R'; { time docker run --rm \
+            ubuntu:24.04 bash -c "
+              apt-get update >/dev/null 2>&1
+              apt-get install -y curl >/dev/null 2>&1
+            " ; } 2>&1 | tail -1)
+
+          echo "nb=${NB_TIME}s" >> "$GITHUB_OUTPUT"
+          echo "apt=${APT_TIME}s" >> "$GITHUB_OUTPUT"
+
+      - name: Benchmark deb curl wget git
+        id: deb_multi
+        run: |
+          NB_ABS=$(pwd)/zig-out/bin/nb
+
+          # nb install --deb curl wget git
+          NB_TIME=$(TIMEFORMAT='%R'; { time docker run --rm \
+            -v "$NB_ABS:/opt/nb:ro" \
+            ubuntu:24.04 bash -c "
+              /opt/nb init >/dev/null 2>&1
+              /opt/nb install --deb curl wget git 2>&1
+            " ; } 2>&1 | tail -1)
+
+          # apt-get install curl wget git
+          APT_TIME=$(TIMEFORMAT='%R'; { time docker run --rm \
+            ubuntu:24.04 bash -c "
+              apt-get update >/dev/null 2>&1
+              apt-get install -y curl wget git >/dev/null 2>&1
+            " ; } 2>&1 | tail -1)
+
+          echo "nb=${NB_TIME}s" >> "$GITHUB_OUTPUT"
+          echo "apt=${APT_TIME}s" >> "$GITHUB_OUTPUT"
+
+      - name: Update README (deb benchmarks)
+        run: |
+          # Calculate speedups
+          NB_CURL=${{ steps.deb_curl.outputs.nb }}
+          APT_CURL=${{ steps.deb_curl.outputs.apt }}
+          NB_MULTI=${{ steps.deb_multi.outputs.nb }}
+          APT_MULTI=${{ steps.deb_multi.outputs.apt }}
+
+          SPEEDUP_CURL=$(python3 -c "print(f'{float(\"${APT_CURL%s}\") / float(\"${NB_CURL%s}\"):.1f}')")
+          SPEEDUP_MULTI=$(python3 -c "print(f'{float(\"${APT_MULTI%s}\") / float(\"${NB_MULTI%s}\"):.1f}')")
+
+          TABLE="| Command | apt-get | nanobrew --deb | Speedup |
+          |---------|---------|----------------|---------|
+          | **curl** (32 deps) | ${APT_CURL} | ${NB_CURL} | **${SPEEDUP_CURL}x** |
+          | **curl wget git** (60+ deps) | ${APT_MULTI} | ${NB_MULTI} | **${SPEEDUP_MULTI}x** |"
+
+          python3 -c "
+          import re
+          readme = open('README.md').read()
+          pattern = r'\| Command \| apt-get.*?\| \*\*curl wget git\*\*.*?\|'
+          replacement = '''$TABLE'''
+          readme = re.sub(pattern, replacement, readme, flags=re.DOTALL)
+          open('README.md', 'w').write(readme)
+          "
+
+          DATE=$(date -u +"%Y-%m-%d")
+          sed -i "s/> Benchmarks in Docker.*/> Benchmarks in Docker (ubuntu:24.04, GitHub Actions ubuntu-latest), $DATE. Auto-updated weekly./" README.md
 
       - name: Commit results
         run: |

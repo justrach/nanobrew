@@ -10,15 +10,17 @@
 // NEW: install_name_tool + 1 codesign = N+1 process spawns (3x fewer)
 
 const std = @import("std");
+const paths = @import("../platform/paths.zig");
+const ph = @import("../platform/placeholder.zig");
 
-const CELLAR_DIR = "/opt/nanobrew/prefix/Cellar";
-const PREFIX = "/opt/nanobrew/prefix";
+const CELLAR_DIR = paths.CELLAR_DIR;
+const PREFIX = paths.PREFIX;
 
-const PLACEHOLDER_PREFIX = "@@HOMEBREW_PREFIX@@";
-const PLACEHOLDER_CELLAR = "@@HOMEBREW_CELLAR@@";
+const PLACEHOLDER_PREFIX = paths.PLACEHOLDER_PREFIX;
+const PLACEHOLDER_CELLAR = paths.PLACEHOLDER_CELLAR;
 
-const REAL_PREFIX = PREFIX;
-const REAL_CELLAR = PREFIX ++ "/Cellar";
+const REAL_PREFIX = paths.REAL_PREFIX;
+const REAL_CELLAR = paths.REAL_CELLAR;
 
 // Mach-O constants
 const MH_MAGIC_64: u32 = 0xFEEDFACF;
@@ -301,33 +303,15 @@ fn relocateWithOtool(alloc: std.mem.Allocator, path: []const u8, otool_output: [
 }
 
 fn hasPlaceholder(s: []const u8) bool {
-    return std.mem.indexOf(u8, s, "@@HOMEBREW") != null;
+    return ph.hasPlaceholder(s);
 }
 
 fn replacePlaceholders(alloc: std.mem.Allocator, input: []const u8) ![]u8 {
-    const pass1 = try std.mem.replaceOwned(u8, alloc, input, PLACEHOLDER_CELLAR, REAL_CELLAR);
-    defer alloc.free(pass1);
-    return try std.mem.replaceOwned(u8, alloc, pass1, PLACEHOLDER_PREFIX, REAL_PREFIX);
+    return ph.replacePlaceholders(alloc, input);
 }
 
 fn fileContainsPlaceholder(path: []const u8) bool {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return false;
-    defer file.close();
-    var buf: [65536]u8 = undefined;
-    var overlap: usize = 0;
-    const needle = "@@HOMEBREW";
-    while (true) {
-        if (overlap > 0) {
-            const src = buf[buf.len - overlap ..];
-            std.mem.copyForwards(u8, buf[0..overlap], src);
-        }
-        const n = file.read(buf[overlap..]) catch return false;
-        if (n == 0) break;
-        const total = overlap + n;
-        if (std.mem.indexOf(u8, buf[0..total], needle) != null) return true;
-        overlap = @min(needle.len - 1, total);
-    }
-    return false;
+    return ph.fileContainsPlaceholder(path);
 }
 
 fn runProcess(alloc: std.mem.Allocator, argv: []const []const u8) ![]u8 {

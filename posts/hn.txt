@@ -1,0 +1,27 @@
+TITLE: Nanobrew: 3ms package installs for macOS, written in Zig
+
+URL: https://github.com/justrach/nanobrew
+
+TEXT (if submitting as text post instead of link):
+
+I built a Homebrew-compatible package manager in Zig that does warm installs in 3.5ms and cold installs faster than both Homebrew and Zerobrew.
+
+Some numbers (Apple Silicon, macOS 15):
+
+  ffmpeg (11 deps): 3.5ms warm, ~2.7s cold (Homebrew: ~24s)
+  tree (0 deps): 3.5ms warm, ~1.2s cold (Homebrew: ~9s)
+
+It uses Homebrew's own bottles and formula API, so it's a drop-in for common packages. The speed comes from:
+
+- Native Zig HTTP client instead of curl subprocesses
+- Streaming SHA256 during download (single pass, no re-read)
+- Native Mach-O header parsing instead of shelling out to otool
+- APFS clonefile for zero-cost materialization
+- Everything runs in parallel (downloads, extraction, relocation)
+- Content-addressable store so reinstalls skip everything
+
+Warm installs (already cached) just check the Cellar and exit. The entire binary is ~400KB with no runtime dependencies.
+
+Install: curl -fsSL https://nanobrew.trilok.ai/install | bash
+
+It's experimental and only handles bottle-based formulae (no source builds or casks yet). Would love feedback on what breaks.
