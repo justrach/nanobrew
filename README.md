@@ -13,13 +13,13 @@ A fast macOS package manager. Written in Zig. Uses Homebrew's bottles and formul
 - **No Ruby runtime** — single static binary, instant startup
 - **Drop-in Homebrew replacement** — same formulas, same bottles, same casks
 
-| Package | Homebrew | nanobrew (cold) | nanobrew (warm) |
-|---------|----------|-----------------|-----------------|
-| **tree** (0 deps) | 4.025s | **0.633s** | **0.003s** |
-| **ffmpeg** (11 deps) | 14.776s | **1.393s** | **0.363s** |
-| **wget** (6 deps) | 3.859s | **2.527s** | **0.026s** | 16.84s | **11.26s** | **3.5ms** |
+| Package | Homebrew | zerobrew (cold) | zerobrew (warm) | nanobrew (cold) | nanobrew (warm) |
+|---------|----------|-----------------|-----------------|-----------------|-----------------|
+| **tree** (0 deps) | 4.025s | — | — | **0.633s** | **0.003s** |
+| **ffmpeg** (11 deps) | 14.776s | — | — | **1.393s** | **0.363s** |
+| **wget** (6 deps) | 3.859s | — | — | **2.527s** | **0.026s** |
 
-> Benchmarks on Apple Silicon (GitHub Actions macos-14), 2026-02-16.
+> Benchmarks on Apple Silicon (GitHub Actions macos-14). Auto-updated weekly — [see workflow](../../actions/workflows/benchmark.yml).
 
 ## Install
 

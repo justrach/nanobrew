@@ -28,88 +28,125 @@ jobs:
           sudo chown -R $USER /opt/nanobrew
           ./zig-out/bin/nb init
 
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build zerobrew
+        run: |
+          git clone https://github.com/lucasgelfond/zerobrew.git /tmp/zerobrew
+          cd /tmp/zerobrew && cargo build --release
+          sudo mkdir -p /opt/zerobrew
+          sudo chown -R $USER /opt/zerobrew
+          /tmp/zerobrew/target/release/zb init
+
       - name: Benchmark tree
         id: tree
         run: |
-          # Cold install with nanobrew
-          NB_COLD=$(TIMEFORMAT='%R'; { time ./zig-out/bin/nb install tree 2>&1; } 2>&1 | tail -1)
-          ./zig-out/bin/nb remove tree
+          ZB=/tmp/zerobrew/target/release/zb
+          NB=./zig-out/bin/nb
 
-          # Warm install with nanobrew (store still has the data)
-          NB_WARM=$(TIMEFORMAT='%R'; { time ./zig-out/bin/nb install tree 2>&1; } 2>&1 | tail -1)
-          ./zig-out/bin/nb remove tree
+          # nanobrew cold
+          NB_COLD=$(TIMEFORMAT='%R'; { time $NB install tree 2>&1; } 2>&1 | tail -1)
+          $NB remove tree
 
-          # Homebrew install
+          # nanobrew warm
+          NB_WARM=$(TIMEFORMAT='%R'; { time $NB install tree 2>&1; } 2>&1 | tail -1)
+          $NB remove tree
+
+          # zerobrew cold
+          ZB_COLD=$(TIMEFORMAT='%R'; { time $ZB install tree 2>&1; } 2>&1 | tail -1)
+          $ZB uninstall tree
+
+          # zerobrew warm
+          ZB_WARM=$(TIMEFORMAT='%R'; { time $ZB install tree 2>&1; } 2>&1 | tail -1)
+          $ZB uninstall tree
+
+          # homebrew
           brew uninstall tree 2>/dev/null || true
           BREW_TIME=$(TIMEFORMAT='%R'; { time brew install tree 2>&1; } 2>&1 | tail -1)
           brew uninstall tree 2>/dev/null || true
 
           echo "brew=${BREW_TIME}s" >> "$GITHUB_OUTPUT"
-          echo "cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
-          echo "warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
+          echo "zb_cold=${ZB_COLD}s" >> "$GITHUB_OUTPUT"
+          echo "zb_warm=${ZB_WARM}s" >> "$GITHUB_OUTPUT"
+          echo "nb_cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
+          echo "nb_warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
 
       - name: Benchmark wget
         id: wget
         run: |
-          NB_COLD=$(TIMEFORMAT='%R'; { time ./zig-out/bin/nb install wget 2>&1; } 2>&1 | tail -1)
-          ./zig-out/bin/nb remove wget
+          ZB=/tmp/zerobrew/target/release/zb
+          NB=./zig-out/bin/nb
 
-          NB_WARM=$(TIMEFORMAT='%R'; { time ./zig-out/bin/nb install wget 2>&1; } 2>&1 | tail -1)
-          ./zig-out/bin/nb remove wget
+          NB_COLD=$(TIMEFORMAT='%R'; { time $NB install wget 2>&1; } 2>&1 | tail -1)
+          $NB remove wget
+          NB_WARM=$(TIMEFORMAT='%R'; { time $NB install wget 2>&1; } 2>&1 | tail -1)
+          $NB remove wget
+
+          ZB_COLD=$(TIMEFORMAT='%R'; { time $ZB install wget 2>&1; } 2>&1 | tail -1)
+          $ZB uninstall wget
+          ZB_WARM=$(TIMEFORMAT='%R'; { time $ZB install wget 2>&1; } 2>&1 | tail -1)
+          $ZB uninstall wget
 
           brew uninstall wget 2>/dev/null || true
           BREW_TIME=$(TIMEFORMAT='%R'; { time brew install wget 2>&1; } 2>&1 | tail -1)
           brew uninstall wget 2>/dev/null || true
 
           echo "brew=${BREW_TIME}s" >> "$GITHUB_OUTPUT"
-          echo "cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
-          echo "warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
+          echo "zb_cold=${ZB_COLD}s" >> "$GITHUB_OUTPUT"
+          echo "zb_warm=${ZB_WARM}s" >> "$GITHUB_OUTPUT"
+          echo "nb_cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
+          echo "nb_warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
 
       - name: Benchmark ffmpeg
         id: ffmpeg
         run: |
-          NB_COLD=$(TIMEFORMAT='%R'; { time ./zig-out/bin/nb install ffmpeg 2>&1; } 2>&1 | tail -1)
-          ./zig-out/bin/nb remove ffmpeg
+          ZB=/tmp/zerobrew/target/release/zb
+          NB=./zig-out/bin/nb
 
-          NB_WARM=$(TIMEFORMAT='%R'; { time ./zig-out/bin/nb install ffmpeg 2>&1; } 2>&1 | tail -1)
-          ./zig-out/bin/nb remove ffmpeg
+          NB_COLD=$(TIMEFORMAT='%R'; { time $NB install ffmpeg 2>&1; } 2>&1 | tail -1)
+          $NB remove ffmpeg
+          NB_WARM=$(TIMEFORMAT='%R'; { time $NB install ffmpeg 2>&1; } 2>&1 | tail -1)
+          $NB remove ffmpeg
+
+          ZB_COLD=$(TIMEFORMAT='%R'; { time $ZB install ffmpeg 2>&1; } 2>&1 | tail -1)
+          $ZB uninstall ffmpeg
+          ZB_WARM=$(TIMEFORMAT='%R'; { time $ZB install ffmpeg 2>&1; } 2>&1 | tail -1)
+          $ZB uninstall ffmpeg
 
           brew uninstall ffmpeg 2>/dev/null || true
           BREW_TIME=$(TIMEFORMAT='%R'; { time brew install ffmpeg 2>&1; } 2>&1 | tail -1)
           brew uninstall ffmpeg 2>/dev/null || true
 
           echo "brew=${BREW_TIME}s" >> "$GITHUB_OUTPUT"
-          echo "cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
-          echo "warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
+          echo "zb_cold=${ZB_COLD}s" >> "$GITHUB_OUTPUT"
+          echo "zb_warm=${ZB_WARM}s" >> "$GITHUB_OUTPUT"
+          echo "nb_cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
+          echo "nb_warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
 
       - name: Update README
         run: |
-          # Count deps for display
           TREE_DEPS="0 deps"
           WGET_DEPS="6 deps"
           FFMPEG_DEPS="11 deps"
 
-          # Build the new table
-          TABLE="| Package | Homebrew | nanobrew (cold) | nanobrew (warm) |
-          |---------|----------|-----------------|-----------------|
-          | **tree** ($TREE_DEPS) | ${{ steps.tree.outputs.brew }} | **${{ steps.tree.outputs.cold }}** | **${{ steps.tree.outputs.warm }}** |
-          | **ffmpeg** ($FFMPEG_DEPS) | ${{ steps.ffmpeg.outputs.brew }} | **${{ steps.ffmpeg.outputs.cold }}** | **${{ steps.ffmpeg.outputs.warm }}** |
-          | **wget** ($WGET_DEPS) | ${{ steps.wget.outputs.brew }} | **${{ steps.wget.outputs.cold }}** | **${{ steps.wget.outputs.warm }}** |"
+          TABLE="| Package | Homebrew | zerobrew (cold) | zerobrew (warm) | nanobrew (cold) | nanobrew (warm) |
+          |---------|----------|-----------------|-----------------|-----------------|-----------------|
+          | **tree** ($TREE_DEPS) | ${{ steps.tree.outputs.brew }} | ${{ steps.tree.outputs.zb_cold }} | ${{ steps.tree.outputs.zb_warm }} | **${{ steps.tree.outputs.nb_cold }}** | **${{ steps.tree.outputs.nb_warm }}** |
+          | **ffmpeg** ($FFMPEG_DEPS) | ${{ steps.ffmpeg.outputs.brew }} | ${{ steps.ffmpeg.outputs.zb_cold }} | ${{ steps.ffmpeg.outputs.zb_warm }} | **${{ steps.ffmpeg.outputs.nb_cold }}** | **${{ steps.ffmpeg.outputs.nb_warm }}** |
+          | **wget** ($WGET_DEPS) | ${{ steps.wget.outputs.brew }} | ${{ steps.wget.outputs.zb_cold }} | ${{ steps.wget.outputs.zb_warm }} | **${{ steps.wget.outputs.nb_cold }}** | **${{ steps.wget.outputs.nb_warm }}** |"
 
-          # Replace the table in README (between the markers)
           python3 -c "
-          import re, sys
+          import re
           readme = open('README.md').read()
-          # Match the table block (header + separator + 3 data rows)
           pattern = r'\| Package \| Homebrew.*?\| \*\*wget\*\*.*?\|'
           replacement = '''$TABLE'''
           readme = re.sub(pattern, replacement, readme, flags=re.DOTALL)
           open('README.md', 'w').write(readme)
           "
 
-          # Update the benchmark note
           DATE=$(date -u +"%Y-%m-%d")
-          sed -i '' "s/> Benchmarks on .*/> Benchmarks on Apple Silicon (GitHub Actions macos-14), $DATE./" README.md
+          sed -i '' "s/> Benchmarks on .*/> Benchmarks on Apple Silicon (GitHub Actions macos-14), $DATE. Auto-updated weekly./" README.md
 
       - name: Commit results
         run: |
