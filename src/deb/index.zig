@@ -10,6 +10,7 @@ pub const DebPackage = struct {
     name: []const u8,
     version: []const u8,
     depends: []const u8, // raw Depends: field (parsed later by resolver)
+    provides: []const u8, // raw Provides: field (virtual packages this package provides)
     filename: []const u8, // e.g. "pool/main/c/curl/curl_8.5.0-2_amd64.deb"
     sha256: []const u8,
     size: u64,
@@ -19,6 +20,7 @@ pub const DebPackage = struct {
         alloc.free(self.name);
         alloc.free(self.version);
         alloc.free(self.depends);
+        alloc.free(self.provides);
         alloc.free(self.filename);
         alloc.free(self.sha256);
         alloc.free(self.description);
@@ -46,6 +48,7 @@ fn parseOnePackage(alloc: std.mem.Allocator, block: []const u8) ?DebPackage {
     var name: ?[]const u8 = null;
     var version: ?[]const u8 = null;
     var depends: []const u8 = "";
+    var provides: []const u8 = "";
     var filename: ?[]const u8 = null;
     var sha256: []const u8 = "";
     var size: u64 = 0;
@@ -62,6 +65,8 @@ fn parseOnePackage(alloc: std.mem.Allocator, block: []const u8) ?DebPackage {
             version = alloc.dupe(u8, v) catch null;
         } else if (fieldValue(line, "Depends: ")) |v| {
             depends = alloc.dupe(u8, v) catch "";
+        } else if (fieldValue(line, "Provides: ")) |v| {
+            provides = alloc.dupe(u8, v) catch "";
         } else if (fieldValue(line, "Filename: ")) |v| {
             filename = alloc.dupe(u8, v) catch null;
         } else if (fieldValue(line, "SHA256: ")) |v| {
@@ -88,6 +93,7 @@ fn parseOnePackage(alloc: std.mem.Allocator, block: []const u8) ?DebPackage {
         .name = pkg_name,
         .version = pkg_version,
         .depends = depends,
+        .provides = provides,
         .filename = pkg_filename,
         .sha256 = sha256,
         .size = size,
@@ -112,6 +118,37 @@ pub fn buildIndex(alloc: std.mem.Allocator, packages: []const DebPackage) !std.S
     var map = std.StringHashMap(DebPackage).init(alloc);
     for (packages) |pkg| {
         map.put(pkg.name, pkg) catch continue;
+    }
+    return map;
+}
+
+/// Build a virtual-package → real-package-name lookup map from Provides: fields.
+/// E.g. "cc" → "gcc", "c-compiler" → "gcc"
+pub fn buildProvidesMap(alloc: std.mem.Allocator, packages: []const DebPackage) !std.StringHashMap([]const u8) {
+    var map = std.StringHashMap([]const u8).init(alloc);
+    for (packages) |pkg| {
+        if (pkg.provides.len == 0) continue;
+        // Provides: field format: "virtual1 (= ver), virtual2, ..."
+        var entries = std.mem.splitScalar(u8, pkg.provides, ',');
+        while (entries.next()) |entry| {
+            const trimmed = std.mem.trim(u8, entry, " \t");
+            if (trimmed.len == 0) continue;
+            // Strip version constraint and arch qualifier
+            var vname = trimmed;
+            if (std.mem.indexOf(u8, vname, " (")) |paren| {
+                vname = vname[0..paren];
+            }
+            if (std.mem.indexOf(u8, vname, ":")) |colon| {
+                vname = vname[0..colon];
+            }
+            vname = std.mem.trim(u8, vname, " \t");
+            if (vname.len > 0) {
+                // First provider wins (don't overwrite)
+                if (!map.contains(vname)) {
+                    map.put(vname, pkg.name) catch continue;
+                }
+            }
+        }
     }
     return map;
 }
@@ -168,4 +205,129 @@ test "debUrl - formats full URL" {
     var buf: [512]u8 = undefined;
     const url = debUrl("http://archive.ubuntu.com/ubuntu", "pool/main/c/curl/curl.deb", &buf);
     try testing.expectEqualStrings("http://archive.ubuntu.com/ubuntu/pool/main/c/curl/curl.deb", url);
+}
+
+test "parsePackagesIndex - parses Provides field" {
+    const data =
+        \\Package: gcc-14
+        \\Version: 14.2.0-4ubuntu2
+        \\Depends: libc6
+        \\Provides: c-compiler, cc (= 14.2.0), gcc
+        \\Filename: pool/main/g/gcc-14/gcc-14_14.2.0_amd64.deb
+        \\SHA256: deadbeef
+        \\Size: 500
+    ;
+    const pkgs = try parsePackagesIndex(testing.allocator, data);
+    defer {
+        for (pkgs) |p| p.deinit(testing.allocator);
+        testing.allocator.free(pkgs);
+    }
+    try testing.expectEqual(@as(usize, 1), pkgs.len);
+    try testing.expectEqualStrings("gcc-14", pkgs[0].name);
+    try testing.expectEqualStrings("c-compiler, cc (= 14.2.0), gcc", pkgs[0].provides);
+}
+
+test "buildProvidesMap - maps virtual to real package names" {
+    const alloc = testing.allocator;
+
+    // Create packages with Provides fields
+    var pkgs_list = [_]DebPackage{
+        .{
+            .name = "gcc-14",
+            .version = "14.2.0",
+            .depends = "",
+            .provides = "c-compiler, cc (= 14.2.0), gcc",
+            .filename = "pool/main/g/gcc-14.deb",
+            .sha256 = "",
+            .size = 0,
+            .description = "",
+        },
+        .{
+            .name = "libssl3t64",
+            .version = "3.0.13",
+            .depends = "",
+            .provides = "libssl3 (= 3.0.13)",
+            .filename = "pool/main/o/openssl.deb",
+            .sha256 = "",
+            .size = 0,
+            .description = "",
+        },
+        .{
+            .name = "no-provides",
+            .version = "1.0",
+            .depends = "",
+            .provides = "",
+            .filename = "pool/main/n/no-provides.deb",
+            .sha256 = "",
+            .size = 0,
+            .description = "",
+        },
+    };
+
+    var pmap = try buildProvidesMap(alloc, &pkgs_list);
+    defer pmap.deinit();
+
+    // gcc-14 provides: c-compiler, cc, gcc
+    try testing.expectEqualStrings("gcc-14", pmap.get("c-compiler").?);
+    try testing.expectEqualStrings("gcc-14", pmap.get("cc").?);
+    try testing.expectEqualStrings("gcc-14", pmap.get("gcc").?);
+    // libssl3t64 provides: libssl3
+    try testing.expectEqualStrings("libssl3t64", pmap.get("libssl3").?);
+    // no-provides should not be in map
+    try testing.expect(pmap.get("no-provides") == null);
+}
+
+test "buildProvidesMap - first provider wins" {
+    const alloc = testing.allocator;
+
+    var pkgs_list = [_]DebPackage{
+        .{
+            .name = "gcc-14",
+            .version = "14.2.0",
+            .depends = "",
+            .provides = "c-compiler",
+            .filename = "pool/main/g/gcc-14.deb",
+            .sha256 = "",
+            .size = 0,
+            .description = "",
+        },
+        .{
+            .name = "clang-18",
+            .version = "18.1.0",
+            .depends = "",
+            .provides = "c-compiler",
+            .filename = "pool/main/c/clang-18.deb",
+            .sha256 = "",
+            .size = 0,
+            .description = "",
+        },
+    };
+
+    var pmap = try buildProvidesMap(alloc, &pkgs_list);
+    defer pmap.deinit();
+
+    // First provider (gcc-14) should win
+    try testing.expectEqualStrings("gcc-14", pmap.get("c-compiler").?);
+}
+
+test "buildProvidesMap - strips arch qualifier from provides" {
+    const alloc = testing.allocator;
+
+    var pkgs_list = [_]DebPackage{
+        .{
+            .name = "zlib1g",
+            .version = "1.3",
+            .depends = "",
+            .provides = "libz1:amd64 (= 1.3)",
+            .filename = "pool/main/z/zlib.deb",
+            .sha256 = "",
+            .size = 0,
+            .description = "",
+        },
+    };
+
+    var pmap = try buildProvidesMap(alloc, &pkgs_list);
+    defer pmap.deinit();
+
+    try testing.expectEqualStrings("zlib1g", pmap.get("libz1").?);
 }
