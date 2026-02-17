@@ -1,2 +1,4 @@
 .zig-cache/
 zig-out/
+posts/
+*.blog.md

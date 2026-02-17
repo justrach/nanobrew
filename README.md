@@ -86,7 +86,11 @@ nb upgrade --cask             # upgrade all casks
 ### Linux / Docker (deb packages)
 
 ```bash
-nb install --deb curl wget git    # install from Ubuntu repos (2.8x faster than apt-get)
+nb install --deb curl wget git    # install from Ubuntu/Debian repos (2.8x faster than apt-get)
+nb remove --deb curl              # remove a deb package
+nb upgrade --deb                  # upgrade all installed deb packages
+nb list                           # shows deb packages alongside brew packages
+nb outdated                       # checks deb packages for newer versions too
 ```
 
 ```dockerfile
@@ -95,10 +99,12 @@ COPY --from=nanobrew/nb /nb /usr/local/bin/nb
 RUN nb init && nb install --deb curl wget git
 ```
 
-- Resolves dependencies, downloads .debs with streaming SHA256 verification
+- Auto-detects distro and architecture (Ubuntu/Debian, amd64/arm64)
+- Resolves virtual packages via `Provides:` field (e.g. `build-essential` works)
+- Picks the best alternative when multiple packages satisfy a dependency
+- Runs `postinst` scripts and `ldconfig` so shared libraries work out of the box
+- Tracks installed files in `state.json` for clean removal
 - Content-addressable cache — warm installs are instant
-- Produces byte-identical files to `dpkg-deb` extraction
-
 ### Keep packages up to date
 
 ```bash
@@ -166,11 +172,15 @@ nb install ffmpeg                        # macOS: Homebrew bottles
 
 nb install --deb curl                    # Linux: .deb packages
   │
-  ├─ 1. Fetch + decompress package index (native gzip)
-  ├─ 2. Resolve dependencies (BFS topological sort)
-  ├─ 3. Download .debs with streaming SHA256 verification
-  ├─ 4. Parse ar archive, decompress data.tar natively (zstd/gzip)
-  └─ 5. Extract to / (tar --skip-old-files)
+  ├─ 1. Detect distro from /etc/os-release (Ubuntu/Debian, amd64/arm64)
+  ├─ 2. Fetch + decompress package index (main + universe components)
+  ├─ 3. Build provides map for virtual package resolution
+  ├─ 4. Resolve dependencies (topological sort, index-aware alternatives)
+  ├─ 5. Download .debs with streaming SHA256 verification
+  ├─ 6. Parse ar archive, decompress data.tar natively (zstd/gzip)
+  ├─ 7. Extract to / and track installed files in state.json
+  ├─ 8. Run postinst scripts (ca-certificates, ldconfig, etc.)
+  └─ 9. Run ldconfig for shared library registration
 
 nb install steipete/tap/sag              # Third-party taps
   │
@@ -188,6 +198,27 @@ Key design choices:
 - **Native binary parsing** — reads Mach-O (macOS) and ELF (Linux) headers directly instead of spawning `otool`/`patchelf`.
 - **Native ar + decompression** — .deb extraction without `dpkg`, `ar`, or `zstd` binaries. Only needs `tar`.
 - **Single static binary** — no runtime dependencies. 1.2 MB.
+
+## Testing
+
+```bash
+# Run all tests (macOS — native)
+zig build test
+
+# Run individual module tests with verbose output
+zig test src/deb/index.zig         # 7 tests: package parsing, provides map
+zig test src/deb/resolver.zig      # 17 tests: dependency resolution, virtual packages
+
+# Cross-compile and run on Linux via Colima/Docker
+zig build test -Dtarget=aarch64-linux   # cross-compile to static ELF
+docker run --rm -v .zig-cache/o/<hash>/test:/test alpine /test
+
+# Or as a one-liner (find the binary automatically)
+docker run --rm -v "$(find .zig-cache -name test -newer build.zig | head -1):/t:ro" alpine /t
+```
+
+Zig's cross-compilation produces a statically-linked binary that runs directly in any Linux container — no need to install Zig or any toolchain inside Docker.
+
 
 ## Directory layout
 
@@ -227,11 +258,13 @@ License: [Apache 2.0](./LICENSE)
 | `nb install --deb <pkg>` | | Install .deb packages (Linux/Docker) |
 | `nb install user/tap/formula` | | Install from a third-party tap |
 | `nb remove <pkg>` | `nb ui` | Uninstall packages |
-| `nb list` | `nb ls` | List installed packages |
+| `nb remove --deb <pkg>` | | Remove a .deb package (Linux/Docker) |
+| `nb list` | `nb ls` | List installed packages (brew + deb) |
 | `nb info <pkg>` | | Show package details |
 | `nb search <query>` | `nb s` | Search formulas and casks |
 | `nb upgrade [pkg]` | | Upgrade packages |
-| `nb outdated` | | List outdated packages |
+| `nb upgrade --deb` | | Upgrade all installed .deb packages |
+| `nb outdated` | | List outdated packages (brew + deb) |
 | `nb pin <pkg>` | | Prevent upgrades |
 | `nb unpin <pkg>` | | Allow upgrades |
 | `nb rollback <pkg>` | `nb rb` | Revert to previous version |
