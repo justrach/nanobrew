@@ -30,10 +30,19 @@ pub const HistoryEntry = struct {
     installed_at: i64,
 };
 
+pub const DebRecord = struct {
+    name: []const u8,
+    version: []const u8,
+    files: []const []const u8, // installed file paths (from data.tar)
+    sha256: []const u8 = "",
+    installed_at: i64 = 0,
+};
+
 pub const Database = struct {
     alloc: std.mem.Allocator,
     kegs: std.ArrayList(Keg),
     casks: std.ArrayList(CaskRecord),
+    debs: std.ArrayList(DebRecord),
     history: std.StringHashMap(std.ArrayList(HistoryEntry)),
 
     pub fn open() !Database {
@@ -44,6 +53,7 @@ pub const Database = struct {
             .alloc = alloc,
             .kegs = .empty,
             .casks = .empty,
+            .debs = .empty,
             .history = std.StringHashMap(std.ArrayList(HistoryEntry)).init(alloc),
         };
 
@@ -138,6 +148,37 @@ pub const Database = struct {
                             }
                         }
                         db.history.put(pkg_name, entries) catch {};
+                    }
+                }
+            }
+            // Parse deb packages (backward compatible — missing key = empty)
+            if (parsed.value.object.get("deb_packages")) |debs_val| {
+                if (debs_val == .array) {
+                    for (debs_val.array.items) |item| {
+                        if (item != .object) continue;
+                        const dname = getStr(item.object, "name") orelse continue;
+                        const dver = getStr(item.object, "version") orelse continue;
+                        const dsha = getStr(item.object, "sha256") orelse "";
+                        const dinst = getInt(item.object, "installed_at");
+
+                        var dfiles: std.ArrayList([]const u8) = .empty;
+                        if (item.object.get("files")) |files_val| {
+                            if (files_val == .array) {
+                                for (files_val.array.items) |f| {
+                                    if (f == .string) {
+                                        dfiles.append(alloc, alloc.dupe(u8, f.string) catch continue) catch {};
+                                    }
+                                }
+                            }
+                        }
+
+                        db.debs.append(alloc, .{
+                            .name = alloc.dupe(u8, dname) catch continue,
+                            .version = alloc.dupe(u8, dver) catch continue,
+                            .files = dfiles.toOwnedSlice(alloc) catch continue,
+                            .sha256 = alloc.dupe(u8, dsha) catch continue,
+                            .installed_at = dinst,
+                        }) catch {};
                     }
                 }
             }
@@ -283,6 +324,58 @@ pub const Database = struct {
         return &.{};
     }
 
+    pub fn recordDebInstall(self: *Database, name: []const u8, version: []const u8, sha256: []const u8, files: []const []const u8) !void {
+        const now = std.time.timestamp();
+
+        // Remove existing entry for this package
+        var i: usize = 0;
+        while (i < self.debs.items.len) {
+            if (std.mem.eql(u8, self.debs.items[i].name, name)) {
+                _ = self.debs.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+
+        // Dupe file list
+        const dfiles = try self.alloc.alloc([]const u8, files.len);
+        for (files, 0..) |f, idx| dfiles[idx] = try self.alloc.dupe(u8, f);
+
+        try self.debs.append(self.alloc, .{
+            .name = try self.alloc.dupe(u8, name),
+            .version = try self.alloc.dupe(u8, version),
+            .files = dfiles,
+            .sha256 = try self.alloc.dupe(u8, sha256),
+            .installed_at = now,
+        });
+        try self.save();
+    }
+
+    pub fn recordDebRemoval(self: *Database, name: []const u8) !void {
+        var i: usize = 0;
+        while (i < self.debs.items.len) {
+            if (std.mem.eql(u8, self.debs.items[i].name, name)) {
+                _ = self.debs.orderedRemove(i);
+            } else {
+                i += 1;
+            }
+        }
+        try self.save();
+    }
+
+    pub fn findDeb(self: *Database, name: []const u8) ?DebRecord {
+        for (self.debs.items) |d| {
+            if (std.mem.eql(u8, d.name, name)) return d;
+        }
+        return null;
+    }
+
+    pub fn listInstalledDebs(self: *Database, alloc: std.mem.Allocator) ![]DebRecord {
+        const result = try alloc.alloc(DebRecord, self.debs.items.len);
+        @memcpy(result, self.debs.items);
+        return result;
+    }
+
     fn save(self: *Database) !void {
         const file = try std.fs.createFileAbsolute(DB_PATH, .{});
         defer file.close();
@@ -328,7 +421,20 @@ pub const Database = struct {
             }
             writer.writeAll("]") catch {};
         }
-        writer.writeAll("}}") catch {};
+        // Serialize deb packages
+        writer.writeAll("},\"deb_packages\":[") catch return;
+        for (self.debs.items, 0..) |d, i| {
+            if (i > 0) writer.writeAll(",") catch {};
+            writer.print("{{\"name\":\"{s}\",\"version\":\"{s}\",\"sha256\":\"{s}\",\"installed_at\":{d},\"files\":[", .{
+                d.name, d.version, d.sha256, d.installed_at,
+            }) catch {};
+            for (d.files, 0..) |f, j| {
+                if (j > 0) writer.writeAll(",") catch {};
+                writer.print("\"{s}\"", .{f}) catch {};
+            }
+            writer.writeAll("]}") catch {};
+        }
+        writer.writeAll("]}") catch {};
     }
 };
 

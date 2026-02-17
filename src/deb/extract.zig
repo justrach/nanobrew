@@ -50,6 +50,114 @@ pub fn extractDebToPrefix(alloc: std.mem.Allocator, deb_path: []const u8) !void 
     if (result.term.Exited != 0) return error.ExtractFailed;
 }
 
+/// Extract a .deb directly to / and return the list of installed file paths.
+/// Caller owns the returned slice and its strings.
+pub fn extractDebToPrefixWithFiles(alloc: std.mem.Allocator, deb_path: []const u8) ![][]const u8 {
+    var plain_buf: [512]u8 = undefined;
+    const plain_path = std.fmt.bufPrint(&plain_buf, "{s}/data.tar", .{paths.TMP_DIR}) catch return error.PathTooLong;
+
+    try extractDataTarFromDeb(alloc, deb_path, plain_path);
+    defer std.fs.deleteFileAbsolute(plain_path) catch {};
+
+    // List files first
+    const file_list = listTarFiles(alloc, plain_path) catch &.{};
+
+    // Then extract
+    const result = std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "tar", "xf", plain_path, "--skip-old-files", "-C", "/" },
+    }) catch return error.ExtractFailed;
+    alloc.free(result.stdout);
+    alloc.free(result.stderr);
+    if (result.term.Exited != 0) return error.ExtractFailed;
+
+    return file_list;
+}
+
+/// Extract the control.tar from a .deb to a temp directory and run postinst if present.
+/// Non-fatal — returns void and prints warnings on failure.
+pub fn runPostinst(alloc: std.mem.Allocator, deb_path: []const u8, pkg_name: []const u8) void {
+    const stderr_writer = std.fs.File.stderr().deprecatedWriter();
+
+    // Extract control.tar to temp dir
+    var ctrl_tar_buf: [512]u8 = undefined;
+    const ctrl_tar = std.fmt.bufPrint(&ctrl_tar_buf, "{s}/control.tar", .{paths.TMP_DIR}) catch return;
+
+    extractControlTarFromDeb(alloc, deb_path, ctrl_tar) catch return;
+    defer std.fs.deleteFileAbsolute(ctrl_tar) catch {};
+
+    // Extract control.tar to temp directory
+    var ctrl_dir_buf: [512]u8 = undefined;
+    const ctrl_dir = std.fmt.bufPrint(&ctrl_dir_buf, "{s}/control_{s}", .{ paths.TMP_DIR, pkg_name }) catch return;
+
+    std.fs.makeDirAbsolute(ctrl_dir) catch {};
+    defer std.fs.deleteTreeAbsolute(ctrl_dir) catch {};
+
+    const extract_result = std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "tar", "xf", ctrl_tar, "-C", ctrl_dir },
+    }) catch return;
+    alloc.free(extract_result.stdout);
+    alloc.free(extract_result.stderr);
+
+    // Check for postinst script
+    var postinst_buf: [600]u8 = undefined;
+    const postinst_path = std.fmt.bufPrint(&postinst_buf, "{s}/postinst", .{ctrl_dir}) catch return;
+
+    // Make it executable and run it
+    if (std.fs.accessAbsolute(postinst_path, .{})) |_| {
+        _ = std.process.Child.run(.{
+            .allocator = alloc,
+            .argv = &.{ "chmod", "+x", postinst_path },
+        }) catch {};
+
+        const run_result = std.process.Child.run(.{
+            .allocator = alloc,
+            .argv = &.{ postinst_path, "configure" },
+            .max_output_bytes = 1024 * 1024,
+        }) catch {
+            stderr_writer.print("    warning: postinst failed for {s}\n", .{pkg_name}) catch {};
+            return;
+        };
+        alloc.free(run_result.stdout);
+        alloc.free(run_result.stderr);
+        if (run_result.term.Exited != 0) {
+            stderr_writer.print("    warning: postinst exited {d} for {s}\n", .{ run_result.term.Exited, pkg_name }) catch {};
+        }
+    } else |_| {}
+}
+
+/// List files inside a tar archive (for tracking installed files).
+pub fn listTarFiles(alloc: std.mem.Allocator, tar_path: []const u8) ![][]const u8 {
+    const result = std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "tar", "tf", tar_path },
+        .max_output_bytes = 4 * 1024 * 1024,
+    }) catch return error.ListFailed;
+    defer alloc.free(result.stderr);
+
+    if (result.term.Exited != 0) {
+        alloc.free(result.stdout);
+        return error.ListFailed;
+    }
+
+    var files: std.ArrayList([]const u8) = .empty;
+    defer files.deinit(alloc);
+
+    var lines = std.mem.splitScalar(u8, result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+        if (trimmed.len == 0) continue;
+        // Skip directories (end with /)
+        if (std.mem.endsWith(u8, trimmed, "/")) continue;
+        // Normalize: strip leading "./" if present
+        const path = if (std.mem.startsWith(u8, trimmed, "./")) trimmed[1..] else trimmed;
+        files.append(alloc, alloc.dupe(u8, path) catch continue) catch continue;
+    }
+    alloc.free(result.stdout);
+    return files.toOwnedSlice(alloc);
+}
+
 /// Extract the data.tar member from a .deb, decompress natively, write plain tar.
 fn extractDataTarFromDeb(alloc: std.mem.Allocator, deb_path: []const u8, out_path: []const u8) !void {
     // Step 1: Read the compressed data.tar.* member from the ar archive
@@ -61,11 +169,29 @@ fn extractDataTarFromDeb(alloc: std.mem.Allocator, deb_path: []const u8, out_pat
         .none => member.data, // already plain tar
         .zstd => try decompressZstd(alloc, member.data),
         .gzip => try decompressGzip(alloc, member.data),
-        .xz => try decompressXzFallback(alloc, deb_path),
+        .xz => try decompressXzFallback(alloc, deb_path, "data.tar"),
     };
     defer if (member.compression != .none) alloc.free(plain);
 
     // Step 3: Write plain tar to output file
+    var out_file = try std.fs.createFileAbsolute(out_path, .{});
+    defer out_file.close();
+    try out_file.writeAll(plain);
+}
+
+/// Extract the control.tar member from a .deb, decompress natively, write plain tar.
+fn extractControlTarFromDeb(alloc: std.mem.Allocator, deb_path: []const u8, out_path: []const u8) !void {
+    const member = try readArMember(alloc, deb_path, "control.tar");
+    defer alloc.free(member.data);
+
+    const plain = switch (member.compression) {
+        .none => member.data,
+        .zstd => try decompressZstd(alloc, member.data),
+        .gzip => try decompressGzip(alloc, member.data),
+        .xz => try decompressXzFallback(alloc, deb_path, "control.tar"),
+    };
+    defer if (member.compression != .none) alloc.free(plain);
+
     var out_file = try std.fs.createFileAbsolute(out_path, .{});
     defer out_file.close();
     try out_file.writeAll(plain);
@@ -149,10 +275,10 @@ pub fn decompressGzip(alloc: std.mem.Allocator, compressed: []const u8) ![]u8 {
 }
 
 /// For xz, fall back to the system xz command since Zig's xz may need LZMA2.
-fn decompressXzFallback(alloc: std.mem.Allocator, deb_path: []const u8) ![]u8 {
-    // Extract via shell: ar p pkg.deb data.tar.xz | xz -d
+fn decompressXzFallback(alloc: std.mem.Allocator, deb_path: []const u8, member_prefix: []const u8) ![]u8 {
+    // Extract via shell: ar p pkg.deb <member>.xz | xz -d
     var cmd_buf: [1024]u8 = undefined;
-    const cmd = std.fmt.bufPrint(&cmd_buf, "ar p '{s}' data.tar.xz | xz -d", .{deb_path}) catch
+    const cmd = std.fmt.bufPrint(&cmd_buf, "ar p '{s}' {s}.xz | xz -d", .{ deb_path, member_prefix }) catch
         return error.PathTooLong;
 
     const result = std.process.Child.run(.{
@@ -211,9 +337,10 @@ test "gzip decompression round-trips" {
     // Create gzip compressed data using Zig's compressor
     var compressed: std.Io.Writer.Allocating = .init(alloc);
     defer compressed.deinit();
-    var compressor: std.compress.flate.Compress = .init(&compressed.writer, .gzip, .{});
+    var compress_buf: [65536]u8 = undefined;
+    var compressor: std.compress.flate.Compress = .init(&compressed.writer, &compress_buf, .{ .container = .gzip });
     compressor.writer.writeAll(input) catch unreachable;
-    compressor.writer.close() catch unreachable;
+    compressor.end() catch unreachable;
     const gz_data = compressed.toOwnedSlice() catch unreachable;
     defer alloc.free(gz_data);
 

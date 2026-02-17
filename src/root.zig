@@ -43,9 +43,17 @@ pub const relocate = @import("platform/relocate.zig");
 pub const deb_index = @import("deb/index.zig");
 pub const deb_resolver = @import("deb/resolver.zig");
 pub const deb_extract = @import("deb/extract.zig");
+pub const deb_distro = @import("deb/distro.zig");
 
 // Reused from zigrep
 pub const simd_scanner = @import("kernel/simd_scanner.zig");
 pub const mmap_reader = @import("kernel/mmap_reader.zig");
 pub const arena = @import("mem/arena.zig");
 pub const thread_pool = @import("exec/thread_pool.zig");
+
+// Force Zig to discover tests in all imported modules
+comptime {
+    _ = deb_index;
+    _ = deb_resolver;
+    _ = deb_distro;
+}
