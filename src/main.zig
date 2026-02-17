@@ -190,16 +190,24 @@ fn runInit() void {
 fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
-    // Check for --cask and --deb flags
+    // Check for --cask, --deb, and --repo flags
     var is_cask = false;
     var is_deb = false;
+    var repo_spec: ?[]const u8 = null;
     var formulae: std.ArrayList([]const u8) = .empty;
     defer formulae.deinit(alloc);
-    for (args) |arg| {
+    var arg_idx: usize = 0;
+    while (arg_idx < args.len) : (arg_idx += 1) {
+        const arg = args[arg_idx];
         if (std.mem.eql(u8, arg, "--cask")) {
             is_cask = true;
         } else if (std.mem.eql(u8, arg, "--deb")) {
             is_deb = true;
+        } else if (std.mem.eql(u8, arg, "--repo")) {
+            if (arg_idx + 1 < args.len) {
+                arg_idx += 1;
+                repo_spec = args[arg_idx];
+            }
         } else {
             formulae.append(alloc, arg) catch {};
         }
@@ -211,7 +219,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     }
 
     if (is_deb) {
-        runDebInstall(alloc, formulae.items);
+        runDebInstall(alloc, formulae.items, repo_spec);
         return;
     }
 
@@ -306,15 +314,15 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             std.process.exit(1);
         };
         defer alloc.free(names);
-        for (install_order, 0..) |f, i| names[i] = f.name;
+        for (install_order, 0..) |f, idx| names[idx] = f.name;
 
         var had_error = std.atomic.Value(bool).init(false);
         var threads: std.ArrayList(std.Thread) = .empty;
         defer threads.deinit(alloc);
-        for (install_order, 0..) |f, i| {
-            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error, &phases[i] }) catch {
+        for (install_order, 0..) |f, pi| {
+            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error, &phases[pi] }) catch {
                 had_error.store(true, .release);
-                phases[i].store(@intFromEnum(Phase.failed), .release);
+                phases[pi].store(@intFromEnum(Phase.failed), .release);
                 continue;
             };
             threads.append(alloc, t) catch continue;
@@ -543,13 +551,16 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
-    // Check for --cask flag
+    // Check for --cask and --deb flags
     var is_cask = false;
+    var is_deb = false;
     var tokens: std.ArrayList([]const u8) = .empty;
     defer tokens.deinit(alloc);
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--cask")) {
             is_cask = true;
+        } else if (std.mem.eql(u8, arg, "--deb")) {
+            is_deb = true;
         } else {
             tokens.append(alloc, arg) catch {};
         }
@@ -562,6 +573,11 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     if (is_cask) {
         runCaskRemove(alloc, tokens.items);
+        return;
+    }
+
+    if (is_deb) {
+        runDebRemove(alloc, tokens.items);
         return;
     }
 
@@ -608,7 +624,11 @@ fn runList(alloc: std.mem.Allocator) void {
     const casks: []const nb.database.CaskRecord = if (casks_result) |c| c else |_| &.{};
     defer if (casks_result) |c| alloc.free(c) else |_| {};
 
-    if (kegs.len == 0 and casks.len == 0) {
+    const debs_result = db.listInstalledDebs(alloc);
+    const debs: []const nb.database.DebRecord = if (debs_result) |d| d else |_| &.{};
+    defer if (debs_result) |d| alloc.free(d) else |_| {};
+
+    if (kegs.len == 0 and casks.len == 0 and debs.len == 0) {
         stdout.print("No packages installed.\n", .{}) catch {};
         return;
     }
@@ -619,6 +639,9 @@ fn runList(alloc: std.mem.Allocator) void {
     }
     for (casks) |c| {
         stdout.print("{s} {s} (cask)\n", .{ c.token, c.version }) catch {};
+    }
+    for (debs) |d| {
+        stdout.print("{s} {s} (deb)\n", .{ d.name, d.version }) catch {};
     }
 }
 
@@ -780,16 +803,24 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     var timer = std.time.Timer.start() catch null;
 
-    // Parse --cask flag
+    // Parse --cask and --deb flags
     var is_cask = false;
+    var is_deb = false;
     var names: std.ArrayList([]const u8) = .empty;
     defer names.deinit(alloc);
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--cask")) {
             is_cask = true;
+        } else if (std.mem.eql(u8, arg, "--deb")) {
+            is_deb = true;
         } else {
             names.append(alloc, arg) catch {};
         }
+    }
+
+    if (is_deb) {
+        runDebUpgrade(alloc);
+        return;
     }
 
     var db = nb.database.Database.open() catch {
@@ -1041,11 +1072,13 @@ fn printUsage() void {
         \\  install --deb <pkg>      Install .deb packages (Linux, replaces apt-get)
         \\  remove <formula>         Uninstall packages
         \\  remove --cask <app>      Uninstall macOS applications
-        \\  list                     List installed packages and casks
+        \\  remove --deb <pkg>       Uninstall .deb packages (Linux)
+        \\  list                     List installed packages, casks, and debs
         \\  info <formula>           Show formula info from Homebrew API
         \\  search <query>           Search for formulas and casks
         \\  upgrade [formula]        Upgrade packages (or all if none specified)
         \\  upgrade --cask [app]     Upgrade casks (or all if none specified)
+        \\  upgrade --deb            Upgrade all installed .deb packages
         \\  update                   Self-update nanobrew to the latest version
         \\  doctor                   Check installation health
         \\  cleanup [--dry-run]      Remove stale caches and orphaned files
@@ -1068,14 +1101,15 @@ fn printUsage() void {
         \\  nb install ffmpeg python node
         \\  nb install --cask firefox
         \\  nb install --deb curl wget git
-        \\  nb install --deb curl wget git
         \\  nb install steipete/tap/sag
         \\  nb upgrade
         \\  nb upgrade tree
         \\  nb upgrade --cask
+        \\  nb upgrade --deb
         \\  nb list
         \\  nb remove ripgrep
         \\  nb remove --cask firefox
+        \\  nb remove --deb curl
         \\  nb doctor
         \\  nb cleanup --dry-run
         \\  nb pin tree
@@ -1554,7 +1588,50 @@ fn runOutdated(alloc: std.mem.Allocator) void {
     var outdated = getOutdatedPackages(alloc, &db, &.{}, true, true);
     defer outdated.deinit(alloc);
 
-    if (outdated.items.len == 0) {
+    // Also check deb packages
+    var deb_outdated: usize = 0;
+    const installed_debs = db.listInstalledDebs(alloc) catch &.{};
+    defer if (installed_debs.len > 0) alloc.free(installed_debs);
+
+    if (installed_debs.len > 0) deb_check: {
+        // Quick index fetch to compare versions
+        const distro_info = nb.deb_distro.detect(alloc);
+        const deb_arch = platform.deb_arch;
+
+        var client: std.http.Client = .{ .allocator = alloc };
+        defer client.deinit();
+
+        var url_buf: [512]u8 = undefined;
+        const index_url = std.fmt.bufPrint(&url_buf, "{s}/dists/{s}/main/binary-{s}/Packages.gz", .{
+            distro_info.mirror, distro_info.codename, deb_arch,
+        }) catch break :deb_check;
+
+        const index_gz = httpGetToMemory(alloc, &client, index_url) orelse break :deb_check;
+        defer alloc.free(index_gz);
+
+        const index_data = nb.deb_extract.decompressGzip(alloc, index_gz) catch break :deb_check;
+        defer alloc.free(index_data);
+
+        const pkgs = nb.deb_index.parsePackagesIndex(alloc, index_data) catch break :deb_check;
+        defer {
+            for (pkgs) |p| p.deinit(alloc);
+            alloc.free(pkgs);
+        }
+
+        var idx = nb.deb_index.buildIndex(alloc, pkgs) catch break :deb_check;
+        defer idx.deinit();
+
+        for (installed_debs) |deb| {
+            if (idx.get(deb.name)) |idx_pkg| {
+                if (!std.mem.eql(u8, deb.version, idx_pkg.version)) {
+                    stdout.print("{s} ({s} -> {s}) (deb)\n", .{ deb.name, deb.version, idx_pkg.version }) catch {};
+                    deb_outdated += 1;
+                }
+            }
+        }
+    }
+
+    if (outdated.items.len == 0 and deb_outdated == 0) {
         stdout.print("All packages are up to date.\n", .{}) catch {};
         return;
     }
@@ -1565,7 +1642,7 @@ fn runOutdated(alloc: std.mem.Allocator) void {
         stdout.print("{s} ({s} -> {s}){s}{s}\n", .{ pkg.name, pkg.old_ver, pkg.new_ver, tag, pin_tag }) catch {};
     }
 
-    stdout.print("\n==> {d} outdated package(s)\n", .{outdated.items.len}) catch {};
+    stdout.print("\n==> {d} outdated package(s)\n", .{outdated.items.len + deb_outdated}) catch {};
 }
 
 // ── nb pin / nb unpin ──
@@ -1826,7 +1903,7 @@ fn runCompletions(args: []const []const u8) void {
 // ── Version update check ──
 
 /// Install .deb packages from Ubuntu/Debian repositories (Linux only).
-fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8) void {
+fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_spec: ?[]const u8) void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
@@ -1840,57 +1917,100 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8) void {
     // --- Step 1: Fetch + decompress package index natively ---
     stdout.print("==> Fetching package index...\n", .{}) catch {};
 
-    const mirror = "http://archive.ubuntu.com/ubuntu";
-    const dist = "noble";
-    const arch = "amd64";
+    // Use --repo override or auto-detect distro
+    var mirror: []const u8 = undefined;
+    var dist: []const u8 = undefined;
+    const arch = platform.deb_arch;
+    var components: []const []const u8 = undefined;
 
-    var index_url_buf: [512]u8 = undefined;
-    const index_url = std.fmt.bufPrint(&index_url_buf, "{s}/dists/{s}/main/binary-{s}/Packages.gz", .{
-        mirror, dist, arch,
-    }) catch {
-        stderr.print("nb: URL too long\n", .{}) catch {};
-        return;
-    };
+    if (repo_spec) |spec| {
+        // Parse repo spec: "http://mirror/path codename comp1 comp2"
+        var parts = std.mem.splitScalar(u8, spec, ' ');
+        mirror = parts.next() orelse {
+            stderr.print("nb: invalid --repo spec (expected: mirror codename component...)\n", .{}) catch {};
+            return;
+        };
+        dist = parts.next() orelse "noble";
+        var comp_list: std.ArrayList([]const u8) = .empty;
+        defer comp_list.deinit(alloc);
+        while (parts.next()) |comp| {
+            comp_list.append(alloc, comp) catch {};
+        }
+        components = if (comp_list.items.len > 0)
+            (comp_list.toOwnedSlice(alloc) catch &.{ "main", "universe" })
+        else
+            &.{ "main", "universe" };
+    } else {
+        const distro = nb.deb_distro.detect(alloc);
+        mirror = distro.mirror;
+        dist = distro.codename;
+        components = nb.deb_distro.getComponents(distro.id);
+    }
+
+    stdout.print("    mirror={s} codename={s} arch={s}\n", .{ mirror, dist, arch }) catch {};
 
     // Native HTTP client — shared across all downloads (connection reuse)
     var client: std.http.Client = .{ .allocator = alloc };
     defer client.deinit();
 
-    // Download compressed index via native HTTP (no curl)
-    const index_gz = httpGetToMemory(alloc, &client, index_url) orelse {
-        stderr.print("nb: failed to fetch package index\n", .{}) catch {};
-        return;
-    };
-    defer alloc.free(index_gz);
-
-    // Decompress gzip natively
-    const index_data = nb.deb_extract.decompressGzip(alloc, index_gz) catch {
-        stderr.print("nb: failed to decompress package index\n", .{}) catch {};
-        return;
-    };
-    defer alloc.free(index_data);
-
-    stdout.print("==> Parsing package index ({d} bytes)...\n", .{index_data.len}) catch {};
-
-    // --- Step 2: Parse index + resolve deps ---
-    const all_pkgs = nb.deb_index.parsePackagesIndex(alloc, index_data) catch {
-        stderr.print("nb: failed to parse package index\n", .{}) catch {};
-        return;
-    };
+    // Fetch and merge package indices from all components (main + universe)
+    var all_pkgs_list: std.ArrayList(nb.deb_index.DebPackage) = .empty;
     defer {
-        for (all_pkgs) |p| p.deinit(alloc);
-        alloc.free(all_pkgs);
+        for (all_pkgs_list.items) |p| p.deinit(alloc);
+        all_pkgs_list.deinit(alloc);
     }
 
-    var index_map = nb.deb_index.buildIndex(alloc, all_pkgs) catch {
+    for (components) |component| {
+        var url_buf: [512]u8 = undefined;
+        const index_url = std.fmt.bufPrint(&url_buf, "{s}/dists/{s}/{s}/binary-{s}/Packages.gz", .{
+            mirror, dist, component, arch,
+        }) catch continue;
+
+        const index_gz = httpGetToMemory(alloc, &client, index_url) orelse {
+            // universe may not exist on all mirrors — warn but continue
+            stderr.print("nb: warning: failed to fetch {s} index\n", .{component}) catch {};
+            continue;
+        };
+        defer alloc.free(index_gz);
+
+        const index_data = nb.deb_extract.decompressGzip(alloc, index_gz) catch {
+            stderr.print("nb: warning: failed to decompress {s} index\n", .{component}) catch {};
+            continue;
+        };
+        defer alloc.free(index_data);
+
+        const pkgs = nb.deb_index.parsePackagesIndex(alloc, index_data) catch continue;
+        defer alloc.free(pkgs);
+
+        for (pkgs) |pkg| {
+            all_pkgs_list.append(alloc, pkg) catch continue;
+        }
+    }
+
+    if (all_pkgs_list.items.len == 0) {
+        stderr.print("nb: failed to fetch any package index\n", .{}) catch {};
+        return;
+    }
+
+    stdout.print("==> Parsing package index ({d} packages)...\n", .{all_pkgs_list.items.len}) catch {};
+
+    // --- Step 2: Parse index + resolve deps ---
+    var index_map = nb.deb_index.buildIndex(alloc, all_pkgs_list.items) catch {
         stderr.print("nb: failed to build package index\n", .{}) catch {};
         return;
     };
     defer index_map.deinit();
 
+    // Build virtual package → real package lookup
+    var provides_map = nb.deb_index.buildProvidesMap(alloc, all_pkgs_list.items) catch blk: {
+        stderr.print("nb: warning: failed to build provides map\n", .{}) catch {};
+        break :blk std.StringHashMap([]const u8).init(alloc);
+    };
+    defer provides_map.deinit();
+
     stdout.print("==> Resolving dependencies for {d} package(s)...\n", .{packages.len}) catch {};
 
-    const resolved = nb.deb_resolver.resolveAll(alloc, packages, index_map) catch {
+    const resolved = nb.deb_resolver.resolveAll(alloc, packages, index_map, provides_map) catch {
         stderr.print("nb: dependency resolution failed\n", .{}) catch {};
         return;
     };
@@ -1901,8 +2021,14 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8) void {
     var installed: usize = 0;
     var cached: usize = 0;
 
+    // Open database for tracking installed debs
+    var db = nb.database.Database.open() catch null;
+    defer if (db) |*d| d.close();
+
     for (resolved) |pkg| {
         var cache_buf: [512]u8 = undefined;
+        var deb_path_for_postinst: ?[]const u8 = null;
+        var file_list: [][]const u8 = &.{};
 
         // Content-addressable cache: check blob store by SHA256
         if (pkg.sha256.len > 0) {
@@ -1910,36 +2036,37 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8) void {
 
             // Cache hit — extract directly from blob store
             if (std.fs.accessAbsolute(cache_path, .{})) |_| {
-                nb.deb_extract.extractDebToPrefix(alloc, cache_path) catch {
+                file_list = nb.deb_extract.extractDebToPrefixWithFiles(alloc, cache_path) catch {
                     stderr.print("nb: failed to extract {s}\n", .{pkg.name}) catch {};
                     continue;
                 };
+                deb_path_for_postinst = cache_path;
                 installed += 1;
                 cached += 1;
-                continue;
-            } else |_| {}
+            } else |_| {
+                // Cache miss — download with native HTTP + streaming SHA256
+                stdout.print("    {s}...\n", .{pkg.name}) catch {};
+                var url_buf: [1024]u8 = undefined;
+                const dl_url = std.fmt.bufPrint(&url_buf, "{s}/{s}", .{ mirror, pkg.filename }) catch continue;
 
-            // Cache miss — download with native HTTP + streaming SHA256
-            stdout.print("    {s}...\n", .{pkg.name}) catch {};
-            var url_buf: [1024]u8 = undefined;
-            const dl_url = std.fmt.bufPrint(&url_buf, "{s}/{s}", .{ mirror, pkg.filename }) catch continue;
+                downloadDebWithSha256(&client, dl_url, pkg.sha256, cache_path) catch {
+                    // Connection may have gone stale — retry with fresh client
+                    var retry_client: std.http.Client = .{ .allocator = alloc };
+                    defer retry_client.deinit();
+                    downloadDebWithSha256(&retry_client, dl_url, pkg.sha256, cache_path) catch {
+                        stderr.print("nb: failed to download {s}\n", .{pkg.name}) catch {};
+                        continue;
+                    };
+                };
 
-            downloadDebWithSha256(&client, dl_url, pkg.sha256, cache_path) catch {
-                // Connection may have gone stale — retry with fresh client
-                var retry_client: std.http.Client = .{ .allocator = alloc };
-                defer retry_client.deinit();
-                downloadDebWithSha256(&retry_client, dl_url, pkg.sha256, cache_path) catch {
-                    stderr.print("nb: failed to download {s}\n", .{pkg.name}) catch {};
+                // Extract from blob cache
+                file_list = nb.deb_extract.extractDebToPrefixWithFiles(alloc, cache_path) catch {
+                    stderr.print("nb: failed to extract {s}\n", .{pkg.name}) catch {};
                     continue;
                 };
-            };
-
-            // Extract from blob cache
-            nb.deb_extract.extractDebToPrefix(alloc, cache_path) catch {
-                stderr.print("nb: failed to extract {s}\n", .{pkg.name}) catch {};
-                continue;
-            };
-            installed += 1;
+                deb_path_for_postinst = cache_path;
+                installed += 1;
+            }
         } else {
             // No SHA256 — download to tmp and extract
             stdout.print("    {s} (no checksum)...\n", .{pkg.name}) catch {};
@@ -1958,13 +2085,41 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8) void {
                 };
             };
 
-            nb.deb_extract.extractDebToPrefix(alloc, tmp_path) catch {
+            file_list = nb.deb_extract.extractDebToPrefixWithFiles(alloc, tmp_path) catch {
                 stderr.print("nb: failed to extract {s}\n", .{pkg.name}) catch {};
                 std.fs.deleteFileAbsolute(tmp_path) catch {};
                 continue;
             };
-            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            deb_path_for_postinst = tmp_path;
             installed += 1;
+        }
+
+        // Run postinst script if available (non-fatal)
+        if (deb_path_for_postinst) |deb_path| {
+            nb.deb_extract.runPostinst(alloc, deb_path, pkg.name);
+            // Clean up tmp file after postinst (cache files are kept)
+            if (!std.mem.startsWith(u8, deb_path, paths.BLOBS_DIR)) {
+                std.fs.deleteFileAbsolute(deb_path) catch {};
+            }
+        }
+
+        // Record install in database
+        if (db) |*d| {
+            d.recordDebInstall(pkg.name, pkg.version, pkg.sha256, file_list) catch {};
+        }
+    }
+
+    // Run ldconfig after all packages are installed (makes shared libs discoverable)
+    if (installed > 0) {
+        if (comptime builtin.os.tag == .linux) {
+            const ld_result = std.process.Child.run(.{
+                .allocator = alloc,
+                .argv = &.{"ldconfig"},
+            }) catch null;
+            if (ld_result) |r| {
+                alloc.free(r.stdout);
+                alloc.free(r.stderr);
+            }
         }
     }
 
@@ -1975,6 +2130,145 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8) void {
     } else {
         stdout.print("==> Installed {d}/{d} packages in {d:.1}ms\n", .{ installed, resolved.len, elapsed_ms }) catch {};
     }
+}
+
+fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    var db = nb.database.Database.open() catch {
+        stderr.print("nb: could not open database\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer db.close();
+
+    for (packages) |name| {
+        const record = db.findDeb(name) orelse {
+            stderr.print("nb: '{s}' is not installed (deb)\n", .{name}) catch {};
+            continue;
+        };
+
+        // Delete each installed file
+        var removed_files: usize = 0;
+        for (record.files) |file_path| {
+            std.fs.deleteFileAbsolute(file_path) catch continue;
+            removed_files += 1;
+        }
+
+        db.recordDebRemoval(name) catch {};
+        stdout.print("==> Removed {s} ({d} files)\n", .{ name, removed_files }) catch {};
+    }
+
+    // Run ldconfig after removal
+    if (comptime builtin.os.tag == .linux) {
+        const ld_result = std.process.Child.run(.{
+            .allocator = alloc,
+            .argv = &.{"ldconfig"},
+        }) catch null;
+        if (ld_result) |r| {
+            alloc.free(r.stdout);
+            alloc.free(r.stderr);
+        }
+    }
+}
+
+fn runDebUpgrade(alloc: std.mem.Allocator) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
+    var db = nb.database.Database.open() catch {
+        stderr.print("nb: could not open database\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer db.close();
+
+    const installed_debs = db.listInstalledDebs(alloc) catch {
+        stderr.print("nb: failed to list installed debs\n", .{}) catch {};
+        return;
+    };
+    defer alloc.free(installed_debs);
+
+    if (installed_debs.len == 0) {
+        stdout.print("No deb packages installed.\n", .{}) catch {};
+        return;
+    }
+
+    // Re-fetch package index to compare versions
+    const distro = nb.deb_distro.detect(alloc);
+    const mirror = distro.mirror;
+    const dist = distro.codename;
+    const arch = platform.deb_arch;
+    const components = nb.deb_distro.getComponents(distro.id);
+
+    var client: std.http.Client = .{ .allocator = alloc };
+    defer client.deinit();
+
+    var all_pkgs_list: std.ArrayList(nb.deb_index.DebPackage) = .empty;
+    defer {
+        for (all_pkgs_list.items) |p| p.deinit(alloc);
+        all_pkgs_list.deinit(alloc);
+    }
+
+    for (components) |component| {
+        var url_buf: [512]u8 = undefined;
+        const index_url = std.fmt.bufPrint(&url_buf, "{s}/dists/{s}/{s}/binary-{s}/Packages.gz", .{
+            mirror, dist, component, arch,
+        }) catch continue;
+
+        const index_gz = httpGetToMemory(alloc, &client, index_url) orelse continue;
+        defer alloc.free(index_gz);
+
+        const index_data = nb.deb_extract.decompressGzip(alloc, index_gz) catch continue;
+        defer alloc.free(index_data);
+
+        const pkgs = nb.deb_index.parsePackagesIndex(alloc, index_data) catch continue;
+        defer alloc.free(pkgs);
+
+        for (pkgs) |pkg| {
+            all_pkgs_list.append(alloc, pkg) catch continue;
+        }
+    }
+
+    var index_map = nb.deb_index.buildIndex(alloc, all_pkgs_list.items) catch {
+        stderr.print("nb: failed to build package index\n", .{}) catch {};
+        return;
+    };
+    defer index_map.deinit();
+
+    // Find outdated packages
+    var outdated: std.ArrayList(struct { name: []const u8, old_ver: []const u8, new_ver: []const u8 }) = .empty;
+    defer outdated.deinit(alloc);
+
+    for (installed_debs) |deb| {
+        if (index_map.get(deb.name)) |idx_pkg| {
+            if (!std.mem.eql(u8, deb.version, idx_pkg.version)) {
+                outdated.append(alloc, .{
+                    .name = deb.name,
+                    .old_ver = deb.version,
+                    .new_ver = idx_pkg.version,
+                }) catch {};
+            }
+        }
+    }
+
+    if (outdated.items.len == 0) {
+        stdout.print("==> All deb packages are up to date.\n", .{}) catch {};
+        return;
+    }
+
+    stdout.print("==> Upgrading {d} deb package(s):\n", .{outdated.items.len}) catch {};
+    for (outdated.items) |pkg| {
+        stdout.print("    {s} ({s} -> {s})\n", .{ pkg.name, pkg.old_ver, pkg.new_ver }) catch {};
+    }
+
+    // Re-install outdated packages (will overwrite files and update database)
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(alloc);
+    for (outdated.items) |pkg| {
+        names.append(alloc, pkg.name) catch {};
+    }
+
+    runDebInstall(alloc, names.items, null);
 }
 
 /// Download a URL to memory using Zig's native HTTP client.
