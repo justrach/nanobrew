@@ -7,6 +7,7 @@
 //   nb list                    # List installed packages
 //   nb info <name>              # Show formula/cask info from Homebrew API
 //   nb upgrade [formula]       # Upgrade packages
+//   nb doctor                  # AI-friendly diagnostics
 
 const std = @import("std");
 const nb = @import("nanobrew");
@@ -18,6 +19,7 @@ const Command = enum {
     list,
     info,
     upgrade,
+    doctor,
     help,
 };
 
@@ -51,6 +53,7 @@ pub fn main() !void {
         .list => runList(alloc),
         .info => runInfo(alloc, args[2..]),
         .upgrade => runUpgrade(alloc, args[2..]),
+        .doctor => runDoctor(alloc),
         .help => printUsage(),
     }
 }
@@ -65,6 +68,7 @@ fn parseCommand(arg: []const u8) ?Command {
         .{ "ls", Command.list },
         .{ "info", Command.info },
         .{ "upgrade", Command.upgrade },
+        .{ "doctor", Command.doctor },
         .{ "help", Command.help },
         .{ "--help", Command.help },
         .{ "-h", Command.help },
@@ -400,6 +404,142 @@ fn runUpgrade(alloc: std.mem.Allocator, formulae: []const []const u8) void {
     }
 }
 
+// ── nb doctor ──
+
+fn runDoctor(alloc: std.mem.Allocator) void {
+    const stdout = std.fs.File.stdout().deprecatedWriter();
+
+    stdout.print(
+        \\<nanobrew-doctor>
+        \\## System
+        \\
+    , .{}) catch {};
+
+    // OS info via uname
+    if (std.process.Child.run(.{ .allocator = alloc, .argv = &.{ "uname", "-mrs" } })) |run| {
+        const os = std.mem.trimRight(u8, run.stdout, "\n");
+        stdout.print("os: {s}\n", .{os}) catch {};
+        alloc.free(run.stdout);
+        alloc.free(run.stderr);
+    } else |_| {}
+
+    // macOS version
+    if (std.process.Child.run(.{ .allocator = alloc, .argv = &.{ "sw_vers", "-productVersion" } })) |run| {
+        const ver = std.mem.trimRight(u8, run.stdout, "\n");
+        stdout.print("macOS: {s}\n", .{ver}) catch {};
+        alloc.free(run.stdout);
+        alloc.free(run.stderr);
+    } else |_| {}
+
+    // Chip
+    if (std.process.Child.run(.{ .allocator = alloc, .argv = &.{ "sysctl", "-n", "machdep.cpu.brand_string" } })) |run| {
+        const chip = std.mem.trimRight(u8, run.stdout, "\n");
+        stdout.print("cpu: {s}\n", .{chip}) catch {};
+        alloc.free(run.stdout);
+        alloc.free(run.stderr);
+    } else |_| {}
+
+    // nanobrew paths
+    stdout.print(
+        \\
+        \\## Nanobrew
+        \\root: /opt/nanobrew
+        \\prefix: /opt/nanobrew/prefix
+        \\
+    , .{}) catch {};
+
+    // Check directory health
+    const health_dirs = [_][]const u8{
+        "/opt/nanobrew",
+        "/opt/nanobrew/prefix/Cellar",
+        "/opt/nanobrew/store",
+        "/opt/nanobrew/cache",
+        "/opt/nanobrew/db",
+    };
+    for (health_dirs) |dir| {
+        const exists = if (std.fs.openDirAbsolute(dir, .{})) |_| true else |_| false;
+        stdout.print("{s}: {s}\n", .{ dir, if (exists) "ok" else "MISSING" }) catch {};
+    }
+
+    // Installed packages
+    stdout.print(
+        \\
+        \\## Installed Packages
+        \\
+    , .{}) catch {};
+
+    var db = nb.database.Database.open() catch {
+        stdout.print("(database not accessible)\n", .{}) catch {};
+        printDoctorFooter(stdout);
+        return;
+    };
+    defer db.close();
+
+    const kegs = db.listInstalled(alloc) catch {
+        stdout.print("(failed to list)\n", .{}) catch {};
+        printDoctorFooter(stdout);
+        return;
+    };
+
+    if (kegs.len == 0) {
+        stdout.print("(none)\n", .{}) catch {};
+    } else {
+        for (kegs) |keg| {
+            stdout.print("- {s} {s}", .{ keg.name, keg.version }) catch {};
+
+            // Check for available updates
+            if (nb.api_client.fetchFormula(alloc, keg.name)) |remote| {
+                var buf: [128]u8 = undefined;
+                const remote_ver = remote.effectiveVersion(&buf);
+                if (nb.version.isNewer(keg.version, remote_ver)) {
+                    stdout.print(" -> {s} available", .{remote_ver}) catch {};
+                }
+            } else |_| {}
+
+            stdout.print("\n", .{}) catch {};
+        }
+        alloc.free(kegs);
+    }
+
+    // Homebrew coexistence check
+    stdout.print(
+        \\
+        \\## Environment
+        \\
+    , .{}) catch {};
+
+    if (std.process.Child.run(.{ .allocator = alloc, .argv = &.{ "which", "brew" } })) |run| {
+        const brew_path = std.mem.trimRight(u8, run.stdout, "\n");
+        if (brew_path.len > 0) {
+            stdout.print("homebrew: {s} (coexists)\n", .{brew_path}) catch {};
+        } else {
+            stdout.print("homebrew: not found\n", .{}) catch {};
+        }
+        alloc.free(run.stdout);
+        alloc.free(run.stderr);
+    } else |_| {
+        stdout.print("homebrew: not found\n", .{}) catch {};
+    }
+
+    // Check PATH
+    if (std.posix.getenv("PATH")) |path| {
+        const has_nb = std.mem.indexOf(u8, path, "/opt/nanobrew/prefix/bin") != null;
+        stdout.print("PATH includes nanobrew: {s}\n", .{if (has_nb) "yes" else "NO — add /opt/nanobrew/prefix/bin to PATH"}) catch {};
+    }
+
+    printDoctorFooter(stdout);
+}
+
+fn printDoctorFooter(stdout: anytype) void {
+    stdout.print(
+        \\
+        \\</nanobrew-doctor>
+        \\
+        \\Paste the block above into Claude, ChatGPT, or any AI assistant to debug issues.
+        \\
+    , .{}) catch {};
+}
+
 fn printUsage() void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     stdout.print(
@@ -418,6 +558,7 @@ fn printUsage() void {
         \\  list                List installed packages
         \\  info <name>         Show formula or cask info from Homebrew API
         \\  upgrade [formula]   Upgrade packages (or all if none specified)
+        \\  doctor              Diagnose issues (AI-friendly output)
         \\  help                Show this help
         \\
         \\EXAMPLES:
@@ -426,6 +567,7 @@ fn printUsage() void {
         \\  nb install ffmpeg python node
         \\  nb list
         \\  nb remove ripgrep
+        \\  nb doctor
         \\
     , .{}) catch {};
 }

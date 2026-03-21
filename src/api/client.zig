@@ -124,3 +124,137 @@ fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
 fn allocDupe(alloc: std.mem.Allocator, s: []const u8) ![]const u8 {
     return alloc.dupe(u8, s);
 }
+
+// ── Tests ──
+
+const testing = std.testing;
+
+test "parseFormulaJson: full formula with bottle" {
+    const json =
+        \\{
+        \\  "name": "ripgrep",
+        \\  "desc": "Search tool like grep and The Silver Searcher",
+        \\  "versions": {"stable": "14.1.0"},
+        \\  "revision": 0,
+        \\  "dependencies": ["pcre2"],
+        \\  "bottle": {
+        \\    "stable": {
+        \\      "rebuild": 0,
+        \\      "files": {
+        \\        "arm64_sonoma": {
+        \\          "url": "https://ghcr.io/v2/homebrew/core/ripgrep/blobs/sha256:abc123",
+        \\          "sha256": "abc123"
+        \\        }
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    ;
+    const f = try parseFormulaJson(testing.allocator, json);
+    try testing.expectEqualStrings("ripgrep", f.name);
+    try testing.expectEqualStrings("14.1.0", f.version);
+    try testing.expectEqualStrings("Search tool like grep and The Silver Searcher", f.desc);
+    try testing.expectEqual(@as(u32, 0), f.revision);
+    try testing.expectEqual(@as(u32, 0), f.rebuild);
+    try testing.expectEqual(@as(usize, 1), f.dependencies.len);
+    try testing.expectEqualStrings("pcre2", f.dependencies[0]);
+    try testing.expectEqualStrings("abc123", f.bottle_sha256);
+}
+
+test "parseFormulaJson: formula with rebuild suffix" {
+    const json =
+        \\{
+        \\  "name": "pcre2",
+        \\  "desc": "Perl compatible regular expressions library",
+        \\  "versions": {"stable": "10.47"},
+        \\  "revision": 0,
+        \\  "dependencies": [],
+        \\  "bottle": {
+        \\    "stable": {
+        \\      "rebuild": 1,
+        \\      "files": {
+        \\        "arm64_sonoma": {
+        \\          "url": "https://example.com/pcre2.tar.gz",
+        \\          "sha256": "deadbeef"
+        \\        }
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    ;
+    const f = try parseFormulaJson(testing.allocator, json);
+    try testing.expectEqualStrings("pcre2", f.name);
+    try testing.expectEqualStrings("10.47", f.version);
+    try testing.expectEqual(@as(u32, 1), f.rebuild);
+    // effectiveVersion should produce "10.47_1"
+    var buf: [128]u8 = undefined;
+    const eff = f.effectiveVersion(&buf);
+    try testing.expectEqualStrings("10.47_1", eff);
+}
+
+test "parseFormulaJson: no dependencies" {
+    const json =
+        \\{
+        \\  "name": "hello",
+        \\  "versions": {"stable": "1.0"},
+        \\  "bottle": {
+        \\    "stable": {
+        \\      "rebuild": 0,
+        \\      "files": {
+        \\        "arm64_sonoma": {
+        \\          "url": "https://example.com/hello.tar.gz",
+        \\          "sha256": "aaa"
+        \\        }
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    ;
+    const f = try parseFormulaJson(testing.allocator, json);
+    try testing.expectEqualStrings("hello", f.name);
+    try testing.expectEqual(@as(usize, 0), f.dependencies.len);
+}
+
+test "parseFormulaJson: bottle tag fallback" {
+    // Only has arm64_sequoia, not arm64_sonoma — should fall back
+    const json =
+        \\{
+        \\  "name": "test",
+        \\  "versions": {"stable": "2.0"},
+        \\  "bottle": {
+        \\    "stable": {
+        \\      "rebuild": 0,
+        \\      "files": {
+        \\        "arm64_sequoia": {
+        \\          "url": "https://example.com/test.tar.gz",
+        \\          "sha256": "bbb"
+        \\        }
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    ;
+    const f = try parseFormulaJson(testing.allocator, json);
+    try testing.expectEqualStrings("bbb", f.bottle_sha256);
+}
+
+test "parseFormulaJson: missing bottle errors" {
+    const json =
+        \\{
+        \\  "name": "nobottle",
+        \\  "versions": {"stable": "1.0"},
+        \\  "bottle": {
+        \\    "stable": {
+        \\      "rebuild": 0,
+        \\      "files": {
+        \\        "x86_64_linux": {
+        \\          "url": "https://example.com/linux.tar.gz",
+        \\          "sha256": "ccc"
+        \\        }
+        \\      }
+        \\    }
+        \\  }
+        \\}
+    ;
+    try testing.expectError(error.NoArm64Bottle, parseFormulaJson(testing.allocator, json));
+}

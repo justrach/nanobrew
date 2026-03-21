@@ -75,3 +75,46 @@ fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
 fn allocDupe(alloc: std.mem.Allocator, s: []const u8) ![]const u8 {
     return alloc.dupe(u8, s);
 }
+
+// ── Tests ──
+
+const testing = std.testing;
+
+test "parseCaskJson: full cask object" {
+    const json =
+        \\{"token":"firefox","name":["Mozilla Firefox"],"version":"125.0.1","desc":"Web browser","homepage":"https://www.mozilla.org/firefox/"}
+    ;
+    const cask = try parseCaskJson(testing.allocator, json);
+    try testing.expectEqualStrings("firefox", cask.token);
+    try testing.expectEqualStrings("Mozilla Firefox", cask.name);
+    try testing.expectEqualStrings("125.0.1", cask.version);
+    try testing.expectEqualStrings("Web browser", cask.desc);
+    try testing.expectEqualStrings("https://www.mozilla.org/firefox/", cask.homepage);
+}
+
+test "parseCaskJson: minimal cask (no desc/homepage)" {
+    const json =
+        \\{"token":"myapp","name":["My App"],"version":"1.0"}
+    ;
+    const cask = try parseCaskJson(testing.allocator, json);
+    try testing.expectEqualStrings("myapp", cask.token);
+    try testing.expectEqualStrings("1.0", cask.version);
+    try testing.expectEqualStrings("", cask.desc);
+    try testing.expectEqualStrings("", cask.homepage);
+}
+
+test "parseCaskJson: name array fallback to token" {
+    const json =
+        \\{"token":"noname","name":[],"version":"2.0","desc":"test"}
+    ;
+    const cask = try parseCaskJson(testing.allocator, json);
+    // Empty name array -> falls back to token
+    try testing.expectEqualStrings("noname", cask.name);
+}
+
+test "parseCaskJson: missing required fields" {
+    const json =
+        \\{"token":"bad"}
+    ;
+    try testing.expectError(error.MissingField, parseCaskJson(testing.allocator, json));
+}

@@ -64,3 +64,72 @@ fn splitRevision(seg: []const u8) SegmentParts {
 pub fn isNewer(installed: []const u8, available: []const u8) bool {
     return compare(available, installed) == .gt;
 }
+
+// ── Tests ──
+
+const testing = std.testing;
+
+test "equal versions" {
+    try testing.expectEqual(std.math.Order.eq, compare("1.2.3", "1.2.3"));
+    try testing.expectEqual(std.math.Order.eq, compare("0", "0"));
+    try testing.expectEqual(std.math.Order.eq, compare("10.47_1", "10.47_1"));
+}
+
+test "simple numeric comparison" {
+    try testing.expectEqual(std.math.Order.gt, compare("2.0", "1.0"));
+    try testing.expectEqual(std.math.Order.lt, compare("1.0", "2.0"));
+    try testing.expectEqual(std.math.Order.gt, compare("1.10", "1.9"));
+    try testing.expectEqual(std.math.Order.gt, compare("10.0", "9.99"));
+}
+
+test "issue #7: 0.1.067 vs 0.1.06 — more segments means greater" {
+    // 067 (=67) > 06 (=6), so 0.1.067 > 0.1.06
+    try testing.expectEqual(std.math.Order.gt, compare("0.1.067", "0.1.06"));
+    try testing.expect(!isNewer("0.1.067", "0.1.06"));
+}
+
+test "issue #7: underscore revision — 10.47_1 vs 10.47" {
+    // 10.47_1 > 10.47 (revision 1 > revision 0)
+    try testing.expectEqual(std.math.Order.gt, compare("10.47_1", "10.47"));
+    try testing.expect(!isNewer("10.47_1", "10.47"));
+}
+
+test "underscore revision ordering" {
+    try testing.expectEqual(std.math.Order.lt, compare("10.47", "10.47_1"));
+    try testing.expectEqual(std.math.Order.lt, compare("10.47_1", "10.47_2"));
+    try testing.expectEqual(std.math.Order.gt, compare("10.47_3", "10.47_2"));
+}
+
+test "different segment counts" {
+    // More segments = greater when prefix matches
+    try testing.expectEqual(std.math.Order.gt, compare("1.2.3", "1.2"));
+    try testing.expectEqual(std.math.Order.lt, compare("1.2", "1.2.3"));
+    // But earlier segment wins
+    try testing.expectEqual(std.math.Order.gt, compare("2.0", "1.9.9"));
+}
+
+test "isNewer convenience function" {
+    try testing.expect(isNewer("1.0", "2.0"));
+    try testing.expect(!isNewer("2.0", "1.0"));
+    try testing.expect(!isNewer("1.0", "1.0"));
+    try testing.expect(isNewer("3.1.0", "3.1.0_1"));
+    try testing.expect(!isNewer("3.1.0_1", "3.1.0"));
+}
+
+test "real-world homebrew versions" {
+    // python 3.12.2 -> 3.13.0
+    try testing.expect(isNewer("3.12.2", "3.13.0"));
+    // node 21.6.1 -> 21.6.2
+    try testing.expect(isNewer("21.6.1", "21.6.2"));
+    // pcre2 10.42 -> 10.43
+    try testing.expect(isNewer("10.42", "10.43"));
+    // same version is not newer
+    try testing.expect(!isNewer("14.2.1", "14.2.1"));
+}
+
+test "leading zeros treated as numeric" {
+    // "067" parses as 67, "06" as 6
+    try testing.expectEqual(std.math.Order.gt, compare("067", "06"));
+    try testing.expectEqual(std.math.Order.eq, compare("06", "6"));
+    try testing.expectEqual(std.math.Order.eq, compare("007", "7"));
+}
