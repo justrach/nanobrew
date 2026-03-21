@@ -17,8 +17,10 @@
 //   6. Symlink binaries into prefix/bin/
 
 pub const api_client = @import("api/client.zig");
+pub const cask_client = @import("api/cask.zig");
 pub const formula = @import("api/formula.zig");
 pub const deps = @import("resolve/deps.zig");
+pub const version = @import("resolve/version.zig");
 pub const downloader = @import("net/downloader.zig");
 pub const tar = @import("extract/tar.zig");
 pub const blob_cache = @import("store/blob_cache.zig");
