@@ -187,10 +187,20 @@ fn runInit() void {
 
     // If running as root (sudo), chown to the real user so nb install doesn't need sudo
     if (std.posix.getenv("SUDO_USER")) |real_user| {
-        _ = std.process.Child.run(.{
-            .allocator = std.heap.page_allocator,
-            .argv = &.{ "chown", "-R", real_user, ROOT },
-        }) catch {};
+        // Validate SUDO_USER contains only valid Unix username characters
+        const valid = real_user.len > 0 and real_user.len <= 256 and for (real_user) |c| {
+            if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_' and c != '.') break false;
+        } else true;
+
+        if (valid) {
+            _ = std.process.Child.run(.{
+                .allocator = std.heap.page_allocator,
+                .argv = &.{ "chown", "-R", real_user, ROOT },
+            }) catch {};
+        } else {
+            const stderr = std.fs.File.stderr().deprecatedWriter();
+            stderr.print("nb: warning: SUDO_USER contains invalid characters, skipping chown\n", .{}) catch {};
+        }
     }
 
     stdout.print("nanobrew initialized at {s}\n", .{ROOT}) catch {};
