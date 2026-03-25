@@ -51,6 +51,7 @@ We take security seriously — in v0.1.073 alone we found and fixed 21 vulnerabi
 - **No Gatekeeper quarantine** — cask installs strip `com.apple.quarantine`
 - **`--skip-postinst`** — opt out of .deb postinst script execution
 - **`--no-verify`** — required flag to install packages without checksums
+- **HTTPS with system CA verification** — all API and download connections use TLS with the OS certificate store; certificate pinning is not implemented as it is not standard practice for package managers
 
 ## Testing
 
@@ -68,7 +69,7 @@ We take security seriously — in v0.1.073 alone we found and fixed 21 vulnerabi
 | [#52](https://github.com/justrach/nanobrew/issues/52) | Info | Placeholder walk adds ~24ms per install (correctness tradeoff, won't fix) |
 | [#54](https://github.com/justrach/nanobrew/issues/54) | P2 | SUDO_USER env var not validated before use in chown |
 | [#55](https://github.com/justrach/nanobrew/issues/55) | P3 | Cask download not SHA256 verified before extraction |
-| [#56](https://github.com/justrach/nanobrew/issues/56) | P3 | No HTTPS certificate pinning on API/download connections |
+| [#56](https://github.com/justrach/nanobrew/issues/56) | P3 | No HTTPS certificate pinning — accepted risk; standard for package managers (brew, apt, npm rely on CA verification, not pinning) |
 
 ## Audit history
 
