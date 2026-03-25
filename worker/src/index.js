@@ -592,9 +592,9 @@ const LANDING_HTML = `<!DOCTYPE html>
   </section>
 
   <section class="stat">
-    <span class="stat-num">15ms</span>
-    <span class="stat-label">warm install time</span>
-    <p class="stat-ctx"><em>600x</em> faster than Homebrew &middot; faster than <code>echo</code></p>
+    <span class="stat-num">39ms</span>
+    <span class="stat-label">warm install &middot; with full security checks</span>
+    <p class="stat-ctx"><em>230x</em> faster than Homebrew &middot; 0.1ms for no-ops</p>
   </section>
 
   <section class="bench">
@@ -642,59 +642,56 @@ const LANDING_HTML = `<!DOCTYPE html>
   </section>
 
   <section class="bench">
-    <h2>v0.1.069 → v0.1.073</h2>
-    <p class="bench-sub">Same machine. Cellar deleted, reinstalled from store cache. 3 runs averaged.</p>
+    <h2>What shipped in v0.1.073</h2>
+    <p class="bench-sub">48 issues closed. 21 security vulnerabilities fixed. Built with parallel AI agents in one session.</p>
 
     <div class="bg">
-      <div class="bg-title">tree <span>/ 0 deps, warm reinstall</span></div>
+      <div class="bg-title">🛡 security</div>
       <div class="br">
-        <span class="br-l">v0.1.069</span>
-        <div class="br-t"><div class="br-b brew" data-w="100%">9ms</div></div>
+        <span class="br-l">patched</span>
+        <div class="br-t"><div class="br-b nb" data-w="100%">21 vulnerabilities — RCE, path traversal, injection, binary corruption</div></div>
       </div>
-      <div class="br">
-        <span class="br-l">v0.1.073</span>
-        <div class="br-t"><div class="br-b nb" data-w="100%">15ms</div></div>
-      </div>
-      <div class="bg-note">slightly slower — added placeholder replacement + security checks</div>
+      <div class="bg-note">Shell injection in decompression &middot; JSON injection in DB &middot; self-update was curl|bash &middot; Mach-O binary guard</div>
     </div>
 
     <div class="bg">
-      <div class="bg-title">ffmpeg <span>/ 9 packages, warm reinstall</span></div>
+      <div class="bg-title">🔧 broken packages</div>
       <div class="br">
-        <span class="br-l">v0.1.069</span>
-        <div class="br-t"><div class="br-b brew" data-w="48%">287ms</div></div>
+        <span class="br-l">fixed</span>
+        <div class="br-t"><div class="br-b nb" data-w="100%">aws, pip3, c_rehash, wheel3 — all script packages work now</div></div>
       </div>
-      <div class="br">
-        <span class="br-l">v0.1.073</span>
-        <div class="br-t"><div class="br-b nb" data-w="100%">590ms</div></div>
-      </div>
-      <div class="bg-note">2x slower — placeholder + codesign per binary. still 40x faster than brew.</div>
+      <div class="bg-note">@@HOMEBREW_CELLAR@@ placeholders replaced in shebangs &middot; handles read-only files (0o555)</div>
     </div>
 
     <div class="bg">
-      <div class="bg-title">no-op <span>/ already installed</span></div>
+      <div class="bg-title">✨ new commands</div>
       <div class="br">
-        <span class="br-l">v0.1.069</span>
-        <div class="br-t"><div class="br-b brew" data-w="100%">9ms</div></div>
+        <span class="br-l">added</span>
+        <div class="br-t"><div class="br-b nb" data-w="100%">nb migrate &middot; nb info --cask &middot; nb bundle install</div></div>
       </div>
-      <div class="br">
-        <span class="br-l">v0.1.073</span>
-        <div class="br-t"><div class="br-b nb" data-w="1.1%">0.1ms</div></div>
-      </div>
-      <div class="bg-note">90x faster — skips API entirely</div>
+      <div class="bg-note">Import from Homebrew &middot; cask metadata &middot; Brewfile support with instant no-ops</div>
     </div>
 
     <div class="bg">
-      <div class="bg-title">what changed</div>
+      <div class="bg-title">🚀 quality of life</div>
       <div class="br">
-        <span class="br-l">v0.1.069</span>
+        <span class="br-l">added</span>
+        <div class="br-t"><div class="br-b nb" data-w="100%">no sudo after init &middot; clear errors &middot; no Gatekeeper quarantine on casks</div></div>
+      </div>
+      <div class="bg-note">sudo nb init chowns to your user &middot; failed packages listed with hint &middot; apps just open</div>
+    </div>
+
+    <div class="bg">
+      <div class="bg-title">🧪 testing</div>
+      <div class="br">
+        <span class="br-l">before</span>
         <div class="br-t"><div class="br-b brew" data-w="68%">103 tests</div></div>
       </div>
       <div class="br">
-        <span class="br-l">v0.1.073</span>
-        <div class="br-t"><div class="br-b nb" data-w="100%">150 tests, 21 security fixes, 48 issues closed</div></div>
+        <span class="br-l">after</span>
+        <div class="br-t"><div class="br-b nb" data-w="100%">150 tests + adversarial security suite</div></div>
       </div>
-      <div class="bg-note">+47 tests, +21 security fixes</div>
+      <div class="bg-note">+47 tests &middot; path traversal &middot; JSON injection &middot; null bytes &middot; version string attacks</div>
     </div>
   </section>
     <div class="term">

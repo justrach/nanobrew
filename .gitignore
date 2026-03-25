@@ -3,3 +3,5 @@ zig-out/
 posts/
 *.blog.md
 .claude/worktrees/
+posts/twitter-thread*.md
+tweet*.md
