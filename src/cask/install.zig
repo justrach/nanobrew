@@ -276,29 +276,48 @@ pub fn removeCask(
 }
 
 fn downloadArtifact(alloc: std.mem.Allocator, url: []const u8, dest: []const u8, cask: Cask) !void {
+    const stderr = std.fs.File.stderr().deprecatedWriter();
+
     // Native HTTP download (no curl dependency)
     fetch.download(alloc, url, dest) catch return error.DownloadFailed;
 
-    // Verify SHA256 if needed
-    if (cask.shouldVerifySha()) {
-        try verifySha256(alloc, dest, cask.sha256);
+    // Verify SHA256 if available
+    if (cask.sha256.len == 0 or std.mem.eql(u8, cask.sha256, "no_check")) {
+        stderr.print("nb: warning: skipping SHA256 verification for {s} (no checksum available)\n", .{cask.token}) catch {};
+        return;
     }
+
+    verifySha256(alloc, dest, cask.sha256) catch |err| {
+        stderr.print("nb: error: SHA256 verification failed for {s}\n", .{cask.token}) catch {};
+        // Clean up the bad download
+        std.fs.deleteFileAbsolute(dest) catch {};
+        return err;
+    };
 }
 
-fn verifySha256(alloc: std.mem.Allocator, path: []const u8, expected: []const u8) !void {
-    const result = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "shasum", "-a", "256", path },
-    }) catch return error.VerifyFailed;
-    defer alloc.free(result.stdout);
-    defer alloc.free(result.stderr);
+fn verifySha256(_: std.mem.Allocator, path: []const u8, expected: []const u8) !void {
+    // In-process SHA256 using std.crypto (no external shasum dependency)
+    var file = std.fs.openFileAbsolute(path, .{}) catch return error.VerifyFailed;
+    defer file.close();
 
-    if (result.term.Exited != 0) return error.VerifyFailed;
+    var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+    var buf: [65536]u8 = undefined;
+    while (true) {
+        const bytes_read = file.read(&buf) catch return error.VerifyFailed;
+        if (bytes_read == 0) break;
+        hasher.update(buf[0..bytes_read]);
+    }
 
-    // shasum output: "<hash>  <filename>\n"
-    if (result.stdout.len < 64) return error.VerifyFailed;
-    const actual = result.stdout[0..64];
-    if (!std.mem.eql(u8, actual, expected)) return error.Sha256Mismatch;
+    const digest = hasher.finalResult();
+    const charset = "0123456789abcdef";
+    var hex: [64]u8 = undefined;
+    for (digest, 0..) |byte, idx| {
+        hex[idx * 2] = charset[byte >> 4];
+        hex[idx * 2 + 1] = charset[byte & 0x0f];
+    }
+
+    if (expected.len < 64) return error.VerifyFailed;
+    if (!std.mem.eql(u8, &hex, expected[0..64])) return error.Sha256Mismatch;
 }
 
 fn mountDmg(alloc: std.mem.Allocator, dmg_path: []const u8, out_buf: []u8) ![]const u8 {
