@@ -163,38 +163,22 @@ pub const DepResolver = struct {
             }
         }
 
-        // Build reverse edges: dep -> list of packages that depend on it
-        // This avoids scanning ALL edges for every dequeued node
-        var reverse = std.StringHashMap(std.ArrayList([]const u8)).init(self.alloc);
-        defer {
-            var rit = reverse.valueIterator();
-            while (rit.next()) |list| list.deinit(self.alloc);
-            reverse.deinit();
-        }
-        var re_build = self.edges.iterator();
-        while (re_build.next()) |entry| {
-            for (entry.value_ptr.*) |dep| {
-                const gop = reverse.getOrPut(dep) catch continue;
-                if (!gop.found_existing) gop.value_ptr.* = std.ArrayList([]const u8).empty;
-                gop.value_ptr.append(self.alloc, entry.key_ptr.*) catch {};
-            }
-        }
-
         var result: std.ArrayList(Formula) = .empty;
 
         while (queue.items.len > 0) {
-            // Pop from end instead of orderedRemove(0) — O(1) vs O(n)
-            const sorted_name = queue.pop();
+            const sorted_name = queue.orderedRemove(0);
             const f = self.formulae.get(sorted_name) orelse continue;
             try result.append(self.alloc, f);
 
-            // Only visit packages that depend on this one (not ALL edges)
-            if (reverse.get(sorted_name)) |dependents| {
-                for (dependents.items) |dependent| {
-                    if (in_degree.getPtr(dependent)) |count| {
-                        count.* -= 1;
-                        if (count.* == 0) {
-                            try queue.append(self.alloc, dependent);
+            var re_iter = self.edges.iterator();
+            while (re_iter.next()) |entry| {
+                for (entry.value_ptr.*) |dep| {
+                    if (std.mem.eql(u8, dep, sorted_name)) {
+                        if (in_degree.getPtr(entry.key_ptr.*)) |count| {
+                            count.* -= 1;
+                            if (count.* == 0) {
+                                try queue.append(self.alloc, entry.key_ptr.*);
+                            }
                         }
                     }
                 }

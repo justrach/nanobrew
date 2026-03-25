@@ -41,11 +41,25 @@ pub fn fileContainsPlaceholder(path: []const u8) bool {
 
 /// Replace placeholders in text config files (.pc, .cmake, .la, etc.)
 pub fn relocateTextFile(path: []const u8) bool {
-    // Check if file is writable; if not, temporarily make it writable
-    // (Homebrew bottles ship scripts with 0o555 / r-xr-xr-x permissions)
+    // Single open for stat + binary check
     const probe = std.fs.openFileAbsolute(path, .{ .mode = .read_only }) catch return false;
     const stat = probe.stat() catch { probe.close(); return false; };
+    if (stat.size == 0 or stat.size > 1024 * 1024) { probe.close(); return false; }
+
+    // Quick binary check on first 4 bytes without reading the whole file
+    var magic: [4]u8 = undefined;
+    const magic_n = probe.read(&magic) catch { probe.close(); return false; };
     probe.close();
+    if (magic_n >= 4) {
+        if (std.mem.eql(u8, &magic, "\x7fELF") or
+            std.mem.eql(u8, &magic, "\xfe\xed\xfa\xce") or
+            std.mem.eql(u8, &magic, "\xfe\xed\xfa\xcf") or
+            std.mem.eql(u8, &magic, "\xca\xfe\xba\xbe") or
+            std.mem.eql(u8, &magic, "\xcf\xfa\xed\xfe"))
+            return false;
+    }
+
+    // Make writable if needed
     const orig_mode = stat.mode;
     const needs_chmod = (orig_mode & 0o200) == 0;
     if (needs_chmod) {
