@@ -59,6 +59,24 @@ We take security seriously — in v0.1.073 alone we found and fixed 21 vulnerabi
 - Null byte injection
 - JSON injection payloads
 - Version string attacks (shell injection, backticks, pipes)
-- Binary magic byte detection
-- Long string / buffer overflow
 - Deep recursion protection
+
+## Known open issues
+
+| # | Severity | Issue |
+|---|----------|-------|
+| [#52](https://github.com/justrach/nanobrew/issues/52) | Info | Placeholder walk adds ~24ms per install (correctness tradeoff, won't fix) |
+| [#54](https://github.com/justrach/nanobrew/issues/54) | P2 | SUDO_USER env var not validated before use in chown |
+| [#55](https://github.com/justrach/nanobrew/issues/55) | P3 | Cask download not SHA256 verified before extraction |
+| [#56](https://github.com/justrach/nanobrew/issues/56) | P3 | No HTTPS certificate pinning on API/download connections |
+
+## Audit history
+
+| Date | Version | Findings | Fixed |
+|------|---------|----------|-------|
+| 2026-03-24 | v0.1.069 | Round 1: 12 vulnerabilities (P0-P2) | All 12 |
+| 2026-03-24 | v0.1.070 | Round 2: 9 vulnerabilities + test suite | All 9 |
+| 2026-03-25 | v0.1.072 | Round 3: 8 vulnerabilities (HN feedback) | All 8 |
+| 2026-03-25 | v0.1.073 | Round 4: 5 vulnerabilities (adversarial agents) + binary corruption | All 5 + #50 |
+
+Total: **34 vulnerabilities found and fixed** across 4 audit rounds.
