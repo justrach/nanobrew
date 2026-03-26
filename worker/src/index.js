@@ -642,7 +642,7 @@ const LANDING_HTML = `<!DOCTYPE html>
   </section>
 
   <section class="bench">
-    <h2>What shipped in v0.1.074</h2>
+    <h2>What shipped in v0.1.075</h2>
     <p class="bench-sub">48 issues closed. 21 security vulnerabilities fixed. Built with parallel AI agents in one session.</p>
 
     <div class="bg">
@@ -854,7 +854,7 @@ export default {
         });
         if (!gh.ok) {
           // Rate limited — return last known version
-          return new Response("0.1.074", {
+          return new Response("0.1.075", {
             headers: {
               "content-type": "text/plain; charset=utf-8",
               "cache-control": "public, max-age=60",
@@ -876,7 +876,7 @@ export default {
         await cache.put(cacheKey, resp.clone());
         return resp;
       } catch {
-        return new Response("0.1.074", {
+        return new Response("0.1.075", {
           headers: {
             "content-type": "text/plain; charset=utf-8",
             "cache-control": "public, max-age=60",
