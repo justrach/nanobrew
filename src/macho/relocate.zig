@@ -34,7 +34,7 @@ const LC_LOAD_WEAK_DYLIB: u32 = 0x80000018;
 const LC_REEXPORT_DYLIB: u32 = 0x8000001F;
 const LC_RPATH: u32 = 0x8000001C;
 
-const MACHO_DIRS = [_][]const u8{ "bin", "sbin", "lib", "libexec" };
+const MACHO_DIRS = [_][]const u8{ "bin", "sbin", "lib", "libexec", "Frameworks" };
 
 /// Relocate all Mach-O files in a keg.
 /// Collects modified files and codesigns them in a single batch call.
