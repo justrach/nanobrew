@@ -301,6 +301,18 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         };
     }
 
+    // Verify all requested formulas were actually found (#68)
+    {
+        var any_missing = false;
+        for (formulae.items) |name| {
+            if (!resolver.hasFormula(name)) {
+                stderr.print("nb: formula not found: '{s}'\n", .{name}) catch {};
+                any_missing = true;
+            }
+        }
+        if (any_missing) std.process.exit(1);
+    }
+
     const resolve_ms = if (phase_timer) |*pt| @as(f64, @floatFromInt(pt.read())) / 1_000_000.0 else 0;
     stdout.print("    [{d:.0}ms]\n", .{resolve_ms}) catch {};
 
