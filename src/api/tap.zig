@@ -98,6 +98,30 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
 
+        // Handle Ruby if/else/end for Hardware::CPU conditionals (#68)
+        if (startsWith(line, "if Hardware::CPU.intel?")) {
+            block_depth += 1;
+            platform_depth = block_depth;
+            platform_skip = (builtin.cpu.arch != .x86_64);
+            continue;
+        } else if (startsWith(line, "if Hardware::CPU.arm?")) {
+            block_depth += 1;
+            platform_depth = block_depth;
+            platform_skip = (builtin.cpu.arch != .aarch64);
+            continue;
+        }
+
+        // Handle "else" — flip platform skip if we're inside a platform block
+        if (std.mem.eql(u8, line, "else") and platform_depth > 0 and block_depth == platform_depth) {
+            platform_skip = !platform_skip;
+            // Reset url/sha256 so the else branch can set them
+            if (!platform_skip) {
+                source_url = null;
+                source_sha256 = null;
+            }
+            continue;
+        }
+
         // Track do...end block nesting
         if (endsWith(line, " do") or std.mem.eql(u8, line, "do")) {
             block_depth += 1;
@@ -178,6 +202,9 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
         // depends_on
         if (startsWith(line, "depends_on")) {
             if (extractQuotedAfter(line, "depends_on")) |dep_name| {
+                // Skip optional and recommended deps — not strictly required (#68)
+                if (std.mem.indexOf(u8, line, "=> :optional") != null or
+                    std.mem.indexOf(u8, line, "=> :recommended") != null) continue;
                 // Check if build-only
                 if (std.mem.indexOf(u8, line, "=> :build") != null) {
                     try build_deps.append(alloc, try alloc.dupe(u8, dep_name));
@@ -321,7 +348,7 @@ fn findTagInLine(line: []const u8, tag: []const u8) ?[]const u8 {
 
 /// Try to extract version from URL patterns like /v1.3.0/ or /1.3.0/
 fn extractVersionFromUrl(url: []const u8) ?[]const u8 {
-    // Look for /vX.Y.Z/ or /X.Y.Z/ in URL
+    // Look for /vX.Y.Z/ or /X.Y.Z/ in URL path segments
     var i: usize = 0;
     while (i < url.len) : (i += 1) {
         if (url[i] == '/') {
@@ -343,6 +370,40 @@ fn extractVersionFromUrl(url: []const u8) ?[]const u8 {
             }
         }
     }
+
+    // Fallback: look for -X.Y.Z. pattern in the filename (e.g. "tool-arm64-8.2.6.tgz")
+    // Scan backwards for the last hyphen followed by a digit
+    var j: usize = url.len;
+    while (j > 0) : (j -= 1) {
+        if (url[j - 1] == '-' and j < url.len and std.ascii.isDigit(url[j])) {
+            const ver_start = j;
+            // Find end: stop at known archive extensions or end of string
+            var ver_end = ver_start;
+            var dot_count: u32 = 0;
+            while (ver_end < url.len) : (ver_end += 1) {
+                const c = url[ver_end];
+                if (c == '.') {
+                    // Check if this dot starts an extension like .tgz, .tar, .zip
+                    const rest = url[ver_end..];
+                    if (std.mem.startsWith(u8, rest, ".tgz") or
+                        std.mem.startsWith(u8, rest, ".tar") or
+                        std.mem.startsWith(u8, rest, ".zip") or
+                        std.mem.startsWith(u8, rest, ".dmg") or
+                        std.mem.startsWith(u8, rest, ".pkg"))
+                    {
+                        break;
+                    }
+                    dot_count += 1;
+                } else if (!std.ascii.isDigit(c)) {
+                    break;
+                }
+            }
+            if (dot_count >= 1 and ver_end > ver_start + 1) {
+                return url[ver_start..ver_end];
+            }
+        }
+    }
+
     return null;
 }
 

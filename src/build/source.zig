@@ -129,34 +129,47 @@ pub fn buildFromSource(alloc: std.mem.Allocator, formula: Formula) !void {
             try runBuildCmd(alloc, src_root, &.{ "make", std.fmt.allocPrint(alloc, "PREFIX={s}", .{keg_path}) catch return error.OutOfMemory, "install" });
         },
         .unknown => {
-            // No build system — check for pre-built binaries (common in tap formulas).
-            // Look for executable files in the source root and copy them to keg bin/.
-            var bin_dir_buf: [512]u8 = undefined;
-            const bin_dir = std.fmt.bufPrint(&bin_dir_buf, "{s}/bin", .{keg_path}) catch return error.PathTooLong;
-            std.fs.makeDirAbsolute(bin_dir) catch {};
+            // No build system — assume pre-built package (common in tap formulas).
+            // Copy entire contents into keg (equivalent to Homebrew's `prefix.install Dir["*"]`).
+            // This handles packages with bin/, lib/, etc. subdirectories.
+            var found_anything = false;
 
-            var found_binary = false;
+            // First, try copying bin/ subdirectory executables directly
+            var src_bin_dir_buf: [512]u8 = undefined;
+            const src_bin_dir = std.fmt.bufPrint(&src_bin_dir_buf, "{s}/bin", .{src_root}) catch "";
+            if (src_bin_dir.len > 0) {
+                if (std.fs.openDirAbsolute(src_bin_dir, .{})) |_| {
+                    found_anything = true;
+                } else |_| {}
+            }
+
+            // Copy all top-level entries from source root into keg path
             var dir = std.fs.openDirAbsolute(src_root, .{ .iterate = true }) catch return error.UnknownBuildSystem;
             defer dir.close();
             var iter = dir.iterate();
             while (iter.next() catch null) |entry| {
-                if (entry.kind != .file) continue;
-                // Check if file is executable
-                const stat = dir.statFile(entry.name) catch continue;
-                const mode = stat.mode;
-                if (mode & 0o111 != 0) {
-                    // Copy executable to keg bin/
-                    var src_bin_buf: [512]u8 = undefined;
-                    const src_bin = std.fmt.bufPrint(&src_bin_buf, "{s}/{s}", .{ src_root, entry.name }) catch continue;
-                    var dst_bin_buf: [512]u8 = undefined;
-                    const dst_bin = std.fmt.bufPrint(&dst_bin_buf, "{s}/{s}", .{ bin_dir, entry.name }) catch continue;
-                    std.fs.copyFileAbsolute(src_bin, dst_bin, .{}) catch continue;
-                    found_binary = true;
+                var src_path_buf: [1024]u8 = undefined;
+                const src_path = std.fmt.bufPrint(&src_path_buf, "{s}/{s}", .{ src_root, entry.name }) catch continue;
+                var dst_path_buf: [1024]u8 = undefined;
+                const dst_path = std.fmt.bufPrint(&dst_path_buf, "{s}/{s}", .{ keg_path, entry.name }) catch continue;
+
+                if (entry.kind == .directory) {
+                    // Recursively copy directories (bin/, lib/, etc.)
+                    const cp_result = std.process.Child.run(.{
+                        .allocator = alloc,
+                        .argv = &.{ "cp", "-R", src_path, dst_path },
+                    }) catch continue;
+                    alloc.free(cp_result.stdout);
+                    alloc.free(cp_result.stderr);
+                    if (cp_result.term.Exited == 0) found_anything = true;
+                } else if (entry.kind == .file) {
+                    std.fs.copyFileAbsolute(src_path, dst_path, .{}) catch continue;
+                    found_anything = true;
                 }
             }
 
-            if (!found_binary) {
-                stderr.print("nb: {s}: no recognized build system found\n", .{formula.name}) catch {};
+            if (!found_anything) {
+                stderr.print("nb: {s}: no recognized build system or installable files found\n", .{formula.name}) catch {};
                 return error.UnknownBuildSystem;
             }
         },
