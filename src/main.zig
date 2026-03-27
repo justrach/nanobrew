@@ -19,6 +19,7 @@ const Command = enum {
     init,
     install,
     remove,
+    reinstall,
     list,
     info,
     search,
@@ -78,6 +79,10 @@ pub fn main() !void {
         .init => runInit(),
         .install => runInstall(alloc, args[2..]),
         .remove => runRemove(alloc, args[2..]),
+        .reinstall => {
+            runRemove(alloc, args[2..]);
+            runInstall(alloc, args[2..]);
+        },
         .list => runList(alloc),
         .info => runInfo(alloc, args[2..]),
         .search => runSearch(alloc, args[2..]),
@@ -139,6 +144,7 @@ fn parseCommand(arg: []const u8) ?Command {
         .{ "nuke", Command.nuke },
         .{ "uninstall-self", Command.nuke },
         .{ "migrate", Command.migrate },
+        .{ "reinstall", Command.reinstall },
     };
     inline for (cmds) |pair| {
         if (std.mem.eql(u8, arg, pair[0])) return pair[1];
@@ -240,9 +246,9 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     var arg_idx: usize = 0;
     while (arg_idx < args.len) : (arg_idx += 1) {
         const arg = args[arg_idx];
-        if (std.mem.eql(u8, arg, "--cask")) {
+        if (std.mem.eql(u8, arg, "--cask") or std.mem.eql(u8, arg, "--casks")) {
             is_cask = true;
-        } else if (std.mem.eql(u8, arg, "--deb")) {
+        } else if (std.mem.eql(u8, arg, "--deb") or std.mem.eql(u8, arg, "--debs")) {
             is_deb = true;
         } else if (std.mem.eql(u8, arg, "--repo")) {
             if (arg_idx + 1 < args.len) {
@@ -253,6 +259,9 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             skip_postinst = true;
         } else if (std.mem.eql(u8, arg, "--no-verify")) {
             no_verify = true;
+        } else if (arg.len > 0 and arg[0] == '-') {
+            stderr.print("nb: unknown flag '{s}'\n", .{arg}) catch {};
+            std.process.exit(1);
         } else {
             formulae.append(alloc, arg) catch {};
         }
@@ -3032,7 +3041,8 @@ fn runMigrate(alloc: std.mem.Allocator) void {
     var cask_count: usize = 0;
 
     // Scan Homebrew Cellar directories for formulae
-    const cellar_paths = [_][]const u8{ "/opt/homebrew/Cellar", "/usr/local/Cellar" };
+    // Includes macOS paths and Linux Linuxbrew path (#72)
+    const cellar_paths = [_][]const u8{ "/opt/homebrew/Cellar", "/usr/local/Cellar", "/home/linuxbrew/.linuxbrew/Cellar" };
     for (cellar_paths) |cellar_path| {
         var cellar_dir = std.fs.openDirAbsolute(cellar_path, .{ .iterate = true }) catch continue;
         defer cellar_dir.close();
@@ -3062,7 +3072,7 @@ fn runMigrate(alloc: std.mem.Allocator) void {
     }
 
     // Scan Homebrew Caskroom directories for casks
-    const caskroom_paths = [_][]const u8{ "/opt/homebrew/Caskroom", "/usr/local/Caskroom" };
+    const caskroom_paths = [_][]const u8{ "/opt/homebrew/Caskroom", "/usr/local/Caskroom", "/home/linuxbrew/.linuxbrew/Caskroom" };
     for (caskroom_paths) |caskroom_path| {
         var caskroom_dir = std.fs.openDirAbsolute(caskroom_path, .{ .iterate = true }) catch continue;
         defer caskroom_dir.close();
