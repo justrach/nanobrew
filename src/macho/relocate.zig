@@ -83,6 +83,27 @@ fn walkAndRelocate(alloc: std.mem.Allocator, dir_path: []const u8, modified: *st
 
         switch (entry.kind) {
             .directory => walkAndRelocate(alloc, child_path, modified) catch {},
+            .sym_link => {
+                // Resolve symlink and process target if it's a Mach-O file
+                var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+                const target = std.fs.readLinkAbsolute(child_path, &target_buf) catch continue;
+                const abs_target = if (target.len > 0 and target[0] == '/')
+                    target
+                else blk: {
+                    // Relative symlink — resolve against parent directory
+                    var resolve_buf: [std.fs.max_path_bytes]u8 = undefined;
+                    const last_slash = std.mem.lastIndexOf(u8, child_path, "/") orelse continue;
+                    const resolved = std.fmt.bufPrint(&resolve_buf, "{s}/{s}", .{ child_path[0..last_slash], target }) catch continue;
+                    break :blk resolved;
+                };
+                if (relocateFile(alloc, abs_target)) {
+                    const dup = alloc.dupe(u8, abs_target) catch continue;
+                    modified.append(alloc, dup) catch {
+                        alloc.free(dup);
+                        continue;
+                    };
+                }
+            },
             .file => {
                 if (relocateFile(alloc, child_path)) {
                     const dup = alloc.dupe(u8, child_path) catch continue;

@@ -14,6 +14,17 @@ const fetch = @import("../net/fetch.zig");
 
 const API_BASE = "https://formulae.brew.sh/api/formula/";
 const CASK_API_BASE = "https://formulae.brew.sh/api/cask/";
+
+/// Get API formula base, respecting NANOBREW_API_DOMAIN / HOMEBREW_API_DOMAIN env vars (#74)
+fn apiFormulaBase() []const u8 {
+    return std.posix.getenv("NANOBREW_API_DOMAIN") orelse
+        std.posix.getenv("HOMEBREW_API_DOMAIN") orelse API_BASE;
+}
+
+fn apiCaskBase() []const u8 {
+    return std.posix.getenv("NANOBREW_API_DOMAIN") orelse
+        std.posix.getenv("HOMEBREW_API_DOMAIN") orelse CASK_API_BASE;
+}
 const API_CACHE_DIR = @import("../platform/paths.zig").API_CACHE_DIR;
 
 pub fn fetchFormula(alloc: std.mem.Allocator, name: []const u8) !Formula {
@@ -69,7 +80,7 @@ pub fn fetchCask(alloc: std.mem.Allocator, token: []const u8) !Cask {
 
 fn fetchAndCacheCask(alloc: std.mem.Allocator, token: []const u8, cache_path: []const u8) !Cask {
     var url_buf: [512]u8 = undefined;
-    const url = std.fmt.bufPrint(&url_buf, "{s}{s}.json", .{ CASK_API_BASE, token }) catch return error.NameTooLong;
+    const url = std.fmt.bufPrint(&url_buf, "{s}{s}.json", .{ apiCaskBase(), token }) catch return error.NameTooLong;
 
     const body = fetch.get(alloc, url) catch return error.CaskNotFound;
 
@@ -207,7 +218,7 @@ fn parseCaskJson(alloc: std.mem.Allocator, json_data: []const u8) !Cask {
 
 fn fetchAndCache(alloc: std.mem.Allocator, shared_client: ?*std.http.Client, name: []const u8, cache_path: []const u8) !Formula {
     var url_buf: [512]u8 = undefined;
-    const url = std.fmt.bufPrint(&url_buf, "{s}{s}.json", .{ API_BASE, name }) catch return error.NameTooLong;
+    const url = std.fmt.bufPrint(&url_buf, "{s}{s}.json", .{ apiFormulaBase(), name }) catch return error.NameTooLong;
 
     const body = if (shared_client) |c|
         fetch.getWithClient(alloc, c, url) catch return error.FormulaNotFound

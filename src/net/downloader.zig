@@ -201,12 +201,28 @@ pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
     var dest_path_buf: [512]u8 = undefined;
     const dest_path = std.fmt.bufPrint(&dest_path_buf, "{s}/{s}", .{ BLOBS_DIR, req.expected_sha256 }) catch return error.PathTooLong;
 
+    // Rewrite bottle URL if NANOBREW_BOTTLE_DOMAIN or HOMEBREW_BOTTLE_DOMAIN is set (#74)
+    const bottle_domain = std.posix.getenv("NANOBREW_BOTTLE_DOMAIN") orelse
+        std.posix.getenv("HOMEBREW_BOTTLE_DOMAIN");
+    var rewritten_url_buf: [2048]u8 = undefined;
+    const effective_url = if (bottle_domain) |domain| blk: {
+        const ghcr_prefix = "https://ghcr.io/v2/homebrew/core/";
+        if (std.mem.startsWith(u8, req.url, ghcr_prefix)) {
+            const rest = req.url[ghcr_prefix.len..];
+            break :blk std.fmt.bufPrint(&rewritten_url_buf, "{s}/{s}", .{ domain, rest }) catch req.url;
+        }
+        break :blk req.url;
+    } else req.url;
+
     // Each thread gets its own HTTP client (thread-local connections)
     var client: std.http.Client = .{ .allocator = alloc };
     defer client.deinit();
 
-    // Fetch GHCR bearer token if needed
-    const token = try fetchGhcrToken(alloc, &client, req.url);
+    // Fetch GHCR bearer token if needed (skip for custom bottle domains)
+    const token = if (bottle_domain != null and !std.mem.startsWith(u8, effective_url, "https://ghcr.io"))
+        null
+    else
+        try fetchGhcrToken(alloc, &client, effective_url);
     defer if (token) |t| alloc.free(t);
 
     // Build auth header
@@ -217,7 +233,7 @@ pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
     } else &.{};
 
     // Download with native HTTP + streaming SHA256
-    const uri = std.Uri.parse(req.url) catch return error.DownloadFailed;
+    const uri = std.Uri.parse(effective_url) catch return error.DownloadFailed;
     var http_req = client.request(.GET, uri, .{
         .redirect_behavior = @enumFromInt(5),
         .extra_headers = extra_headers,

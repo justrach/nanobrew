@@ -45,7 +45,10 @@ pub const Formula = struct {
 
 
     /// Build the bottle URL for this formula.
+    /// Respects NANOBREW_BOTTLE_DOMAIN / HOMEBREW_BOTTLE_DOMAIN env vars (#74)
     pub fn bottleUrl(self: *const Formula) []const u8 {
+        // If a custom bottle domain is set, the URL replacement happens at download time
+        // (the URL from the API is used as-is here, rewritten in downloader.zig)
         return self.bottle_url;
     }
 
