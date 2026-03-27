@@ -2,6 +2,21 @@
 
 All notable changes to nanobrew are documented here.
 
+## [0.1.076] - 2026-03-27
+
+### Fixed
+- **Python framework dylib crash** — Mach-O relocator now resolves symlinks in `Python.framework/`, fixing `_Py_Initialize symbol not found` for all Python-dependent packages (gyb, aws, pip3, etc.). (#65)
+- **Third-party tap installs** — `nb install mongodb/brew/mongodb-community` now works: added `Hardware::CPU.intel?`/`else`/`end` parsing, filename version extraction (`-8.2.6.tgz`), and `prefix.install Dir["*"]` semantics for pre-built packages. (#68)
+- **`--casks` silently ignored** — `--casks` (plural, Homebrew convention) now accepted as alias for `--cask`. Unknown flags error instead of being silently dropped. (#71)
+- **`nb update` failed** — v0.1.075 release was missing build artifacts; now uploaded with SHA256 checksums. (#66)
+- **Tap formula silent success** — `nb install user/tap/formula` now errors clearly when formula not found, instead of "Already installed (0 packages)". (#68)
+
+### Added
+- **`nb reinstall <pkg>`** — removes then reinstalls a package. (#73)
+- **`NANOBREW_BOTTLE_DOMAIN`** / **`NANOBREW_API_DOMAIN`** env vars — override bottle and API mirrors for users behind proxies or in regions with limited GitHub access. Also supports `HOMEBREW_BOTTLE_DOMAIN` / `HOMEBREW_API_DOMAIN`. (#74)
+- **Linux migrate path** — `nb migrate` now searches `/home/linuxbrew/.linuxbrew/` on Linux. (#72)
+- **`:recommended` / `:optional` deps skipped** — tap formula parser no longer treats recommended dependencies as required.
+
 ## [0.1.075] - 2026-03-26
 
 ### Fixed
