@@ -38,9 +38,9 @@ pub fn detect(alloc: std.mem.Allocator) DistroInfo {
     var lines = std.mem.splitScalar(u8, data, '\n');
     while (lines.next()) |line| {
         if (parseField(line, "ID=")) |v| {
-            id = stripQuotes(v);
+            id = alloc.dupe(u8, stripQuotes(v)) catch DEFAULT_ID;
         } else if (parseField(line, "VERSION_CODENAME=")) |v| {
-            codename = stripQuotes(v);
+            codename = alloc.dupe(u8, stripQuotes(v)) catch DEFAULT_CODENAME;
         }
     }
 

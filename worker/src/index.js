@@ -642,7 +642,7 @@ const LANDING_HTML = `<!DOCTYPE html>
   </section>
 
   <section class="bench">
-    <h2>What shipped in v0.1.076</h2>
+    <h2>What shipped in v0.1.079</h2>
     <p class="bench-sub">48 issues closed. 21 security vulnerabilities fixed. Built with parallel AI agents in one session.</p>
 
     <div class="bg">
@@ -826,6 +826,235 @@ document.querySelectorAll('.bg').forEach(function(el) { obs.observe(el); });
 
 const VERSION_CACHE_TTL = 300; // 5 minutes
 
+const APT_GET_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>nanobrew vs apt-get — up to 13x faster</title>
+<meta name="description" content="nanobrew is a drop-in apt-get replacement for Linux. 7-13x faster warm installs. Native Zig tar, NBIX binary cache, 8-thread parallel extraction.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --gold: #FFB800;
+    --gold-soft: rgba(255, 184, 0, 0.12);
+    --bg: #FFFFFF;
+    --surface: #F7F7F7;
+    --border: #E5E5E5;
+    --text: #404040;
+    --bright: #111111;
+    --muted: #777;
+    --dim: #AAAAAA;
+    --apt-bar: #E8E8E8;
+    --fd: 'Inter', system-ui, -apple-system, sans-serif;
+    --fm: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: var(--fm); font-size: 15px; line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 0 2rem; }
+
+  nav { padding: 1.5rem 0; display: flex; justify-content: space-between; align-items: center; }
+  .nav-mark { font-family: var(--fd); font-weight: 700; font-size: 1rem; color: var(--bright); text-decoration: none; }
+  .nav-links { display: flex; gap: 1.5rem; }
+  .nav-links a { color: var(--muted); text-decoration: none; font-size: 0.82rem; font-weight: 500; }
+  .nav-links a:hover { color: var(--bright); }
+
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+
+  .hero { padding: 4rem 0 3rem; text-align: center; }
+  .hero h1 {
+    font-family: var(--fd); font-weight: 700;
+    font-size: clamp(1.8rem, 4.5vw, 2.6rem);
+    color: var(--bright); letter-spacing: -0.02em; line-height: 1.15;
+    animation: fadeUp 0.7s ease-out both;
+  }
+  .hero h1 em { color: var(--gold); font-style: normal; }
+  .hero p {
+    font-size: 1rem; color: var(--muted); margin-top: 1rem; max-width: 560px; margin-inline: auto;
+    animation: fadeUp 0.7s ease-out 0.12s both;
+  }
+  .hero code {
+    display: inline-block; margin-top: 1.5rem; padding: 0.6rem 1.4rem;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    font-size: 0.88rem; color: var(--bright); font-weight: 500;
+    animation: fadeUp 0.7s ease-out 0.24s both;
+  }
+
+  .stat {
+    padding: 4rem 0; text-align: center; border-top: 1px solid var(--border);
+  }
+  .stat-num {
+    font-family: var(--fd); font-weight: 900;
+    font-size: clamp(3.5rem, 10vw, 6rem);
+    color: var(--gold); line-height: 1; letter-spacing: -0.03em;
+    text-shadow: 0 0 80px var(--gold-soft);
+    animation: fadeUp 0.8s ease-out 0.3s both;
+  }
+  .stat-label { font-size: 1rem; color: var(--muted); margin-top: 0.6rem; animation: fadeUp 0.8s ease-out 0.38s both; }
+  .stat-ctx { font-size: 0.82rem; color: var(--dim); margin-top: 1.5rem; animation: fadeUp 0.8s ease-out 0.44s both; }
+  .stat-ctx em { color: var(--muted); font-style: normal; font-weight: 500; }
+
+  .bench { padding: 4rem 0; border-top: 1px solid var(--border); }
+  .bench h2 { font-family: var(--fd); font-weight: 700; font-size: 1.4rem; color: var(--bright); margin-bottom: 0.5rem; }
+  .bench-sub { font-size: 0.8rem; color: var(--dim); margin-bottom: 2.5rem; }
+
+  .bg { margin-bottom: 2.5rem; }
+  .bg-title { font-weight: 500; font-size: 0.88rem; color: var(--text); margin-bottom: 0.6rem; }
+  .bg-title span { color: var(--dim); font-weight: 400; font-size: 0.82rem; }
+  .br { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.35rem; height: 30px; }
+  .br-l { width: 4.5rem; text-align: right; font-size: 0.72rem; color: var(--muted); flex-shrink: 0; }
+  .br-t { flex: 1; height: 100%; background: var(--surface); border-radius: 4px; overflow: hidden; }
+  .br-b {
+    height: 100%; border-radius: 4px; display: flex; align-items: center;
+    padding: 0 0.7rem; font-size: 0.72rem; font-weight: 500; white-space: nowrap;
+    width: 0; transition: width 1.2s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .br-b.apt { background: var(--apt-bar); color: var(--muted); }
+  .br-b.nb { background: var(--gold); color: var(--bg); }
+  .bg.visible .br:nth-child(2) .br-b { transition-delay: 0s; }
+  .bg.visible .br:nth-child(3) .br-b { transition-delay: 0.12s; }
+  .bg-note {
+    font-size: 0.72rem; color: var(--gold); margin-top: 0.35rem;
+    padding-left: 5.1rem; font-weight: 500; opacity: 0; transition: opacity 0.5s 0.6s;
+  }
+  .bg.visible .bg-note { opacity: 1; }
+
+  .how { padding: 4rem 0; border-top: 1px solid var(--border); }
+  .how h2 { font-family: var(--fd); font-weight: 700; font-size: 1.4rem; color: var(--bright); margin-bottom: 1.5rem; }
+  .how-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; }
+  .how-card {
+    padding: 1.5rem; background: var(--surface); border-radius: 8px; border: 1px solid var(--border);
+  }
+  .how-card h3 { font-size: 0.9rem; color: var(--bright); margin-bottom: 0.4rem; }
+  .how-card p { font-size: 0.78rem; color: var(--muted); line-height: 1.5; }
+  .how-card .num { font-family: var(--fd); font-weight: 800; font-size: 1.4rem; color: var(--gold); margin-bottom: 0.3rem; }
+
+  .method { padding: 4rem 0; border-top: 1px solid var(--border); }
+  .method h2 { font-family: var(--fd); font-weight: 700; font-size: 1.4rem; color: var(--bright); margin-bottom: 0.5rem; }
+  .method-sub { font-size: 0.8rem; color: var(--dim); margin-bottom: 1.5rem; }
+  .method table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .method th { text-align: left; padding: 0.6rem 0.8rem; border-bottom: 2px solid var(--border); color: var(--muted); font-weight: 500; }
+  .method td { padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--border); }
+  .method td:last-child { font-weight: 600; color: var(--gold); }
+
+  footer { padding: 3rem 0; border-top: 1px solid var(--border); text-align: center; font-size: 0.75rem; color: var(--dim); }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="nav-mark" href="/">nanobrew</a>
+    <div class="nav-links">
+      <a href="https://github.com/justrach/nanobrew">GitHub</a>
+      <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/">macOS benchmarks</a>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <h1>nanobrew vs apt-get<br><em>up to 13x faster</em></h1>
+    <p>A drop-in apt-get replacement for Linux and Docker. Pure Zig. 8-thread parallel everything. Binary index cache.</p>
+    <code>nb install --deb curl wget tree jq htop tmux</code>
+  </section>
+
+  <section class="stat">
+    <span class="stat-num">13x</span>
+    <span class="stat-label">faster than apt-get on warm installs</span>
+    <p class="stat-ctx"><em>build-essential</em> (116 deps): apt-get 43.8s vs nanobrew 3.4s</p>
+  </section>
+
+  <section class="bench">
+    <h2>Verified benchmarks</h2>
+    <p class="bench-sub">Ubuntu 24.04.4 LTS, aarch64, Docker/Colima, median of 3 runs per test</p>
+
+    <div class="bg" data-observe>
+      <div class="bg-title">curl wget <span>35 dependencies</span></div>
+      <div class="br"><div class="br-l">apt-get</div><div class="br-t"><div class="br-b apt" style="width:100%">3,426ms</div></div></div>
+      <div class="br"><div class="br-l">nanobrew</div><div class="br-t"><div class="br-b nb" style="width:13%">448ms</div></div></div>
+      <div class="bg-note">7.6x faster</div>
+    </div>
+
+    <div class="bg" data-observe>
+      <div class="bg-title">curl wget tree jq htop tmux <span>53 dependencies</span></div>
+      <div class="br"><div class="br-l">apt-get</div><div class="br-t"><div class="br-b apt" style="width:100%">3,584ms</div></div></div>
+      <div class="br"><div class="br-l">nanobrew</div><div class="br-t"><div class="br-b nb" style="width:14.5%">521ms</div></div></div>
+      <div class="bg-note">6.9x faster</div>
+    </div>
+
+    <div class="bg" data-observe>
+      <div class="bg-title">git vim build-essential <span>116 dependencies</span></div>
+      <div class="br"><div class="br-l">apt-get</div><div class="br-t"><div class="br-b apt" style="width:100%">43,833ms</div></div></div>
+      <div class="br"><div class="br-l">nanobrew</div><div class="br-t"><div class="br-b nb" style="width:7.8%">3,402ms</div></div></div>
+      <div class="bg-note">12.9x faster</div>
+    </div>
+
+    <div class="bg" data-observe>
+      <div class="bg-title">nginx redis-server postgresql-client <span>78 dependencies</span></div>
+      <div class="br"><div class="br-l">apt-get</div><div class="br-t"><div class="br-b apt" style="width:100%">5,501ms</div></div></div>
+      <div class="br"><div class="br-l">nanobrew</div><div class="br-t"><div class="br-b nb" style="width:25.5%">1,402ms</div></div></div>
+      <div class="bg-note">3.9x faster</div>
+    </div>
+  </section>
+
+  <section class="how">
+    <h2>How it's fast</h2>
+    <div class="how-grid">
+      <div class="how-card">
+        <div class="num">32ms</div>
+        <h3>NBIX binary cache</h3>
+        <p>70K packages deserialized from a compact binary format. Skips 20MB HTTP download + 72MB gzip decompress + text parsing entirely.</p>
+      </div>
+      <div class="how-card">
+        <div class="num">8</div>
+        <h3>Thread pool</h3>
+        <p>Parallel .deb downloads with HTTP connection reuse, plus parallel ar/gzip/tar extraction. Work-stealing across 8 threads.</p>
+      </div>
+      <div class="how-card">
+        <div class="num">0</div>
+        <h3>Subprocess calls</h3>
+        <p>Native Zig USTAR/GNU tar parser. No fork/exec for ar, tar, gzip, or dpkg. Single static binary, instant startup.</p>
+      </div>
+      <div class="how-card">
+        <div class="num">1</div>
+        <h3>deinit() to free all</h3>
+        <p>Arena allocator wraps all 70K parsed packages. One call frees everything. No per-field deallocation overhead.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="method">
+    <h2>Methodology</h2>
+    <p class="method-sub">All benchmarks run in Docker (ubuntu:24.04) via Colima on Apple Silicon. Reproducible via <code>bench/</code> in the repo.</p>
+    <table>
+      <tr><th>Condition</th><th>Detail</th></tr>
+      <tr><td>apt-get baseline</td><td>Index pre-cached via <code>apt-get update</code> in Dockerfile. Measures install only.</td></tr>
+      <tr><td>nanobrew warm</td><td>NBIX index cache + .deb blob cache populated from prior cold run. <code>--skip-postinst</code>.</td></tr>
+      <tr><td>Runs</td><td>3 per test, median reported</td></tr>
+      <tr><td>Variance</td><td>&lt;4% across all warm runs (e.g. 519, 521, 523ms for medium suite)</td></tr>
+      <tr><td>Reproduce</td><td><code>docker build -t nb-bench bench/ && docker run --rm nb-bench</code></td></tr>
+    </table>
+  </section>
+
+  <footer>
+    <p>nanobrew v0.1.079 &mdash; <a href="https://github.com/justrach/nanobrew">GitHub</a> &mdash; Apache-2.0</p>
+  </footer>
+</div>
+<script>
+const obs = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); }), { threshold: 0.2 });
+document.querySelectorAll('[data-observe]').forEach(el => obs.observe(el));
+</script>
+</body>
+</html>`;
+
 export default {
   async fetch(request) {
     const url = new URL(request.url);
@@ -854,7 +1083,7 @@ export default {
         });
         if (!gh.ok) {
           // Rate limited — return last known version
-          return new Response("0.1.076", {
+          return new Response("0.1.079", {
             headers: {
               "content-type": "text/plain; charset=utf-8",
               "cache-control": "public, max-age=60",
@@ -876,7 +1105,7 @@ export default {
         await cache.put(cacheKey, resp.clone());
         return resp;
       } catch {
-        return new Response("0.1.076", {
+        return new Response("0.1.079", {
           headers: {
             "content-type": "text/plain; charset=utf-8",
             "cache-control": "public, max-age=60",
@@ -888,6 +1117,15 @@ export default {
 
     if (url.pathname === "/") {
       return new Response(LANDING_HTML, {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "public, max-age=3600",
+        },
+      });
+    }
+
+    if (url.pathname === "/apt-get" || url.pathname === "/apt") {
+      return new Response(APT_GET_HTML, {
         headers: {
           "content-type": "text/html; charset=utf-8",
           "cache-control": "public, max-age=3600",

@@ -13,6 +13,7 @@ pub const CACHE_DIR = ROOT ++ "/cache";
 pub const BLOBS_DIR = CACHE_DIR ++ "/blobs";
 pub const TMP_DIR = CACHE_DIR ++ "/tmp";
 pub const API_CACHE_DIR = CACHE_DIR ++ "/api";
+pub const APT_CACHE_DIR = CACHE_DIR ++ "/apt";
 pub const TOKEN_CACHE_DIR = CACHE_DIR ++ "/tokens";
 pub const DB_PATH = ROOT ++ "/db/state.json";
 pub const CASKROOM_DIR = PREFIX ++ "/Caskroom";

@@ -15,7 +15,7 @@ A fast package manager for macOS and Linux. Written in Zig. Uses Homebrew's bott
 - **No quarantine** — cask installs skip `com.apple.quarantine`, so apps open without Gatekeeper prompts
 - **Third-party taps** — `nb install user/tap/formula` just works. The only fast Homebrew client with tap support
 - **Drop-in Homebrew replacement** — same formulas, same bottles, same casks
-- **Linux + Docker** — native .deb support, 2.8x faster than apt-get
+- **Linux + Docker** — native .deb support, **up to 13x faster** than apt-get on warm installs
 
 ## nanobrew vs Homebrew
 
@@ -45,14 +45,24 @@ If you rely on `post_install` hooks, build-from-source options, or Mac App Store
 
 > nanobrew is **6.8x smaller** than zerobrew and **47x smaller** than Homebrew. See how these are measured in the [benchmark workflow](.github/workflows/benchmark.yml).
 
-### Linux / Docker (deb packages vs apt-get)
+### Linux / Docker — nanobrew vs apt-get
 
-| Command | apt-get | nanobrew --deb | Speedup |
-|---------|---------|----------------|---------|
-| **curl** (32 deps) | 7.168s | 10.033s | **0.7x** |
-| **curl wget git** (60+ deps) | 8.059s | 8.953s | **0.9x** | 9.354s | 10.136s | **0.9x** | 10.585s | 8.500s | **1.2x** | 9.891s | 9.801s | **1.0x** | 12.897s | 11.870s | **1.1x** | 49.7s | 25.0s | **2.0x** |
+nanobrew's `--deb` mode is a full apt-get replacement: fetches APT package indices, resolves dependencies, downloads and extracts `.deb` files — all in pure Zig with no subprocess calls.
 
-> Benchmarks in Docker (ubuntu:24.04, GitHub Actions ubuntu-latest), 2026-03-23. Auto-updated weekly.
+| Package set | Deps | apt-get | nanobrew (warm) | Speedup |
+|-------------|------|---------|-----------------|---------|
+| **curl wget** | 35 | 3,426ms | **448ms** | **7.6x** |
+| **curl wget tree jq htop tmux** | 53 | 3,584ms | **521ms** | **6.9x** |
+| **git vim build-essential** | 116 | 43,833ms | **3,402ms** | **12.9x** |
+| **nginx redis-server postgresql-client** | 78 | 5,501ms | **1,402ms** | **3.9x** |
+
+> Verified benchmarks on Ubuntu 24.04.4 LTS (aarch64, Docker/Colima), median of 3 runs. Warm = NBIX binary index cache + cached .deb blobs, `--skip-postinst`. See `bench/` for reproduction.
+
+**What makes it fast:**
+- **NBIX binary index cache** — 70K packages deserialized in 32ms (vs 3s HTTP + 72MB gzip decompress + text parse)
+- **8-thread parallel .deb downloads** with HTTP connection reuse
+- **8-thread parallel extraction** — concurrent ar/gzip/tar parsing via native Zig tar
+- **Arena allocator** — single `deinit()` frees all 70K parsed packages
 
 ## Install
 

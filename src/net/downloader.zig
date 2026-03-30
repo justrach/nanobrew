@@ -51,11 +51,55 @@ pub const ParallelDownloader = struct {
         try self.queue.append(self.alloc, .{ .url = url, .expected_sha256 = sha256 });
     }
 
+    const WorkerContext = struct {
+        alloc: std.mem.Allocator,
+        items: []const DownloadRequest,
+        next_index: *std.atomic.Value(usize),
+        had_error: *std.atomic.Value(bool),
+    };
+
+    fn workerFn(ctx: WorkerContext) void {
+        // downloadOne() creates its own HTTP client per call (each thread-safe)
+        while (true) {
+            const idx = ctx.next_index.fetchAdd(1, .monotonic);
+            if (idx >= ctx.items.len) break;
+            downloadOne(ctx.alloc, ctx.items[idx]) catch {
+                ctx.had_error.store(true, .release);
+            };
+        }
+    }
+
     pub fn downloadAll(self: *ParallelDownloader) !void {
         if (self.queue.items.len == 0) return;
 
-        for (self.queue.items) |req| {
-            try downloadOne(self.alloc, req);
+        const num_threads = @min(self.queue.items.len, 8);
+        var had_error = std.atomic.Value(bool).init(false);
+        var next_index = std.atomic.Value(usize).init(0);
+
+        const ctx = WorkerContext{
+            .alloc = self.alloc,
+            .items = self.queue.items,
+            .next_index = &next_index,
+            .had_error = &had_error,
+        };
+
+        var threads: [8]std.Thread = undefined;
+        var spawned: usize = 0;
+
+        for (0..num_threads) |_| {
+            threads[spawned] = std.Thread.spawn(.{}, workerFn, .{ctx}) catch {
+                had_error.store(true, .release);
+                continue;
+            };
+            spawned += 1;
+        }
+
+        for (threads[0..spawned]) |t| {
+            t.join();
+        }
+
+        if (had_error.load(.acquire)) {
+            return error.DownloadFailed;
         }
     }
 };

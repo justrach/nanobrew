@@ -138,7 +138,11 @@ fn resolveOneDepth(
 ) !void {
     if (depth > MAX_RESOLVE_DEPTH) return; // Prevent stack overflow from deep chains
     if (visited.contains(name)) return;
-    visited.put(name, {}) catch return;
+    const owned_name = alloc.dupe(u8, name) catch return;
+    visited.put(owned_name, {}) catch {
+        alloc.free(owned_name);
+        return;
+    };
 
     // Try direct lookup first, then virtual package lookup
     const pkg = index.get(name) orelse blk: {

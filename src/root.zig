@@ -22,6 +22,7 @@ pub const deps = @import("resolve/deps.zig");
 pub const downloader = @import("net/downloader.zig");
 pub const fetch = @import("net/fetch.zig");
 pub const tar = @import("extract/tar.zig");
+pub const native_tar = @import("extract/native_tar.zig");
 pub const blob_cache = @import("store/blob_cache.zig");
 pub const store = @import("store/store.zig");
 pub const cellar = @import("cellar/cellar.zig");
