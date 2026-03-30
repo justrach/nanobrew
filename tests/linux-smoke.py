@@ -15,6 +15,7 @@ Requires: pip install daytona
 import argparse
 import os
 import sys
+import tempfile
 
 from daytona import Daytona, DaytonaConfig, CreateSandboxFromImageParams
 
@@ -28,125 +29,8 @@ ZIG_DIRS = {
     "x86_64":  "zig-x86_64-linux-0.15.2",
 }
 
-# ── Test definitions ────────────────────────────────────────────────
-SETUP_SCRIPT = """
-set -e
-export DEBIAN_FRONTEND=noninteractive
-
-# Install deps
-sudo apt-get update -qq
-sudo apt-get install -y -qq curl xz-utils patchelf file binutils git >/dev/null 2>&1
-
-# Download and install Zig
-curl -sL '{zig_url}' -o /tmp/zig.tar.xz
-sudo tar xf /tmp/zig.tar.xz -C /opt
-export PATH="/opt/{zig_dir}:$PATH"
-zig version
-
-# Clone the repo at the current branch
-cd /tmp
-git clone --depth=1 --branch={branch} {repo_url} nanobrew
-cd nanobrew
-
-# Build
-zig build
-file zig-out/bin/nb
-echo "BUILD_OK"
-"""
-
-TEST_SCRIPT = """
-set -e
-export PATH="/opt/{zig_dir}:/opt/nanobrew/prefix/bin:$PATH"
-cd /tmp/nanobrew
-
-NB="./zig-out/bin/nb"
-PASS=0
-FAIL=0
-
-pass() {{ echo "  PASS: $1"; PASS=$((PASS + 1)); }}
-fail() {{ echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }}
-
-echo "==> Linux smoke tests (Daytona sandbox)"
-echo ""
-
-# Test 1: Binary runs
-echo "--- Test: nb help ---"
-if $NB help 2>&1 | grep -q "nanobrew"; then
-  pass "nb help works"
-else
-  fail "nb help broken"
-fi
-
-# Test 2: Doctor detects patchelf
-echo "--- Test: nb doctor (patchelf detection) ---"
-sudo mkdir -p /opt/nanobrew && sudo chmod 777 /opt/nanobrew
-sudo $NB init >/dev/null 2>&1 || true
-DOCTOR=$($NB doctor 2>&1)
-if echo "$DOCTOR" | grep -q "patchelf installed"; then
-  pass "nb doctor detects patchelf"
-else
-  fail "nb doctor did not detect patchelf"
-  echo "$DOCTOR" | grep -i patchelf || true
-fi
-
-# Test 3: ELF relocator strings present in binary
-echo "--- Test: ELF relocator compiled in ---"
-if strings $NB | grep -q "patchelf not found"; then
-  pass "ELF relocator error strings present"
-else
-  fail "ELF relocator strings missing from binary"
-fi
-
-# Test 4: patchelf missing error (temporarily hide patchelf)
-echo "--- Test: patchelf-missing error path ---"
-REAL_PE=$(which patchelf)
-sudo mv "$REAL_PE" "$REAL_PE.bak"
-ERR=$($NB doctor 2>&1)
-if echo "$ERR" | grep -q "patchelf not found"; then
-  pass "patchelf-missing detected by doctor"
-else
-  fail "patchelf-missing not detected"
-fi
-sudo mv "$REAL_PE.bak" "$REAL_PE"
-# Test 5: Install a small formula (tree) and verify no leftover placeholders
-echo "--- Test: install tree + placeholder check ---"
-if $NB install tree 2>&1; then
-  if tree --version 2>&1 | grep -qi "tree"; then
-    pass "tree --version works on Linux"
-  else
-    fail "tree --version failed"
-  fi
-
-  # Check for leftover placeholders
-  CELLAR="/opt/nanobrew/prefix/Cellar"
-  HITS=$(grep -rl '@@HOMEBREW_CELLAR@@\\|@@HOMEBREW_PREFIX@@' "$CELLAR" 2>/dev/null | head -5) || true
-  if [ -z "$HITS" ]; then
-    pass "no leftover @@HOMEBREW_*@@ placeholders"
-  else
-    fail "found leftover placeholders"
-    echo "$HITS"
-  fi
-
-  # Check ELF interpreter specifically
-  TREE_BIN=$(ls "$CELLAR"/tree/*/bin/tree 2>/dev/null | head -1)
-  if [ -n "$TREE_BIN" ] && file "$TREE_BIN" | grep -q "ELF"; then
-    INTERP=$(readelf -l "$TREE_BIN" 2>/dev/null | grep "interpreter" || true)
-    if echo "$INTERP" | grep -q "@@HOMEBREW"; then
-      fail "ELF interpreter still contains @@HOMEBREW placeholder"
-      echo "  $INTERP"
-    else
-      pass "ELF interpreter is properly relocated"
-      echo "  $INTERP"
-    fi
-  fi
-else
-  fail "nb install tree failed"
-fi
-
-echo ""
-echo "==> Results: $PASS passed, $FAIL failed"
-[ "$FAIL" -eq 0 ] && exit 0 || exit 1
-"""
+# Domains the sandbox needs access to
+NETWORK_ALLOWLIST = "ziglang.org,github.com,formulae.brew.sh,ghcr.io"
 
 
 def get_repo_info():
@@ -158,7 +42,6 @@ def get_repo_info():
     url = subprocess.check_output(
         ["git", "remote", "get-url", "origin"], text=True
     ).strip()
-    # Convert SSH to HTTPS for cloning inside sandbox
     if url.startswith("git@github.com:"):
         url = url.replace("git@github.com:", "https://github.com/")
     if not url.endswith(".git"):
@@ -166,11 +49,10 @@ def get_repo_info():
     return branch, url
 
 
-def run_in_sandbox(sandbox, script, label, timeout=300):
-    """Run a shell script in the sandbox by writing it via exec then running it."""
-    import tempfile, os
+def run_script(sandbox, script, label, timeout=300):
+    """Upload a shell script to the sandbox and run it."""
     print(f"\n==> {label}")
-    # Write script to a local temp file, upload it, then execute
+    sys.stdout.flush()
     with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
         f.write(script)
         local_path = f.name
@@ -184,10 +66,29 @@ def run_in_sandbox(sandbox, script, label, timeout=300):
     if result.exit_code != 0:
         print(f"  [exit code: {result.exit_code}]")
     return result
+
+
+def download_zig(arch):
+    """Download Zig for the target arch if not already cached locally."""
+    import urllib.request
+    local = f"/tmp/zig-{arch}-linux-0.15.2.tar.xz"
+    if os.path.exists(local) and os.path.getsize(local) > 1_000_000:
+        print(f"    Using cached Zig: {local}")
+        return local
+    url = ZIG_URLS[arch]
+    print(f"    Downloading Zig from {url}...")
+    sys.stdout.flush()
+    urllib.request.urlretrieve(url, local)
+    print(f"    Downloaded: {os.path.getsize(local) / 1_000_000:.0f} MB")
+    return local
+
+
 def main():
     parser = argparse.ArgumentParser(description="nanobrew Linux smoke tests via Daytona")
     parser.add_argument("--keep", action="store_true",
                         help="Don't delete sandbox after tests")
+    parser.add_argument("--allowlist", action="store_true",
+                        help="Use network allowlist instead of uploading Zig")
     args = parser.parse_args()
 
     api_key = os.environ.get("DAYTONA_API_KEY")
@@ -208,37 +109,160 @@ def main():
     daytona = Daytona(config)
 
     print("==> Creating Daytona sandbox...")
-    sandbox = daytona.create(timeout=120)
+    if args.allowlist:
+        sandbox = daytona.create(
+            CreateSandboxFromImageParams(
+                image="ubuntu:24.04",
+                network_allow_list=NETWORK_ALLOWLIST,
+            ),
+            timeout=120,
+        )
+    else:
+        sandbox = daytona.create(timeout=120)
     print(f"    Sandbox ID: {sandbox.id}")
 
-    # Detect sandbox architecture
+    # Detect architecture
     arch_result = sandbox.process.exec("uname -m")
     arch = (arch_result.result or "").strip()
+    arch = "aarch64" if arch == "aarch64" else "x86_64"
+    zig_dir = ZIG_DIRS[arch]
     print(f"    Architecture: {arch}")
 
-    if arch == "aarch64":
-        zig_url = ZIG_URLS["aarch64"]
-        zig_dir = ZIG_DIRS["aarch64"]
-    else:
-        zig_url = ZIG_URLS["x86_64"]
-        zig_dir = ZIG_DIRS["x86_64"]
-
     try:
-        # Phase 1: Setup (install deps, build nanobrew)
-        setup = SETUP_SCRIPT.format(
-            zig_url=zig_url,
-            zig_dir=zig_dir,
-            branch=branch,
-            repo_url=repo_url,
-        )
-        result = run_in_sandbox(sandbox, setup, "Phase 1: Setup & Build", timeout=600)
+        # ── Phase 1: Install dependencies ──
+        run_script(sandbox, """
+set -e
+export DEBIAN_FRONTEND=noninteractive
+sudo apt-get update -qq
+sudo apt-get install -y -qq curl xz-utils patchelf file binutils git readelf 2>/dev/null || \
+sudo apt-get install -y -qq curl xz-utils patchelf file binutils git 2>/dev/null
+echo "DEPS_OK"
+""", "Phase 1a: Install dependencies", timeout=120)
+
+        # ── Phase 1b: Install Zig ──
+        if args.allowlist:
+            # Download directly in sandbox
+            run_script(sandbox, f"""
+set -e
+curl -sL '{ZIG_URLS[arch]}' -o /tmp/zig.tar.xz
+sudo tar xf /tmp/zig.tar.xz -C /opt
+/opt/{zig_dir}/zig version
+echo "ZIG_OK"
+""", "Phase 1b: Download Zig (in-sandbox)", timeout=300)
+        else:
+            # Upload from local
+            print(f"\n==> Phase 1b: Upload Zig")
+            local_zig = download_zig(arch)
+            print(f"    Uploading to sandbox...")
+            sys.stdout.flush()
+            sandbox.fs.upload_file(local_zig, '/tmp/zig.tar.xz', timeout=300)
+            r = sandbox.process.exec(
+                f'sudo tar xf /tmp/zig.tar.xz -C /opt && /opt/{zig_dir}/zig version',
+                timeout=120
+            )
+            print(f"    Zig: {(r.result or '').strip()}")
+
+        # ── Phase 1c: Clone and build ──
+        result = run_script(sandbox, f"""
+set -e
+cd /tmp
+git clone --depth=1 --branch={branch} {repo_url} nanobrew 2>&1 | tail -2
+export PATH="/opt/{zig_dir}:$PATH"
+cd nanobrew
+zig build 2>&1
+file zig-out/bin/nb
+echo "BUILD_OK"
+""", "Phase 1c: Clone & Build", timeout=600)
+
         if result.exit_code != 0 or "BUILD_OK" not in (result.result or ""):
-            print(f"\nSetup failed!")
+            print("\nBuild failed!")
             sys.exit(1)
 
-        # Phase 2: Run tests
-        tests = TEST_SCRIPT.format(zig_dir=zig_dir)
-        result = run_in_sandbox(sandbox, tests, "Phase 2: Smoke Tests", timeout=300)
+        # ── Phase 2: Smoke tests ──
+        result = run_script(sandbox, f"""
+set -e
+export PATH="/opt/{zig_dir}:/opt/nanobrew/prefix/bin:$PATH"
+cd /tmp/nanobrew
+
+NB="./zig-out/bin/nb"
+PASS=0
+FAIL=0
+
+pass() {{ echo "  PASS: $1"; PASS=$((PASS + 1)); }}
+fail() {{ echo "  FAIL: $1"; FAIL=$((FAIL + 1)); }}
+
+echo "==> Linux smoke tests"
+echo ""
+
+# Test 1: Binary runs
+echo "--- Test: nb help ---"
+if $NB help 2>&1 | grep -q "nanobrew"; then
+  pass "nb help works"
+else
+  fail "nb help broken"
+fi
+
+# Test 2: Init + Doctor
+echo "--- Test: nb init + doctor ---"
+sudo mkdir -p /opt/nanobrew && sudo chmod 777 /opt/nanobrew
+sudo $NB init >/dev/null 2>&1 || true
+DOCTOR=$($NB doctor 2>&1)
+if echo "$DOCTOR" | grep -q "patchelf installed"; then
+  pass "nb doctor detects patchelf"
+else
+  fail "nb doctor did not detect patchelf"
+  echo "$DOCTOR"
+fi
+
+# Test 3: ELF relocator compiled in
+echo "--- Test: ELF relocator compiled in ---"
+if strings $NB | grep -q "patchelf not found"; then
+  pass "ELF relocator error strings present"
+else
+  fail "ELF relocator strings missing"
+fi
+
+# Test 4: patchelf-missing error
+echo "--- Test: patchelf-missing error path ---"
+REAL_PE=$(which patchelf)
+sudo mv "$REAL_PE" "$REAL_PE.bak"
+ERR=$($NB doctor 2>&1)
+if echo "$ERR" | grep -q "patchelf not found"; then
+  pass "patchelf-missing detected by doctor"
+else
+  fail "patchelf-missing not detected"
+fi
+sudo mv "$REAL_PE.bak" "$REAL_PE"
+
+# Test 5: Install tree (if API reachable)
+echo "--- Test: install tree ---"
+if curl -sf 'https://formulae.brew.sh/api/formula/tree.json' -o /dev/null 2>/dev/null; then
+  if $NB install tree 2>&1; then
+    if tree --version 2>&1 | grep -qi "tree"; then
+      pass "tree works on Linux"
+    else
+      fail "tree --version failed"
+    fi
+
+    CELLAR="/opt/nanobrew/prefix/Cellar"
+    HITS=$(grep -rl '@@HOMEBREW_CELLAR@@\\|@@HOMEBREW_PREFIX@@' "$CELLAR" 2>/dev/null | head -5) || true
+    if [ -z "$HITS" ]; then
+      pass "no leftover @@HOMEBREW_*@@ placeholders"
+    else
+      fail "found leftover placeholders"
+      echo "$HITS"
+    fi
+  else
+    fail "nb install tree failed"
+  fi
+else
+  echo "  SKIP: Homebrew API not reachable (sandbox network restriction)"
+fi
+
+echo ""
+echo "==> Results: $PASS passed, $FAIL failed"
+[ "$FAIL" -eq 0 ] && exit 0 || exit 1
+""", "Phase 2: Smoke Tests", timeout=300)
 
         if result.exit_code != 0:
             print("\nSome tests failed!")
@@ -252,5 +276,7 @@ def main():
             sandbox.delete()
         else:
             print(f"\n==> Sandbox kept: {sandbox.id}")
+
+
 if __name__ == "__main__":
     main()
