@@ -5,3 +5,6 @@ posts/
 .claude/worktrees/
 posts/twitter-thread*.md
 tweet*.md
+tests/.venv/
+tests/.env
+.env
