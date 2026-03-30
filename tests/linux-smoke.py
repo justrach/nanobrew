@@ -18,9 +18,15 @@ import sys
 
 from daytona import Daytona, DaytonaConfig, CreateSandboxFromImageParams
 
-# ── Zig download URL (0.15.2) ──────────────────────────────────────
-ZIG_URL = "https://ziglang.org/download/0.15.2/zig-aarch64-linux-0.15.2.tar.xz"
-ZIG_DIR = "zig-aarch64-linux-0.15.2"
+# ── Zig download URLs (0.15.2) ──────────────────────────────────────
+ZIG_URLS = {
+    "aarch64": "https://ziglang.org/download/0.15.2/zig-aarch64-linux-0.15.2.tar.xz",
+    "x86_64":  "https://ziglang.org/download/0.15.2/zig-x86_64-linux-0.15.2.tar.xz",
+}
+ZIG_DIRS = {
+    "aarch64": "zig-aarch64-linux-0.15.2",
+    "x86_64":  "zig-x86_64-linux-0.15.2",
+}
 
 # ── Test definitions ────────────────────────────────────────────────
 SETUP_SCRIPT = """
@@ -28,12 +34,12 @@ set -e
 export DEBIAN_FRONTEND=noninteractive
 
 # Install deps
-apt-get update -qq
-apt-get install -y -qq curl xz-utils patchelf file binutils git >/dev/null 2>&1
+sudo apt-get update -qq
+sudo apt-get install -y -qq curl xz-utils patchelf file binutils git >/dev/null 2>&1
 
 # Download and install Zig
 curl -sL '{zig_url}' -o /tmp/zig.tar.xz
-tar xf /tmp/zig.tar.xz -C /opt
+sudo tar xf /tmp/zig.tar.xz -C /opt
 export PATH="/opt/{zig_dir}:$PATH"
 zig version
 
@@ -73,8 +79,8 @@ fi
 
 # Test 2: Doctor detects patchelf
 echo "--- Test: nb doctor (patchelf detection) ---"
-mkdir -p /opt/nanobrew && chmod 777 /opt/nanobrew
-$NB init >/dev/null 2>&1 || true
+sudo mkdir -p /opt/nanobrew && sudo chmod 777 /opt/nanobrew
+sudo $NB init >/dev/null 2>&1 || true
 DOCTOR=$($NB doctor 2>&1)
 if echo "$DOCTOR" | grep -q "patchelf installed"; then
   pass "nb doctor detects patchelf"
@@ -94,15 +100,14 @@ fi
 # Test 4: patchelf missing error (temporarily hide patchelf)
 echo "--- Test: patchelf-missing error path ---"
 REAL_PE=$(which patchelf)
-mv "$REAL_PE" "$REAL_PE.bak"
+sudo mv "$REAL_PE" "$REAL_PE.bak"
 ERR=$($NB doctor 2>&1)
 if echo "$ERR" | grep -q "patchelf not found"; then
   pass "patchelf-missing detected by doctor"
 else
   fail "patchelf-missing not detected"
 fi
-mv "$REAL_PE.bak" "$REAL_PE"
-
+sudo mv "$REAL_PE.bak" "$REAL_PE"
 # Test 5: Install a small formula (tree) and verify no leftover placeholders
 echo "--- Test: install tree + placeholder check ---"
 if $NB install tree 2>&1; then
@@ -162,15 +167,18 @@ def get_repo_info():
 
 
 def run_in_sandbox(sandbox, script, label, timeout=300):
-    """Run a shell script in the sandbox by writing it to a temp file first."""
-    import base64
+    """Run a shell script in the sandbox by writing it via exec then running it."""
+    import tempfile, os
     print(f"\n==> {label}")
-    # Encode script as base64 to avoid any quoting issues
-    b64 = base64.b64encode(script.encode()).decode()
-    result = sandbox.process.exec(
-        f'echo "{b64}" | base64 -d > /tmp/_nb_test.sh && bash /tmp/_nb_test.sh',
-        timeout=timeout,
-    )
+    # Write script to a local temp file, upload it, then execute
+    with tempfile.NamedTemporaryFile(mode='w', suffix='.sh', delete=False) as f:
+        f.write(script)
+        local_path = f.name
+    try:
+        sandbox.fs.upload_file(local_path, '/tmp/_nb_test.sh')
+        result = sandbox.process.exec('bash /tmp/_nb_test.sh', timeout=timeout)
+    finally:
+        os.unlink(local_path)
     if result.result:
         print(result.result)
     if result.exit_code != 0:
@@ -200,19 +208,26 @@ def main():
     daytona = Daytona(config)
 
     print("==> Creating Daytona sandbox...")
-    sandbox = daytona.create(
-        CreateSandboxFromImageParams(
-            image="debian:bookworm",
-            language="bash",
-        )
-    )
+    sandbox = daytona.create(timeout=120)
     print(f"    Sandbox ID: {sandbox.id}")
+
+    # Detect sandbox architecture
+    arch_result = sandbox.process.exec("uname -m")
+    arch = (arch_result.result or "").strip()
+    print(f"    Architecture: {arch}")
+
+    if arch == "aarch64":
+        zig_url = ZIG_URLS["aarch64"]
+        zig_dir = ZIG_DIRS["aarch64"]
+    else:
+        zig_url = ZIG_URLS["x86_64"]
+        zig_dir = ZIG_DIRS["x86_64"]
 
     try:
         # Phase 1: Setup (install deps, build nanobrew)
         setup = SETUP_SCRIPT.format(
-            zig_url=ZIG_URL,
-            zig_dir=ZIG_DIR,
+            zig_url=zig_url,
+            zig_dir=zig_dir,
             branch=branch,
             repo_url=repo_url,
         )
@@ -222,7 +237,7 @@ def main():
             sys.exit(1)
 
         # Phase 2: Run tests
-        tests = TEST_SCRIPT.format(zig_dir=ZIG_DIR)
+        tests = TEST_SCRIPT.format(zig_dir=zig_dir)
         result = run_in_sandbox(sandbox, tests, "Phase 2: Smoke Tests", timeout=300)
 
         if result.exit_code != 0:
@@ -237,7 +252,5 @@ def main():
             sandbox.delete()
         else:
             print(f"\n==> Sandbox kept: {sandbox.id}")
-
-
 if __name__ == "__main__":
     main()
