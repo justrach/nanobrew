@@ -21,6 +21,17 @@ const TEXT_EXTS = [_][]const u8{ ".pc", ".cmake", ".la", ".sh", ".cfg" };
 
 /// Relocate all ELF files and text configs in a keg.
 pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const u8) !void {
+    // Check for patchelf upfront — without it, ELF relocation cannot work.
+    hasPatchelf(alloc) catch |err| switch (err) {
+        error.PatchelfNotFound => {
+            const stderr = std.fs.File.stderr().deprecatedWriter();
+            stderr.print("nb: {s}: patchelf not found — ELF binary relocation skipped\n", .{name}) catch {};
+            stderr.print("nb: install patchelf (e.g. apt install patchelf) and re-run: nb reinstall {s}\n", .{name}) catch {};
+            return error.PatchelfNotFound;
+        },
+        else => return err,
+    };
+
     var keg_buf: [512]u8 = undefined;
     const keg_dir = std.fmt.bufPrint(&keg_buf, "{s}/{s}/{s}", .{ paths.CELLAR_DIR, name, version }) catch return error.PathTooLong;
 
@@ -43,6 +54,16 @@ pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const 
     var lib_buf: [512]u8 = undefined;
     const lib_path = std.fmt.bufPrint(&lib_buf, "{s}/lib", .{keg_dir}) catch return;
     relocateLaFiles(lib_path) catch {};
+}
+
+fn hasPatchelf(alloc: std.mem.Allocator) !void {
+    const result = std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "patchelf", "--version" },
+    }) catch return error.PatchelfNotFound;
+    alloc.free(result.stdout);
+    alloc.free(result.stderr);
+    if (result.term != .Exited or result.term.Exited != 0) return error.PatchelfNotFound;
 }
 
 fn walkAndRelocate(alloc: std.mem.Allocator, dir_path: []const u8) !void {
@@ -149,7 +170,7 @@ fn patchelfRelocate(alloc: std.mem.Allocator, path: []const u8) void {
     defer alloc.free(rpath_result.stderr);
     defer alloc.free(rpath_result.stdout);
 
-    if (rpath_result.term.Exited == 0) {
+    if (rpath_result.term == .Exited and rpath_result.term.Exited == 0) {
         const current_rpath = std.mem.trim(u8, rpath_result.stdout, " \t\n\r");
         if (current_rpath.len > 0 and placeholder.hasPlaceholder(current_rpath)) {
             const new_rpath = placeholder.replacePlaceholders(alloc, current_rpath) catch return;
@@ -171,8 +192,8 @@ fn patchelfRelocate(alloc: std.mem.Allocator, path: []const u8) void {
     }) catch return;
     defer alloc.free(needed_result.stderr);
 
-    var lines = std.mem.splitScalar(u8, needed_result.stdout, '\n');
-    while (lines.next()) |line| {
+    var lines_iter = std.mem.splitScalar(u8, needed_result.stdout, '\n');
+    while (lines_iter.next()) |line| {
         const lib = std.mem.trim(u8, line, " \t\r");
         if (lib.len == 0) continue;
         if (placeholder.hasPlaceholder(lib)) {
@@ -197,12 +218,29 @@ fn patchInterpreter(alloc: std.mem.Allocator, path: []const u8) void {
     defer alloc.free(result.stderr);
     defer alloc.free(result.stdout);
 
-    if (result.term.Exited != 0) return; // not an executable (shared lib)
+    if (result.term != .Exited or result.term.Exited != 0) return; // not an executable (shared lib)
 
     const current = std.mem.trim(u8, result.stdout, " \t\n\r");
     if (!placeholder.hasPlaceholder(current)) return;
 
-    // Detect the binary's architecture from its ELF header
+    // First: try replacing placeholders to get the intended path.
+    // Homebrew bottles may ship a bundled ld.so at @@HOMEBREW_PREFIX@@/lib/ld.so
+    // which should become /opt/nanobrew/prefix/lib/ld.so.
+    if (placeholder.replacePlaceholders(alloc, current)) |resolved| {
+        defer alloc.free(resolved);
+        // Use the resolved path if it exists on disk (bundled linker)
+        if (std.fs.accessAbsolute(resolved, .{})) |_| {
+            const set_result = std.process.Child.run(.{
+                .allocator = alloc,
+                .argv = &.{ "patchelf", "--set-interpreter", resolved, path },
+            }) catch return;
+            alloc.free(set_result.stdout);
+            alloc.free(set_result.stderr);
+            return;
+        } else |_| {}
+    } else |_| {}
+
+    // Fallback: use the system's dynamic linker based on ELF architecture
     const new_interp = detectInterpreter(path) orelse return;
 
     const set_result = std.process.Child.run(.{
