@@ -34,7 +34,7 @@ pub fn build(b: *std.Build) void {
     const run_step = b.step("run", "Run nanobrew");
     run_step.dependOn(&run_cmd.step);
 
-    // ── Tests ──
+    // ── Tests (all-in-one) ──
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -46,6 +46,32 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    // ── Per-module test steps (atomic — one crash doesn't kill the rest) ──
+    const test_modules = .{
+        .{ "test-api", "src/api/client.zig", "Run API client tests" },
+        .{ "test-tap", "src/api/tap.zig", "Run tap tests" },
+        .{ "test-cask", "src/api/cask.zig", "Run cask tests" },
+        .{ "test-deb-index", "src/deb/index.zig", "Run deb index tests" },
+        .{ "test-deb-resolver", "src/deb/resolver.zig", "Run deb resolver tests" },
+        .{ "test-deb-extract", "src/deb/extract.zig", "Run deb extract tests" },
+        .{ "test-deb-distro", "src/deb/distro.zig", "Run deb distro tests" },
+        .{ "test-version", "src/version.zig", "Run version tests" },
+        .{ "test-tar", "src/extract/tar.zig", "Run tar tests" },
+        .{ "test-security", "src/security_test.zig", "Run security tests" },
+        .{ "test-search", "src/api/search.zig", "Run search tests" },
+    };
+    inline for (test_modules) |entry| {
+        const mod = b.createModule(.{
+            .root_source_file = b.path(entry[1]),
+            .target = target,
+            .optimize = optimize,
+        });
+        const t = b.addTest(.{ .root_module = mod });
+        const run_t = b.addRunArtifact(t);
+        const s = b.step(entry[0], entry[2]);
+        s.dependOn(&run_t.step);
+    }
 
     // ── Linux cross-compilation convenience targets ──
     const linux_x86 = b.resolveTargetQuery(.{

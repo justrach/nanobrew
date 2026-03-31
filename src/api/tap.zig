@@ -1,13 +1,16 @@
-// nanobrew — Homebrew tap formula support
+// nanobrew — Homebrew tap formula/cask support
 //
-// Fetches and parses Ruby formula files from third-party taps.
+// Fetches and parses Ruby formula/cask files from third-party taps.
 // Input: "user/tap/formula" (e.g. "steipete/tap/sag")
 // Repo:  github.com/<user>/homebrew-<tap>/Formula/<name>.rb
+//        github.com/<user>/homebrew-<tap>/Casks/<name>.rb
 
 const std = @import("std");
 const Formula = @import("formula.zig").Formula;
 const BOTTLE_TAG = @import("formula.zig").BOTTLE_TAG;
 const BOTTLE_FALLBACKS = @import("formula.zig").BOTTLE_FALLBACKS;
+const Cask = @import("cask.zig").Cask;
+const Artifact = @import("cask.zig").Artifact;
 const fetch = @import("../net/fetch.zig");
 const builtin = @import("builtin");
 
@@ -41,13 +44,132 @@ pub fn fetchTapFormula(alloc: std.mem.Allocator, client: ?*std.http.Client, name
     return parseRubyFormula(alloc, ref.formula, src);
 }
 
+/// Fetch a cask from a third-party tap.
+/// name must be "user/tap/cask" format (exactly 2 slashes).
+pub fn fetchTapCask(alloc: std.mem.Allocator, name: []const u8) !Cask {
+    const ref = parseTapRef(name) orelse return error.CaskNotFound;
+
+    // Try Casks/<name>.rb first, then Casks/<first_letter>/<name>.rb
+    const urls = [_][]const u8{
+        try std.fmt.allocPrint(alloc, "https://raw.githubusercontent.com/{s}/homebrew-{s}/HEAD/Casks/{s}.rb", .{ ref.user, ref.tap, ref.formula }),
+        try std.fmt.allocPrint(alloc, "https://raw.githubusercontent.com/{s}/homebrew-{s}/HEAD/Casks/{c}/{s}.rb", .{ ref.user, ref.tap, ref.formula[0], ref.formula }),
+    };
+    defer for (urls) |u| alloc.free(u);
+
+    var ruby_src: ?[]u8 = null;
+    for (urls) |url| {
+        ruby_src = fetch.get(alloc, url) catch null;
+        if (ruby_src != null) break;
+    }
+
+    const src = ruby_src orelse return error.CaskNotFound;
+    defer alloc.free(src);
+
+    return parseRubyCask(alloc, ref.formula, src);
+}
+
+/// Parse a Ruby cask file into a Cask struct.
+/// Handles: version, sha256, url, name, desc, homepage, app, binary, pkg artifacts.
+fn parseRubyCask(alloc: std.mem.Allocator, token: []const u8, src: []const u8) !Cask {
+    var version: ?[]const u8 = null;
+    var sha256: ?[]const u8 = null;
+    var url_raw: ?[]const u8 = null;
+    var cask_name: ?[]const u8 = null;
+    var desc: ?[]const u8 = null;
+    var homepage: ?[]const u8 = null;
+
+    var artifacts: std.ArrayList(Artifact) = .empty;
+    defer artifacts.deinit(alloc);
+
+    var line_iter = std.mem.splitScalar(u8, src, '\n');
+    while (line_iter.next()) |raw_line| {
+        const line = std.mem.trim(u8, raw_line, " \t\r");
+        if (line.len == 0) continue;
+
+        if (version == null) {
+            if (extractQuotedAfter(line, "version ")) |v| {
+                version = try allocDupe(alloc, v);
+            }
+        }
+        if (sha256 == null) {
+            if (extractQuotedAfter(line, "sha256 ")) |s| {
+                sha256 = try allocDupe(alloc, s);
+            } else if (std.mem.indexOf(u8, line, "sha256 :no_check") != null) {
+                sha256 = try allocDupe(alloc, "no_check");
+            }
+        }
+        if (url_raw == null) {
+            if (extractQuotedAfter(line, "url ")) |u| {
+                url_raw = try allocDupe(alloc, u);
+            }
+        }
+        if (cask_name == null) {
+            if (extractQuotedAfter(line, "name ")) |n| {
+                cask_name = try allocDupe(alloc, n);
+            }
+        }
+        if (desc == null) {
+            if (extractQuotedAfter(line, "desc ")) |d| {
+                desc = try allocDupe(alloc, d);
+            }
+        }
+        if (homepage == null) {
+            if (extractQuotedAfter(line, "homepage ")) |h| {
+                homepage = try allocDupe(alloc, h);
+            }
+        }
+
+        // Artifacts
+        if (extractQuotedAfter(line, "app ")) |a| {
+            try artifacts.append(alloc, .{ .app = try allocDupe(alloc, a) });
+        }
+        if (extractQuotedAfter(line, "pkg ")) |p| {
+            try artifacts.append(alloc, .{ .pkg = try allocDupe(alloc, p) });
+        }
+        if (extractQuotedAfter(line, "binary ")) |b| {
+            try artifacts.append(alloc, .{ .binary = .{
+                .source = try allocDupe(alloc, b),
+                .target = try allocDupe(alloc, b),
+            } });
+        }
+    }
+
+    const ver = version orelse return error.CaskNotFound;
+
+    // Interpolate #{version} in URL
+    const final_url = if (url_raw) |u|
+        try interpolateVersion(alloc, u, ver)
+    else
+        return error.CaskNotFound;
+
+    // Free the raw url since we have the interpolated one
+    if (url_raw) |u| alloc.free(u);
+
+    return Cask{
+        .token = try allocDupe(alloc, token),
+        .name = cask_name orelse try allocDupe(alloc, token),
+        .version = ver,
+        .url = final_url,
+        .sha256 = sha256 orelse try allocDupe(alloc, "no_check"),
+        .homepage = homepage orelse try allocDupe(alloc, ""),
+        .desc = desc orelse try allocDupe(alloc, ""),
+        .auto_updates = false,
+        .artifacts = try artifacts.toOwnedSlice(alloc),
+        .min_macos = null,
+    };
+}
+
+fn allocDupe(alloc: std.mem.Allocator, s: []const u8) ![]const u8 {
+    return @constCast(try alloc.dupe(u8, s));
+}
+
 const TapRef = struct {
     user: []const u8,
     tap: []const u8,
     formula: []const u8,
 };
 
-fn parseTapRef(name: []const u8) ?TapRef {
+pub fn parseTapRef(name: []const u8) ?TapRef {
     var slash1: ?usize = null;
     var slash2: ?usize = null;
     for (name, 0..) |c, i| {

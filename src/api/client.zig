@@ -63,6 +63,11 @@ fn isTapRef(name: []const u8) bool {
 }
 
 pub fn fetchCask(alloc: std.mem.Allocator, token: []const u8) !Cask {
+    // Tap cask: "user/tap/cask" -> fetch from GitHub
+    if (tap.parseTapRef(token) != null) {
+        return tap.fetchTapCask(alloc, token);
+    }
+
     var cache_path_buf: [512]u8 = undefined;
     const cache_path = std.fmt.bufPrint(&cache_path_buf, "{s}/cask-{s}.json", .{ API_CACHE_DIR, token }) catch return error.NameTooLong;
 

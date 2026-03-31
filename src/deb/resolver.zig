@@ -103,7 +103,11 @@ pub fn resolveAll(
     provides_map: ?std.StringHashMap([]const u8),
 ) ![]DebPackage {
     var visited = std.StringHashMap(void).init(alloc);
-    defer visited.deinit();
+    defer {
+        var it = visited.keyIterator();
+        while (it.next()) |key| alloc.free(key.*);
+        visited.deinit();
+    }
     var order: std.ArrayList(DebPackage) = .empty;
     defer order.deinit(alloc);
 
@@ -424,7 +428,11 @@ test "resolveOne handles deeply nested deps gracefully" {
     }
 
     var visited: std.StringHashMap(void) = .init(alloc);
-    defer visited.deinit();
+    defer {
+        var it = visited.keyIterator();
+        while (it.next()) |key| alloc.free(key.*);
+        visited.deinit();
+    }
     var order: std.ArrayList(DebPackage) = .empty;
     defer order.deinit(alloc);
 
