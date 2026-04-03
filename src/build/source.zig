@@ -39,20 +39,29 @@ pub fn buildFromSource(alloc: std.mem.Allocator, formula: Formula) !void {
     // 2. Verify SHA256
     if (formula.source_sha256.len > 0) {
         stdout.print("==> Verifying SHA256...\n", .{}) catch {};
-        const verify = std.process.Child.run(.{
-            .allocator = alloc,
-            .argv = &.{ "shasum", "-a", "256", tarball_path },
-        }) catch return error.VerifyFailed;
-        defer alloc.free(verify.stderr);
-        defer alloc.free(verify.stdout);
+        var file = std.fs.openFileAbsolute(tarball_path, .{}) catch return error.VerifyFailed;
+        defer file.close();
 
-        if (verify.term.Exited != 0) return error.VerifyFailed;
-        // shasum output: "<hash>  <path>\n"
-        if (verify.stdout.len < 64) return error.VerifyFailed;
-        const actual_hash = verify.stdout[0..64];
-        if (!std.mem.eql(u8, actual_hash, formula.source_sha256)) {
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        var buf: [65536]u8 = undefined;
+        while (true) {
+            const bytes_read = file.read(&buf) catch return error.VerifyFailed;
+            if (bytes_read == 0) break;
+            hasher.update(buf[0..bytes_read]);
+        }
+
+        const digest = hasher.finalResult();
+        const charset = "0123456789abcdef";
+        var hex: [64]u8 = undefined;
+        for (digest, 0..) |byte, idx| {
+            hex[idx * 2] = charset[byte >> 4];
+            hex[idx * 2 + 1] = charset[byte & 0x0f];
+        }
+
+        if (formula.source_sha256.len < 64) return error.VerifyFailed;
+        if (!std.mem.eql(u8, &hex, formula.source_sha256[0..64])) {
             stderr.print("nb: SHA256 mismatch for {s}\n    expected: {s}\n    got:      {s}\n", .{
-                formula.name, formula.source_sha256, actual_hash,
+                formula.name, formula.source_sha256[0..64], &hex,
             }) catch {};
             return error.Sha256Mismatch;
         }
