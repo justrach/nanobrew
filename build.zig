@@ -35,21 +35,8 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // ── Tests ──
-    // "zig build test" runs ALL tests via root.zig
-    const test_mod = b.createModule(.{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .optimize = optimize,
-    });
-    const unit_tests = b.addTest(.{
-        .root_module = test_mod,
-    });
-    const run_unit_tests = b.addRunArtifact(unit_tests);
-    const test_step = b.step("test", "Run all unit tests");
-    test_step.dependOn(&run_unit_tests.step);
-
-    // ── Modular test targets ──
-    // Run a single subsystem's tests: zig build test-api, test-deb, etc.
+    // Each subsystem compiles and runs as a separate binary.
+    // "zig build test" runs all of them in parallel (less CPU than one monolith).
     const test_suites = [_]struct { name: []const u8, src: []const u8, desc: []const u8 }{
         .{ .name = "test-api", .src = "src/test_api.zig", .desc = "Run API tests (client, formula, cask, tap)" },
         .{ .name = "test-deb", .src = "src/test_deb.zig", .desc = "Run .deb subsystem tests" },
@@ -57,6 +44,8 @@ pub fn build(b: *std.Build) void {
         .{ .name = "test-core", .src = "src/test_core.zig", .desc = "Run core module tests (version, deps, db, store, kernel)" },
         .{ .name = "test-security", .src = "src/test_security.zig", .desc = "Run security tests" },
     };
+
+    const test_step = b.step("test", "Run all unit tests");
 
     for (test_suites) |suite| {
         const suite_mod = b.createModule(.{
@@ -66,8 +55,11 @@ pub fn build(b: *std.Build) void {
         });
         const suite_tests = b.addTest(.{ .root_module = suite_mod });
         const run_suite = b.addRunArtifact(suite_tests);
+        // Individual targets (zig build test-api, etc.)
         const suite_step = b.step(suite.name, suite.desc);
         suite_step.dependOn(&run_suite.step);
+        // Also wire into "zig build test" (all run in parallel)
+        test_step.dependOn(&run_suite.step);
     }
 
     // ── Linux cross-compilation convenience targets ──

@@ -524,7 +524,7 @@ test "parseCaskJson - parses complete cask" {
         \\"url":"https://example.com/Firefox.dmg","sha256":"deadbeef",
         \\"homepage":"https://www.mozilla.org/firefox/",
         \\"desc":"Web browser","auto_updates":true,
-        \\"artifacts":[{"app":["Firefox.app"]},{"binary":[{"source":"firefox","target":"firefox"}]}],
+        \\"artifacts":[{"app":["Firefox.app"]},{"binary":["firefox",{"target":"firefox"}]}],
         \\"depends_on":{"macos":{">=":["ventura"]}}}
     ;
     const c = try parseCaskJson(testing.allocator, json);

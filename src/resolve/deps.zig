@@ -216,11 +216,20 @@ fn tapShortName(name: []const u8) []const u8 {
 
 const testing = std.testing;
 
-fn makeFormula(name: []const u8, dep_list: []const []const u8) Formula {
+fn makeFormula(alloc: std.mem.Allocator, name: []const u8, dep_list: []const []const u8) !Formula {
+    const deps = try alloc.alloc([]const u8, dep_list.len);
+    for (dep_list, 0..) |dep, i| deps[i] = try alloc.dupe(u8, dep);
     return .{
-        .name = name,
-        .version = "1.0",
-        .dependencies = dep_list,
+        .name = try alloc.dupe(u8, name),
+        .version = try alloc.dupe(u8, "1.0"),
+        .desc = try alloc.dupe(u8, ""),
+        .bottle_url = try alloc.dupe(u8, ""),
+        .bottle_sha256 = try alloc.dupe(u8, ""),
+        .source_url = try alloc.dupe(u8, ""),
+        .source_sha256 = try alloc.dupe(u8, ""),
+        .caveats = try alloc.dupe(u8, ""),
+        .dependencies = deps,
+        .build_deps = try alloc.alloc([]const u8, 0),
     };
 }
 
@@ -228,10 +237,9 @@ test "topologicalSort - linear chain" {
     var r = DepResolver.init(testing.allocator);
     defer r.deinit();
 
-    // C has no deps, B depends on C, A depends on B
-    const c = makeFormula("c", &.{});
-    const b = makeFormula("b", &.{"c"});
-    const a = makeFormula("a", &.{"b"});
+    const c = try makeFormula(testing.allocator, "c", &.{});
+    const b = try makeFormula(testing.allocator, "b", &.{"c"});
+    const a = try makeFormula(testing.allocator, "a", &.{"b"});
 
     try r.formulae.put("a", a);
     try r.formulae.put("b", b);
@@ -243,7 +251,6 @@ test "topologicalSort - linear chain" {
     const sorted = try r.topologicalSort();
     defer testing.allocator.free(sorted);
 
-    // c must come before b, b before a
     try testing.expectEqual(@as(usize, 3), sorted.len);
     try testing.expectEqualStrings("c", sorted[0].name);
     try testing.expectEqualStrings("b", sorted[1].name);
@@ -254,11 +261,10 @@ test "topologicalSort - diamond dependency" {
     var r = DepResolver.init(testing.allocator);
     defer r.deinit();
 
-    // D has no deps; B and C depend on D; A depends on B and C
-    const d = makeFormula("d", &.{});
-    const b_dep = makeFormula("b", &.{"d"});
-    const c_dep = makeFormula("c", &.{"d"});
-    const a_dep = makeFormula("a", &.{ "b", "c" });
+    const d = try makeFormula(testing.allocator, "d", &.{});
+    const b_dep = try makeFormula(testing.allocator, "b", &.{"d"});
+    const c_dep = try makeFormula(testing.allocator, "c", &.{"d"});
+    const a_dep = try makeFormula(testing.allocator, "a", &.{ "b", "c" });
 
     try r.formulae.put("a", a_dep);
     try r.formulae.put("b", b_dep);
@@ -273,7 +279,6 @@ test "topologicalSort - diamond dependency" {
     defer testing.allocator.free(sorted);
 
     try testing.expectEqual(@as(usize, 4), sorted.len);
-    // d must be first (leaf), a must be last (root)
     try testing.expectEqualStrings("d", sorted[0].name);
     try testing.expectEqualStrings("a", sorted[3].name);
 }
@@ -282,9 +287,8 @@ test "topologicalSort - cycle detection" {
     var r = DepResolver.init(testing.allocator);
     defer r.deinit();
 
-    // A depends on B, B depends on A — cycle
-    const a = makeFormula("a", &.{"b"});
-    const b = makeFormula("b", &.{"a"});
+    const a = try makeFormula(testing.allocator, "a", &.{"b"});
+    const b = try makeFormula(testing.allocator, "b", &.{"a"});
 
     try r.formulae.put("a", a);
     try r.formulae.put("b", b);
@@ -298,12 +302,10 @@ test "topologicalSort - missing dependency returns MissingDependency not Depende
     var r = DepResolver.init(testing.allocator);
     defer r.deinit();
 
-    // A depends on B, but B was never resolved into formulae
-    const a = makeFormula("a", &.{"b"});
+    const a = try makeFormula(testing.allocator, "a", &.{"b"});
 
     try r.formulae.put("a", a);
     try r.edges.put("a", a.dependencies);
-    // Note: "b" is intentionally absent from r.formulae and r.edges
 
     try testing.expectError(error.MissingDependency, r.topologicalSort());
 }
