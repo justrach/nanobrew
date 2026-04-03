@@ -219,6 +219,13 @@ pub fn installCask(alloc: std.mem.Allocator, cask: Cask) !void {
                 };
             },
             .pkg => |pkg_name| {
+                // Validate pkg name: no path traversal, no absolute paths (#Task8)
+                if (std.mem.indexOf(u8, pkg_name, "..") != null or
+                    (pkg_name.len > 0 and pkg_name[0] == '/'))
+                {
+                    stderr.print("nb: skipping unsafe pkg artifact: {s}\n", .{pkg_name}) catch {};
+                    continue;
+                }
                 var pkg_buf: [1024]u8 = undefined;
                 const pkg_path = if (format == .pkg)
                     dl_path // standalone .pkg download
