@@ -8,6 +8,7 @@ const std = @import("std");
 const Formula = @import("../api/formula.zig").Formula;
 const fetch = @import("../net/fetch.zig");
 const sandbox = @import("sandbox.zig");
+const formula_cache = @import("formula_cache.zig");
 
 pub const ParsedCommand = struct {
     argv: []const []const u8,
@@ -43,6 +44,10 @@ pub fn runPostInstall(alloc: std.mem.Allocator, formula: Formula) !void {
 fn runPostInstallScript(alloc: std.mem.Allocator, formula: Formula) !void {
     const stderr = std.fs.File.stderr().deprecatedWriter();
 
+    // Compute effective version early (needed for cache key)
+    var ver_buf: [128]u8 = undefined;
+    const eff_ver = formula.effectiveVersion(&ver_buf);
+
     // Fetch Ruby formula source
     const first_letter = if (formula.name.len > 0) formula.name[0..1] else return;
     const url = std.fmt.allocPrint(alloc, "https://raw.githubusercontent.com/Homebrew/homebrew-core/HEAD/Formula/{s}/{s}.rb", .{
@@ -50,7 +55,7 @@ fn runPostInstallScript(alloc: std.mem.Allocator, formula: Formula) !void {
     }) catch return error.OutOfMemory;
     defer alloc.free(url);
 
-    const ruby_src = fetch.get(alloc, url) catch return;
+    const ruby_src = formula_cache.getVerifiedFormula(alloc, formula.name, eff_ver, url) catch return;
     defer alloc.free(ruby_src);
 
     if (ruby_src.len == 0) return;
@@ -60,8 +65,6 @@ fn runPostInstallScript(alloc: std.mem.Allocator, formula: Formula) !void {
 
     // Parse and execute commands
     var keg_buf: [512]u8 = undefined;
-    var ver_buf: [128]u8 = undefined;
-    const eff_ver = formula.effectiveVersion(&ver_buf);
     const keg_path = std.fmt.bufPrint(&keg_buf, "/opt/nanobrew/prefix/Cellar/{s}/{s}", .{
         formula.name, eff_ver,
     }) catch return;
