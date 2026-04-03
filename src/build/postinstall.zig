@@ -7,6 +7,7 @@
 const std = @import("std");
 const Formula = @import("../api/formula.zig").Formula;
 const fetch = @import("../net/fetch.zig");
+const sandbox = @import("sandbox.zig");
 
 pub const ParsedCommand = struct {
     argv: []const []const u8,
@@ -72,9 +73,28 @@ fn runPostInstallScript(alloc: std.mem.Allocator, formula: Formula) !void {
 
         if (parseRubyCommand(alloc, trimmed, formula.name, keg_path)) |parsed| {
             defer parsed.deinit(alloc);
+
+            // Wrap command in sandbox on macOS
+            const sandboxed = sandbox.sandboxedArgv(alloc, parsed.argv, keg_path) catch {
+                // Sandbox generation failed — run unsandboxed with warning
+                stderr.print("nb: warning: sandbox unavailable, running post-install unsandboxed\n", .{}) catch {};
+                const result = std.process.Child.run(.{
+                    .allocator = alloc,
+                    .argv = parsed.argv,
+                }) catch continue;
+                alloc.free(result.stdout);
+                alloc.free(result.stderr);
+                continue;
+            };
+            defer {
+                for (sandboxed.argv) |arg| alloc.free(@constCast(arg));
+                alloc.free(sandboxed.argv);
+                if (sandboxed.profile.len > 0) alloc.free(sandboxed.profile);
+            }
+
             const result = std.process.Child.run(.{
                 .allocator = alloc,
-                .argv = parsed.argv,
+                .argv = sandboxed.argv,
             }) catch continue;
             alloc.free(result.stdout);
             alloc.free(result.stderr);
