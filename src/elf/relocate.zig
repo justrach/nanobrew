@@ -419,9 +419,26 @@ fn detectInterpreterFromBytes(data: []const u8) ?[]const u8 {
 
 fn interpreterForMachine(e_machine: u16) ?[]const u8 {
     return switch (e_machine) {
-        0xB7 => "/lib/ld-linux-aarch64.so.1", // EM_AARCH64
-        0x3E => "/lib64/ld-linux-x86-64.so.2", // EM_X86_64
-        0x03 => "/lib/ld-linux.so.2", // EM_386
+        0xB7 => firstExistingInterpreter(&.{
+            "/lib/ld-linux-aarch64.so.1",
+            "/lib/aarch64-linux-gnu/ld-linux-aarch64.so.1",
+        }), // EM_AARCH64
+        0x3E => firstExistingInterpreter(&.{
+            "/lib64/ld-linux-x86-64.so.2",
+            "/lib/x86_64-linux-gnu/ld-linux-x86-64.so.2",
+        }), // EM_X86_64
+        0x03 => firstExistingInterpreter(&.{
+            "/lib/ld-linux.so.2",
+            "/lib32/ld-linux.so.2",
+        }), // EM_386
         else => null,
     };
+}
+
+fn firstExistingInterpreter(candidates: []const []const u8) ?[]const u8 {
+    for (candidates) |candidate| {
+        std.fs.accessAbsolute(candidate, .{}) catch continue;
+        return candidate;
+    }
+    return if (candidates.len > 0) candidates[0] else null;
 }
