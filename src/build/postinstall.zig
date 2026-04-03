@@ -8,6 +8,15 @@ const std = @import("std");
 const Formula = @import("../api/formula.zig").Formula;
 const fetch = @import("../net/fetch.zig");
 
+pub const ParsedCommand = struct {
+    argv: []const []const u8,
+
+    pub fn deinit(self: ParsedCommand, alloc: std.mem.Allocator) void {
+        for (self.argv) |arg| alloc.free(arg);
+        alloc.free(self.argv);
+    }
+};
+
 pub fn runPostInstall(alloc: std.mem.Allocator, formula: Formula) !void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
     const stderr = std.fs.File.stderr().deprecatedWriter();
@@ -61,16 +70,18 @@ fn runPostInstallScript(alloc: std.mem.Allocator, formula: Formula) !void {
         const trimmed = std.mem.trim(u8, line, " \t");
         if (trimmed.len == 0) continue;
 
-        if (parseRubyCommand(alloc, trimmed, formula.name, keg_path)) |cmd| {
-            defer alloc.free(cmd);
+        if (parseRubyCommand(alloc, trimmed, formula.name, keg_path)) |parsed| {
+            defer parsed.deinit(alloc);
             const result = std.process.Child.run(.{
                 .allocator = alloc,
-                .argv = &.{ "/bin/sh", "-c", cmd },
+                .argv = parsed.argv,
             }) catch continue;
             alloc.free(result.stdout);
             alloc.free(result.stderr);
             if (result.term.Exited != 0) {
-                stderr.print("nb: {s}: post-install command failed: {s}\n", .{ formula.name, cmd }) catch {};
+                if (parsed.argv.len > 0) {
+                    stderr.print("nb: {s}: post-install command failed: {s}\n", .{ formula.name, parsed.argv[0] }) catch {};
+                }
             }
         }
     }
@@ -126,32 +137,30 @@ fn startsWithKeyword(line: []const u8, keyword: []const u8) bool {
     return next == ' ' or next == '\t' or next == '\n';
 }
 
-fn parseRubyCommand(alloc: std.mem.Allocator, line: []const u8, name: []const u8, keg_path: []const u8) ?[]const u8 {
+fn parseRubyCommand(alloc: std.mem.Allocator, line: []const u8, name: []const u8, keg_path: []const u8) ?ParsedCommand {
     _ = name;
-    // system "cmd", "arg1", "arg2" → cmd arg1 arg2
+    // system "cmd", "arg1", "arg2" → argv: [cmd, arg1, arg2]
     if (std.mem.startsWith(u8, line, "system ")) {
         return parseSystemCall(alloc, line["system ".len..], keg_path);
     }
 
-    // (prefix/"path").mkpath → mkdir -p prefix/path
+    // (prefix/"path").mkpath → argv: [mkdir, -p, path]
     if (std.mem.indexOf(u8, line, ".mkpath")) |_| {
         if (extractPathExpr(line)) |path_expr| {
             const resolved = resolvePath(alloc, path_expr, keg_path) catch return null;
-            defer alloc.free(resolved);
-            return std.fmt.allocPrint(alloc, "mkdir -p {s}", .{resolved}) catch null;
+            return buildArgv3(alloc, "mkdir", "-p", resolved) catch null;
         }
     }
 
-    // mkdir_p "path" → mkdir -p path
+    // mkdir_p "path" → argv: [mkdir, -p, path]
     if (std.mem.startsWith(u8, line, "mkdir_p ")) {
         if (extractQuotedString(line["mkdir_p ".len..])) |path| {
             const resolved = resolvePath(alloc, path, keg_path) catch return null;
-            defer alloc.free(resolved);
-            return std.fmt.allocPrint(alloc, "mkdir -p {s}", .{resolved}) catch null;
+            return buildArgv3(alloc, "mkdir", "-p", resolved) catch null;
         }
     }
 
-    // ln_sf source, target → ln -sf source target
+    // ln_sf source, target → argv: [ln, -sf, source, target]
     if (std.mem.startsWith(u8, line, "ln_sf ")) {
         return parseLnSf(alloc, line["ln_sf ".len..], keg_path);
     }
@@ -159,9 +168,27 @@ fn parseRubyCommand(alloc: std.mem.Allocator, line: []const u8, name: []const u8
     return null;
 }
 
-fn parseSystemCall(alloc: std.mem.Allocator, args_str: []const u8, keg_path: []const u8) ?[]const u8 {
+/// Build a 3-element argv where the first two are static strings and the third is
+/// an already-allocated string (ownership transferred into the argv).
+fn buildArgv3(alloc: std.mem.Allocator, arg0: []const u8, arg1: []const u8, owned_arg2: []const u8) !ParsedCommand {
+    errdefer alloc.free(owned_arg2);
+    const a0 = try alloc.dupe(u8, arg0);
+    errdefer alloc.free(a0);
+    const a1 = try alloc.dupe(u8, arg1);
+    errdefer alloc.free(a1);
+    const argv = try alloc.alloc([]const u8, 3);
+    argv[0] = a0;
+    argv[1] = a1;
+    argv[2] = owned_arg2;
+    return .{ .argv = argv };
+}
+
+pub fn parseSystemCall(alloc: std.mem.Allocator, args_str: []const u8, keg_path: []const u8) ?ParsedCommand {
     var parts: std.ArrayList([]const u8) = .empty;
-    defer parts.deinit(alloc);
+    defer {
+        // On failure, free any already-resolved parts
+        // (on success, ownership transfers to the returned ParsedCommand)
+    }
 
     var rest = args_str;
     while (rest.len > 0) {
@@ -170,7 +197,12 @@ fn parseSystemCall(alloc: std.mem.Allocator, args_str: []const u8, keg_path: []c
 
         if (extractQuotedString(rest)) |quoted| {
             const resolved = resolvePath(alloc, quoted, keg_path) catch return null;
-            parts.append(alloc, resolved) catch return null;
+            parts.append(alloc, resolved) catch {
+                alloc.free(resolved);
+                for (parts.items) |p| alloc.free(p);
+                parts.deinit(alloc);
+                return null;
+            };
             // Advance past the quoted string + quotes + comma
             const skip = std.mem.indexOf(u8, rest[1..], &[_]u8{rest[0]});
             if (skip) |s| {
@@ -179,25 +211,22 @@ fn parseSystemCall(alloc: std.mem.Allocator, args_str: []const u8, keg_path: []c
         } else break;
     }
 
-    if (parts.items.len == 0) return null;
-
-    // Join all parts with spaces
-    var total: usize = 0;
-    for (parts.items) |p| total += p.len + 1;
-    const result = alloc.alloc(u8, total) catch return null;
-    var pos: usize = 0;
-    for (parts.items, 0..) |p, i| {
-        @memcpy(result[pos..][0..p.len], p);
-        pos += p.len;
-        if (i < parts.items.len - 1) {
-            result[pos] = ' ';
-            pos += 1;
-        }
+    if (parts.items.len == 0) {
+        parts.deinit(alloc);
+        return null;
     }
-    return result[0..pos];
+
+    // Transfer the items into a standalone argv slice
+    const argv = alloc.dupe([]const u8, parts.items) catch {
+        for (parts.items) |p| alloc.free(p);
+        parts.deinit(alloc);
+        return null;
+    };
+    parts.deinit(alloc);
+    return .{ .argv = argv };
 }
 
-fn parseLnSf(alloc: std.mem.Allocator, args_str: []const u8, keg_path: []const u8) ?[]const u8 {
+fn parseLnSf(alloc: std.mem.Allocator, args_str: []const u8, keg_path: []const u8) ?ParsedCommand {
     // Parse: "source", "target" or source, target
     var rest = std.mem.trim(u8, args_str, " \t");
     const src = extractQuotedString(rest) orelse return null;
@@ -208,11 +237,35 @@ fn parseLnSf(alloc: std.mem.Allocator, args_str: []const u8, keg_path: []const u
     const tgt = extractQuotedString(rest) orelse return null;
 
     const rsrc = resolvePath(alloc, src, keg_path) catch return null;
-    defer alloc.free(rsrc);
-    const rtgt = resolvePath(alloc, tgt, keg_path) catch return null;
-    defer alloc.free(rtgt);
+    const rtgt = resolvePath(alloc, tgt, keg_path) catch {
+        alloc.free(rsrc);
+        return null;
+    };
 
-    return std.fmt.allocPrint(alloc, "ln -sf {s} {s}", .{ rsrc, rtgt }) catch null;
+    const a0 = alloc.dupe(u8, "ln") catch {
+        alloc.free(rsrc);
+        alloc.free(rtgt);
+        return null;
+    };
+    const a1 = alloc.dupe(u8, "-sf") catch {
+        alloc.free(a0);
+        alloc.free(rsrc);
+        alloc.free(rtgt);
+        return null;
+    };
+
+    const argv = alloc.alloc([]const u8, 4) catch {
+        alloc.free(a0);
+        alloc.free(a1);
+        alloc.free(rsrc);
+        alloc.free(rtgt);
+        return null;
+    };
+    argv[0] = a0;
+    argv[1] = a1;
+    argv[2] = rsrc;
+    argv[3] = rtgt;
+    return .{ .argv = argv };
 }
 
 fn extractQuotedString(s: []const u8) ?[]const u8 {
