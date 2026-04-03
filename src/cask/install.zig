@@ -22,6 +22,11 @@ pub fn installCask(alloc: std.mem.Allocator, cask: Cask) !void {
         return error.CaskNotSupported;
     }
 
+    // Use basename of token for temp paths (third-party taps have slashes: "indaco/tap/sley")
+    const safe_token = if (std.mem.lastIndexOfScalar(u8, cask.token, '/')) |idx|
+        cask.token[idx + 1 ..]
+    else
+        cask.token;
     // 1. Download artifact
     const ext: []const u8 = switch (cask.downloadFormat()) {
         .dmg => ".dmg",
@@ -31,7 +36,7 @@ pub fn installCask(alloc: std.mem.Allocator, cask: Cask) !void {
         .unknown => ".dmg", // try dmg as default
     };
     var dl_buf: [512]u8 = undefined;
-    const dl_path = std.fmt.bufPrint(&dl_buf, "{s}/{s}{s}", .{ CACHE_TMP, cask.token, ext }) catch return error.PathTooLong;
+    const dl_path = std.fmt.bufPrint(&dl_buf, "{s}/{s}{s}", .{ CACHE_TMP, safe_token, ext }) catch return error.PathTooLong;
 
     try downloadArtifact(alloc, cask.url, dl_path, cask);
 
@@ -63,13 +68,13 @@ pub fn installCask(alloc: std.mem.Allocator, cask: Cask) !void {
             mount_point = try mountDmg(alloc, dl_path, &mount_point_buf);
         },
         .zip => {
-            const tmp_dir = std.fmt.bufPrint(&temp_extract_buf, "{s}/{s}-extract", .{ CACHE_TMP, cask.token }) catch return error.PathTooLong;
+            const tmp_dir = std.fmt.bufPrint(&temp_extract_buf, "{s}/{s}-extract", .{ CACHE_TMP, safe_token }) catch return error.PathTooLong;
             std.fs.makeDirAbsolute(tmp_dir) catch {};
             try extractZip(alloc, dl_path, tmp_dir);
             temp_extract_dir = tmp_dir;
         },
         .tar_gz => {
-            const tmp_dir = std.fmt.bufPrint(&temp_extract_buf, "{s}/{s}-extract", .{ CACHE_TMP, cask.token }) catch return error.PathTooLong;
+            const tmp_dir = std.fmt.bufPrint(&temp_extract_buf, "{s}/{s}-extract", .{ CACHE_TMP, safe_token }) catch return error.PathTooLong;
             std.fs.makeDirAbsolute(tmp_dir) catch {};
             try extractTarGz(alloc, dl_path, tmp_dir);
             temp_extract_dir = tmp_dir;
