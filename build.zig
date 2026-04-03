@@ -35,6 +35,7 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // ── Tests ──
+    // "zig build test" runs ALL tests via root.zig
     const test_mod = b.createModule(.{
         .root_source_file = b.path("src/root.zig"),
         .target = target,
@@ -44,8 +45,30 @@ pub fn build(b: *std.Build) void {
         .root_module = test_mod,
     });
     const run_unit_tests = b.addRunArtifact(unit_tests);
-    const test_step = b.step("test", "Run unit tests");
+    const test_step = b.step("test", "Run all unit tests");
     test_step.dependOn(&run_unit_tests.step);
+
+    // ── Modular test targets ──
+    // Run a single subsystem's tests: zig build test-api, test-deb, etc.
+    const test_suites = [_]struct { name: []const u8, src: []const u8, desc: []const u8 }{
+        .{ .name = "test-api", .src = "src/test_api.zig", .desc = "Run API tests (client, formula, cask, tap)" },
+        .{ .name = "test-deb", .src = "src/test_deb.zig", .desc = "Run .deb subsystem tests" },
+        .{ .name = "test-platform", .src = "src/test_platform.zig", .desc = "Run platform layer tests" },
+        .{ .name = "test-core", .src = "src/test_core.zig", .desc = "Run core module tests (version, deps, db, store, kernel)" },
+        .{ .name = "test-security", .src = "src/test_security.zig", .desc = "Run security tests" },
+    };
+
+    for (test_suites) |suite| {
+        const suite_mod = b.createModule(.{
+            .root_source_file = b.path(suite.src),
+            .target = target,
+            .optimize = optimize,
+        });
+        const suite_tests = b.addTest(.{ .root_module = suite_mod });
+        const run_suite = b.addRunArtifact(suite_tests);
+        const suite_step = b.step(suite.name, suite.desc);
+        suite_step.dependOn(&run_suite.step);
+    }
 
     // ── Linux cross-compilation convenience targets ──
     const linux_x86 = b.resolveTargetQuery(.{

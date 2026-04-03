@@ -90,11 +90,17 @@ fn parseCaskJson(alloc: std.mem.Allocator, json_data: []const u8) !Cask {
     const root = parsed.value.object;
 
     const token = try allocDupe(alloc, getStr(root, "token") orelse return error.MissingField);
+    errdefer alloc.free(token);
     const version = try allocDupe(alloc, getStr(root, "version") orelse return error.MissingField);
+    errdefer alloc.free(version);
     const url = try allocDupe(alloc, getStr(root, "url") orelse return error.MissingField);
+    errdefer alloc.free(url);
     const sha256 = try allocDupe(alloc, getStr(root, "sha256") orelse "no_check");
+    errdefer alloc.free(sha256);
     const homepage = try allocDupe(alloc, getStr(root, "homepage") orelse "");
+    errdefer alloc.free(homepage);
     const desc = try allocDupe(alloc, getStr(root, "desc") orelse "");
+    errdefer alloc.free(desc);
 
     // name is an array, take first element
     var name: []const u8 = token;
@@ -243,9 +249,12 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
     const root = parsed.value.object;
 
     const name = try allocDupe(alloc, getStr(root, "name") orelse return error.MissingField);
+    errdefer alloc.free(name);
     const version_obj = root.get("versions") orelse return error.MissingField;
     const version = try allocDupe(alloc, getStr(version_obj.object, "stable") orelse return error.MissingField);
+    errdefer alloc.free(version);
     const desc = try allocDupe(alloc, getStr(root, "desc") orelse "");
+    errdefer alloc.free(desc);
 
     const revision: u32 = if (root.get("revision")) |rev|
         switch (rev) {
@@ -268,6 +277,10 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
         }
     }
     const dependencies = try deps.toOwnedSlice(alloc);
+    errdefer {
+        for (dependencies) |d| alloc.free(d);
+        alloc.free(dependencies);
+    }
 
     // Parse build_dependencies
     var bdeps: std.ArrayList([]const u8) = .empty;
@@ -282,6 +295,10 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
         }
     }
     const build_deps = try bdeps.toOwnedSlice(alloc);
+    errdefer {
+        for (build_deps) |d| alloc.free(d);
+        alloc.free(build_deps);
+    }
 
     // Parse source URL and checksum from urls.stable
     var source_url: []const u8 = "";
@@ -297,10 +314,13 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
         }
     }
     if (source_url.len == 0) source_url = try allocDupe(alloc, "");
+    errdefer if (source_url.len > 0) alloc.free(source_url);
     if (source_sha256.len == 0) source_sha256 = try allocDupe(alloc, "");
+    errdefer if (source_sha256.len > 0) alloc.free(source_sha256);
 
     // Parse caveats (string or null)
     const caveats = try allocDupe(alloc, getStr(root, "caveats") orelse "");
+    errdefer alloc.free(caveats);
 
     // Parse post_install_defined (bool)
     const post_install_defined = if (root.get("post_install_defined")) |pid|

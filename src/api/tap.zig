@@ -366,7 +366,16 @@ fn extractVersionFromUrl(url: []const u8) ?[]const u8 {
                 if (url[end] == '.') has_dot = true;
             }
             if (has_dot and end > num_start + 1) {
-                return url[num_start..end];
+                // Strip trailing archive extensions (.tar.gz, .zip, .tgz, etc.)
+                var ver = url[num_start..end];
+                const exts = [_][]const u8{ ".tar.gz", ".tar.bz2", ".tar.xz", ".tgz", ".tar", ".zip", ".dmg", ".pkg" };
+                for (exts) |ext| {
+                    if (std.mem.endsWith(u8, ver, ext)) {
+                        ver = ver[0 .. ver.len - ext.len];
+                        break;
+                    }
+                }
+                if (ver.len > 0) return ver;
             }
         }
     }
@@ -569,9 +578,11 @@ test "extractVersionFromUrl - no version" {
 }
 
 test "findBottleSha256 - matching tag" {
-    const line = "    sha256 cellar: :any_skip_relocation, arm64_sonoma: \"abcdef\"";
+    // Real parser trims whitespace, so test with trimmed input
+    const line = "sha256 cellar: :any_skip_relocation, arm64_sonoma: \"abcdef\"";
     const sha = findBottleSha256(line);
     if (is_macos and builtin.cpu.arch == .aarch64) {
+        try testing.expect(sha != null);
         try testing.expectEqualStrings("abcdef", sha.?);
     }
 }

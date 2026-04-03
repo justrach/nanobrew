@@ -52,14 +52,46 @@ pub const mmap_reader = @import("kernel/mmap_reader.zig");
 pub const arena = @import("mem/arena.zig");
 pub const thread_pool = @import("exec/thread_pool.zig");
 
-// Force Zig to discover tests in all imported modules
+// Force Zig to discover tests in ALL imported modules.
+// Without explicit references, Zig only runs tests in the root file.
 pub const security_test = @import("security_test.zig");
 comptime {
+    // API layer
+    _ = api_client;
+    _ = formula;
+    _ = cask;
+    _ = tap;
+    _ = search_api;
+
+    // Resolution & dependencies
+    _ = deps;
+    _ = version;
+
+    // Storage & extraction
+    _ = tar;
+    _ = store;
+    _ = blob_cache;
+
+    // Database
+    _ = database;
+
+    // Platform
+    _ = @import("platform/copy.zig");
+    _ = @import("platform/placeholder.zig");
+    _ = relocate;
+
+    // Deb subsystem
     _ = deb_index;
     _ = deb_resolver;
+    _ = deb_extract;
     _ = deb_distro;
-    _ = version;
-    _ = tar;
-    _ = @import("platform/copy.zig");
+
+    // Kernel / low-level
+    _ = simd_scanner;
+    _ = mmap_reader;
+    _ = arena;
+    _ = thread_pool;
+
+    // Security
     _ = security_test;
 }

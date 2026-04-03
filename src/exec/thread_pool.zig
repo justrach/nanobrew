@@ -254,7 +254,7 @@ test "WorkStealingDeque push and pop" {
     defer deque.deinit();
 
     var dummy_task = Task{ .func = undefined };
-    deque.push(&dummy_task);
+    try deque.push(&dummy_task);
 
     const popped = deque.pop();
     try std.testing.expect(popped != null);

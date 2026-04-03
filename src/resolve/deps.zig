@@ -16,14 +16,12 @@ pub const DepResolver = struct {
     client: ?std.http.Client,
 
     pub fn init(alloc: std.mem.Allocator) DepResolver {
-        var resolver: DepResolver = .{
+        return .{
             .alloc = alloc,
             .formulae = std.StringHashMap(Formula).init(alloc),
             .edges = std.StringHashMap([]const []const u8).init(alloc),
             .client = std.http.Client{ .allocator = alloc },
         };
-        if (resolver.client) |*c| c.initDefaultProxies(alloc) catch {};
-        return resolver;
     }
 
     pub fn deinit(self: *DepResolver) void {
@@ -45,7 +43,10 @@ pub const DepResolver = struct {
         defer frontier.deinit(self.alloc);
         try frontier.append(self.alloc, name);
 
-        const client_ptr: ?*std.http.Client = if (self.client != null) &self.client.? else null;
+        const client_ptr: ?*std.http.Client = if (self.client != null) blk: {
+            self.client.?.initDefaultProxies(self.alloc) catch {};
+            break :blk &self.client.?;
+        } else null;
 
         // BFS: each iteration fetches all frontier names in parallel
         while (frontier.items.len > 0) {
