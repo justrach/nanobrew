@@ -382,6 +382,26 @@ fn unmountDmg(alloc: std.mem.Allocator, mount_point: []const u8) void {
 }
 
 fn extractZip(alloc: std.mem.Allocator, zip_path: []const u8, dest: []const u8) !void {
+    // Pre-list ZIP contents and check for path traversal
+    const list_result = std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "unzip", "-l", zip_path },
+        .max_output_bytes = 256 * 1024,
+    }) catch return error.ExtractFailed;
+    defer alloc.free(list_result.stdout);
+    defer alloc.free(list_result.stderr);
+
+    // Scan listed paths for traversal
+    var lines = std.mem.splitScalar(u8, list_result.stdout, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trimRight(u8, std.mem.trimLeft(u8, line, " "), " \r");
+        if (trimmed.len == 0) continue;
+        if (std.mem.indexOf(u8, trimmed, "..") != null) {
+            return error.UnsafePath;
+        }
+    }
+
+    // Now extract
     const result = std.process.Child.run(.{
         .allocator = alloc,
         .argv = &.{ "unzip", "-o", "-q", zip_path, "-d", dest },
@@ -389,14 +409,13 @@ fn extractZip(alloc: std.mem.Allocator, zip_path: []const u8, dest: []const u8) 
     }) catch return error.ExtractFailed;
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
-
     if (result.term.Exited != 0) return error.ExtractFailed;
 }
 
 fn extractTarGz(alloc: std.mem.Allocator, tar_path: []const u8, dest: []const u8) !void {
     const result = std.process.Child.run(.{
         .allocator = alloc,
-        .argv = &.{ "tar", "xzf", tar_path, "-C", dest },
+        .argv = &.{ "tar", "--no-same-permissions", "xzf", tar_path, "-C", dest },
         .max_output_bytes = 4096,
     }) catch return error.ExtractFailed;
     defer alloc.free(result.stdout);
