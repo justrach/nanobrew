@@ -40,13 +40,13 @@ pub fn installCask(alloc: std.mem.Allocator, cask: Cask) !void {
 
     try downloadArtifact(alloc, cask.url, dl_path, cask);
 
-    // 2. Create Caskroom entry
-    var caskroom_buf: [512]u8 = undefined;
-    const caskroom_path = cask.caskroomPath(&caskroom_buf);
+    // 2. Create Caskroom entry (use safe_token to avoid nested subdirs from tapped tokens)
     std.fs.makeDirAbsolute("/opt/nanobrew/prefix/Caskroom") catch {};
     var token_dir_buf: [512]u8 = undefined;
-    const token_dir = std.fmt.bufPrint(&token_dir_buf, "/opt/nanobrew/prefix/Caskroom/{s}", .{cask.token}) catch return error.PathTooLong;
+    const token_dir = std.fmt.bufPrint(&token_dir_buf, "/opt/nanobrew/prefix/Caskroom/{s}", .{safe_token}) catch return error.PathTooLong;
     std.fs.makeDirAbsolute(token_dir) catch {};
+    var caskroom_buf: [512]u8 = undefined;
+    const caskroom_path = std.fmt.bufPrint(&caskroom_buf, "/opt/nanobrew/prefix/Caskroom/{s}/{s}", .{ safe_token, cask.version }) catch return error.PathTooLong;
     std.fs.makeDirAbsolute(caskroom_path) catch {};
 
     // 3. Mount/extract based on format

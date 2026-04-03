@@ -58,10 +58,10 @@ pub fn buildFromSource(alloc: std.mem.Allocator, formula: Formula) !void {
             hex[idx * 2 + 1] = charset[byte & 0x0f];
         }
 
-        if (formula.source_sha256.len < 64) return error.VerifyFailed;
-        if (!std.mem.eql(u8, &hex, formula.source_sha256[0..64])) {
+        if (formula.source_sha256.len != 64) return error.VerifyFailed;
+        if (!std.mem.eql(u8, &hex, formula.source_sha256)) {
             stderr.print("nb: SHA256 mismatch for {s}\n    expected: {s}\n    got:      {s}\n", .{
-                formula.name, formula.source_sha256[0..64], &hex,
+                formula.name, formula.source_sha256, &hex,
             }) catch {};
             return error.Sha256Mismatch;
         }

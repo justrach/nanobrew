@@ -27,19 +27,19 @@ pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const 
         stderr.print("nb: patchelf not found — attempting auto-install...\n", .{}) catch {};
 
         // Try common Linux package managers
-        const install_cmds = [_][3][]const u8{
-            .{ "apt-get", "install", "-y" },
-            .{ "dnf", "install", "-y" },
-            .{ "yum", "install", "-y" },
-            .{ "apk", "add", "--no-cache" },
-            .{ "pacman", "-S", "--noconfirm" },
+        const install_cmds = [_][4][]const u8{
+            .{ "sudo", "apt-get", "install", "-y" },
+            .{ "sudo", "dnf", "install", "-y" },
+            .{ "sudo", "yum", "install", "-y" },
+            .{ "sudo", "apk", "add", "--no-cache" },
+            .{ "sudo", "pacman", "-S", "--noconfirm" },
         };
 
         var installed = false;
         for (install_cmds) |cmd| {
             const result = std.process.Child.run(.{
                 .allocator = alloc,
-                .argv = &.{ cmd[0], cmd[1], cmd[2], "patchelf" },
+                .argv = &.{ cmd[0], cmd[1], cmd[2], cmd[3], "patchelf" },
             }) catch continue;
             alloc.free(result.stdout);
             alloc.free(result.stderr);
