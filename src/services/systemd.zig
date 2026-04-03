@@ -92,11 +92,41 @@ pub fn isRunning(alloc: std.mem.Allocator, label: []const u8) bool {
     return result.term.Exited == 0;
 }
 
+pub fn isServiceFileSafe(content: []const u8, keg_prefix: []const u8) bool {
+    var lines = std.mem.splitScalar(u8, content, '\n');
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trimLeft(u8, line, " \t");
+        // Reject User=root
+        if (std.mem.startsWith(u8, trimmed, "User=")) {
+            const value = std.mem.trimLeft(u8, trimmed["User=".len..], " \t");
+            if (std.mem.eql(u8, value, "root")) return false;
+        }
+        // Validate ExecStart points within the keg
+        if (std.mem.startsWith(u8, trimmed, "ExecStart=")) {
+            const value = std.mem.trimLeft(u8, trimmed["ExecStart=".len..], " \t");
+            const exec_path = if (value.len > 0 and value[0] == '-') value[1..] else value;
+            const end = std.mem.indexOfAny(u8, exec_path, " \t") orelse exec_path.len;
+            const bin_path = exec_path[0..end];
+            if (!std.mem.startsWith(u8, bin_path, keg_prefix)) return false;
+        }
+    }
+    return true;
+}
+
 pub fn start(alloc: std.mem.Allocator, plist_path: []const u8) !void {
     // Install the service file and start it
     const basename = std.fs.path.basename(plist_path);
     var dest_buf: [512]u8 = undefined;
     const dest = std.fmt.bufPrint(&dest_buf, "/etc/systemd/system/{s}", .{basename}) catch return error.PathTooLong;
+
+    // Read and validate the service file
+    const svc_content = std.fs.cwd().readFileAlloc(alloc, plist_path, 64 * 1024) catch return error.SystemdFailed;
+    defer alloc.free(svc_content);
+    if (!isServiceFileSafe(svc_content, paths.CELLAR_DIR)) {
+        const err_writer = std.io.getStdErr().writer();
+        err_writer.print("nb: refusing to install unsafe service file: {s}\n", .{plist_path}) catch {};
+        return error.SystemdFailed;
+    }
 
     // Copy service file to systemd directory
     const cp = std.process.Child.run(.{
