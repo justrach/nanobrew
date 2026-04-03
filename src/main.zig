@@ -159,6 +159,7 @@ fn parseCommand(arg: []const u8) ?Command {
 
 fn runInit() void {
     const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stderr = std.fs.File.stderr().deprecatedWriter();
 
     const dirs = [_][]const u8{
         ROOT,
@@ -181,16 +182,21 @@ fn runInit() void {
         std.fs.makeDirAbsolute(dir) catch |err| switch (err) {
             error.PathAlreadyExists => continue,
             error.AccessDenied => {
-                const stderr = std.fs.File.stderr().deprecatedWriter();
                 stderr.print("nb: permission denied creating {s}\n", .{dir}) catch {};
                 stderr.print("nb: try: sudo nb init\n", .{}) catch {};
                 std.process.exit(1);
             },
             else => {
-                const stderr = std.fs.File.stderr().deprecatedWriter();
                 stderr.print("nb: error creating {s}: {}\n", .{ dir, err }) catch {};
                 std.process.exit(1);
             },
+        };
+    }
+
+    if (builtin.os.tag == .linux) {
+        std.fs.symLinkAbsolute(PREFIX, paths.ELF_FALLBACK_PREFIX, .{}) catch |err| switch (err) {
+            error.PathAlreadyExists => {},
+            else => stderr.print("nb: warning: failed to create Linux ELF fallback symlink: {}\n", .{err}) catch {},
         };
     }
 
@@ -207,7 +213,6 @@ fn runInit() void {
                 .argv = &.{ "chown", "-R", real_user, ROOT },
             }) catch {};
         } else {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
             stderr.print("nb: warning: SUDO_USER contains invalid characters, skipping chown\n", .{}) catch {};
         }
     }
@@ -337,6 +342,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     // Filter out already-installed packages (keg exists in Cellar)
     var to_install: std.ArrayList(nb.formula.Formula) = .empty;
     defer to_install.deinit(alloc);
+    var had_repair_error = false;
     for (all_formulae) |f| {
         var ver_buf: [256]u8 = undefined;
         const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf) orelse f.version;
@@ -357,9 +363,16 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             dir.close();
             // Already installed: rerun generic keg repair steps so stale text
             // placeholders and missing prefix links are healed too.
-            platform.relocate.relocateKeg(alloc, f.name, actual_ver) catch {};
+            platform.relocate.relocateKeg(alloc, f.name, actual_ver) catch |err| {
+                stderr.print("nb: {s}: relocate failed while repairing installed keg: {}\n", .{ f.name, err }) catch {};
+                had_repair_error = true;
+                continue;
+            };
             platform.relocate.replaceKegPlaceholders(f.name, actual_ver);
-            nb.linker.linkKeg(f.name, actual_ver) catch {};
+            nb.linker.linkKeg(f.name, actual_ver) catch |err| {
+                stderr.print("nb: {s}: link failed while repairing installed keg: {}\n", .{ f.name, err }) catch {};
+                had_repair_error = true;
+            };
         } else |_| {
             to_install.append(alloc, f) catch {};
         }
@@ -383,6 +396,8 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
                 stderr.print("nb: warning: failed to record {s} in database: {}\n", .{ f.name, err }) catch {};
             };
         }
+
+        if (had_repair_error) std.process.exit(1);
 
         const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
         const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
@@ -408,6 +423,12 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     // Single merged phase: Download → Extract → Materialize → Relocate → Link (all parallel)
     phase_timer = std.time.Timer.start() catch null;
     const pkg_count = install_order.len;
+    var had_pipeline_error = false;
+    const install_succeeded = alloc.alloc(bool, pkg_count) catch {
+        stderr.print("nb: out of memory\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer alloc.free(install_succeeded);
     stdout.print("==> Downloading + installing {d} packages...\n", .{pkg_count}) catch {};
     {
         // Allocate per-package phase tracking
@@ -461,15 +482,23 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             for (names, 0..) |name, i| {
                 const raw: u8 = phases[i].load(.acquire);
                 const phase: Phase = @enumFromInt(raw);
+                install_succeeded[i] = phase == .done;
                 if (phase == .done) {
                     stdout.print("    ✓ {s}\n", .{name}) catch {};
                 } else if (phase == .failed) {
                     stdout.print("    ✗ {s}\n", .{name}) catch {};
                 }
             }
+        } else {
+            for (phases, 0..) |p, i| {
+                const raw: u8 = p.load(.acquire);
+                const phase: Phase = @enumFromInt(raw);
+                install_succeeded[i] = phase == .done;
+            }
         }
 
-        if (had_error.load(.acquire)) {
+        had_pipeline_error = had_error.load(.acquire);
+        if (had_pipeline_error) {
             stderr.print("nb: some packages failed to install\n", .{}) catch {};
             // Re-print which packages failed so the user sees them after progress display
             for (names, 0..) |name, i| {
@@ -484,7 +513,6 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     }
     const pipeline_ms = if (phase_timer) |*pt| @as(f64, @floatFromInt(pt.read())) / 1_000_000.0 else 0;
     stdout.print("    [{d:.0}ms]\n", .{pipeline_ms}) catch {};
-
     // Record in database (must be serial — single file)
     // Also heal DB drift for packages that already existed in Cellar and were
     // therefore skipped from install_order during this run.
@@ -496,6 +524,14 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     for (all_formulae) |f| {
         var ver_buf6: [256]u8 = undefined;
         const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf6) orelse f.version;
+
+        var should_record = true;
+        for (install_order, 0..) |installed_f, i| {
+            if (!std.mem.eql(u8, installed_f.name, f.name)) continue;
+            should_record = install_succeeded[i];
+            break;
+        }
+        if (!should_record) continue;
 
         const existing = db.findKeg(f.name);
         if (existing) |keg| {
@@ -510,6 +546,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
     stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
+    if (had_pipeline_error) std.process.exit(1);
 }
 
 
@@ -666,6 +703,9 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf) orelse f.version;
     platform.relocate.relocateKeg(alloc, f.name, actual_ver) catch |err| {
         stderr.print("nb: {s}: relocate failed: {}\n", .{ f.name, err }) catch {};
+        had_error.store(true, .release);
+        phase.store(@intFromEnum(Phase.failed), .release);
+        return;
     };
 
     // 4b. Replace @@HOMEBREW_*@@ placeholders in text files (shebangs, scripts, configs)
@@ -1812,14 +1852,13 @@ fn runDoctor(alloc: std.mem.Allocator) void {
 
     // 6. Platform-specific checks
     if (comptime builtin.os.tag == .linux) {
-        // Check for patchelf (needed for ELF relocation)
+        // patchelf is optional now, but still expands Linux relocation coverage.
         const pe = std.process.Child.run(.{
             .allocator = alloc,
             .argv = &.{ "patchelf", "--version" },
         }) catch {
-            stdout.print("  ✗ patchelf not found (needed for binary relocation)\n", .{}) catch {};
-            stdout.print("    Install with: apt install patchelf\n", .{}) catch {};
-            issues += 1;
+            stdout.print("  ! patchelf not found (native fallback enabled, but some bottles may still need it)\n", .{}) catch {};
+            stdout.print("    Optional: apt install patchelf\n", .{}) catch {};
             printDoctorSummary(stdout, issues);
             return;
         };
@@ -1828,7 +1867,7 @@ fn runDoctor(alloc: std.mem.Allocator) void {
         if (pe.term.Exited == 0) {
             stdout.print("  ✓ patchelf installed\n", .{}) catch {};
         } else {
-            stdout.print("  ✗ patchelf not working\n", .{}) catch {};
+            stdout.print("  ! patchelf not working (native fallback enabled)\n", .{}) catch {};
             issues += 1;
         }
     }

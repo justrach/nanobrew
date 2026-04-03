@@ -313,25 +313,34 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
         if (deps_val == .array) {
             for (deps_val.array.items) |dep| {
                 if (dep == .string) {
-                    try deps.append(alloc, try allocDupe(alloc, dep.string));
+                    try appendUniqueDependency(alloc, &deps, dep.string);
                 }
             }
         }
     }
-    if (builtin.os.tag == .macos) {
+    if (root.get("variations")) |variations_val| {
+        if (variations_val == .object) {
+            if (variations_val.object.get(BOTTLE_TAG)) |platform_val| {
+                if (platform_val == .object) {
+                    if (platform_val.object.get("dependencies")) |platform_deps| {
+                        if (platform_deps == .array) {
+                            for (platform_deps.array.items) |dep| {
+                                if (dep == .string) {
+                                    try appendUniqueDependency(alloc, &deps, dep.string);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    if (builtin.os.tag == .macos or builtin.os.tag == .linux) {
         if (root.get("uses_from_macos")) |uses_val| {
             if (uses_val == .array) {
                 for (uses_val.array.items) |dep| {
-                    if (dep != .string) continue;
-                    var present = false;
-                    for (deps.items) |existing| {
-                        if (std.mem.eql(u8, existing, dep.string)) {
-                            present = true;
-                            break;
-                        }
-                    }
-                    if (!present) {
-                        try deps.append(alloc, try allocDupe(alloc, dep.string));
+                    if (dep == .string) {
+                        try appendUniqueDependency(alloc, &deps, dep.string);
                     }
                 }
             }
@@ -458,6 +467,13 @@ fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     return null;
 }
 
+fn appendUniqueDependency(alloc: std.mem.Allocator, deps: *std.ArrayList([]const u8), dep_name: []const u8) !void {
+    for (deps.items) |existing| {
+        if (std.mem.eql(u8, existing, dep_name)) return;
+    }
+    try deps.append(alloc, try allocDupe(alloc, dep_name));
+}
+
 fn allocDupe(alloc: std.mem.Allocator, s: []const u8) ![]const u8 {
     return alloc.dupe(u8, s);
 }
@@ -495,7 +511,7 @@ test "parseFormulaJson - parses dependencies array" {
     try testing.expectEqualStrings("x265", f.dependencies[2]);
 }
 
-test "parseFormulaJson - includes uses_from_macos on macOS" {
+test "parseFormulaJson - includes uses_from_macos on supported platforms" {
     const json =
         \\{"name":"python@3.14","desc":"","versions":{"stable":"3.14.3"},"revision":0,
         \\"dependencies":["mpdecimal"],
@@ -505,7 +521,7 @@ test "parseFormulaJson - includes uses_from_macos on macOS" {
     const f = try parseFormulaJson(testing.allocator, json);
     defer f.deinit(testing.allocator);
 
-    if (builtin.os.tag == .macos) {
+    if (builtin.os.tag == .macos or builtin.os.tag == .linux) {
         try testing.expectEqual(@as(usize, 3), f.dependencies.len);
         try testing.expectEqualStrings("mpdecimal", f.dependencies[0]);
         try testing.expectEqualStrings("expat", f.dependencies[1]);
@@ -513,6 +529,24 @@ test "parseFormulaJson - includes uses_from_macos on macOS" {
     } else {
         try testing.expectEqual(@as(usize, 1), f.dependencies.len);
         try testing.expectEqualStrings("mpdecimal", f.dependencies[0]);
+    }
+}
+
+test "parseFormulaJson - merges platform variation dependencies" {
+    const json =
+        \\{"name":"vim","desc":"","versions":{"stable":"9.2.0250"},"revision":0,
+        \\"dependencies":["libsodium","lua@5.4","ncurses","python@3.14","ruby","gettext"],
+        \\"variations":{"x86_64_linux":{"dependencies":["libsodium","lua@5.4","ncurses","python@3.14","ruby","acl"]}},
+        \\"bottle":{"stable":{"rebuild":0,"files":{"arm64_sonoma":{"url":"https://ghcr.io/bottle/vim-macos","sha256":"beef"},"x86_64_linux":{"url":"https://ghcr.io/bottle/vim","sha256":"cafe"}}}}}
+    ;
+    const f = try parseFormulaJson(testing.allocator, json);
+    defer f.deinit(testing.allocator);
+
+    if (builtin.os.tag == .linux and builtin.cpu.arch == .x86_64) {
+        try testing.expectEqual(@as(usize, 7), f.dependencies.len);
+        try testing.expectEqualStrings("acl", f.dependencies[6]);
+    } else {
+        try testing.expectEqual(@as(usize, 6), f.dependencies.len);
     }
 }
 

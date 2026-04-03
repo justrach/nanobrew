@@ -23,9 +23,12 @@ const TEXT_EXTS = [_][]const u8{ ".pc", ".cmake", ".la", ".sh", ".cfg" };
 pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const u8) !void {
     hasPatchelf(alloc) catch |err| switch (err) {
         error.PatchelfNotFound => {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
-            stderr.print("nb: {s}: patchelf not found; install it and rerun `nb reinstall {s}`\n", .{ name, name }) catch {};
-            return error.PatchelfNotFound;
+            relocateKegWithoutPatchelf(alloc, name, version) catch {
+                const stderr = std.fs.File.stderr().deprecatedWriter();
+                stderr.print("nb: {s}: patchelf not found; install it and rerun `nb reinstall {s}`\n", .{ name, name }) catch {};
+                return error.PatchelfNotFound;
+            };
+            return;
         },
         else => return err,
     };
@@ -54,6 +57,32 @@ pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const 
     relocateLaFiles(lib_path) catch {};
 }
 
+fn relocateKegWithoutPatchelf(alloc: std.mem.Allocator, name: []const u8, version: []const u8) !void {
+    var keg_buf: [512]u8 = undefined;
+    const keg_dir = std.fmt.bufPrint(&keg_buf, "{s}/{s}/{s}", .{ paths.CELLAR_DIR, name, version }) catch return error.PathTooLong;
+
+    var unresolved_any = false;
+
+    for (ELF_DIRS) |subdir| {
+        var sub_buf: [512]u8 = undefined;
+        const sub_path = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ keg_dir, subdir }) catch continue;
+        walkAndRelocateWithoutPatchelf(alloc, sub_path, &unresolved_any) catch {};
+    }
+
+    const text_dirs = [_][]const u8{ "lib/pkgconfig", "lib/cmake", "share/pkgconfig", "lib64/pkgconfig" };
+    for (text_dirs) |subdir| {
+        var sub_buf: [512]u8 = undefined;
+        const sub_path = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ keg_dir, subdir }) catch continue;
+        walkAndRelocateText(sub_path) catch {};
+    }
+
+    var lib_buf: [512]u8 = undefined;
+    const lib_path = std.fmt.bufPrint(&lib_buf, "{s}/lib", .{keg_dir}) catch return;
+    relocateLaFiles(lib_path) catch {};
+
+    if (unresolved_any) return error.PatchelfNotFound;
+}
+
 fn hasPatchelf(alloc: std.mem.Allocator) !void {
     const result = std.process.Child.run(.{
         .allocator = alloc,
@@ -79,6 +108,30 @@ fn walkAndRelocate(alloc: std.mem.Allocator, dir_path: []const u8) !void {
         switch (entry.kind) {
             .directory => walkAndRelocate(alloc, child_path) catch {},
             .file => relocateFile(alloc, child_path),
+            else => {},
+        }
+    }
+}
+
+fn walkAndRelocateWithoutPatchelf(
+    alloc: std.mem.Allocator,
+    dir_path: []const u8,
+    unresolved_any: *bool,
+) !void {
+    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return;
+    defer dir.close();
+
+    var iter = dir.iterate();
+    while (iter.next() catch null) |entry| {
+        var child_buf: [2048]u8 = undefined;
+        const child_path = std.fmt.bufPrint(&child_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
+
+        switch (entry.kind) {
+            .directory => walkAndRelocateWithoutPatchelf(alloc, child_path, unresolved_any) catch {},
+            .file => {
+                const result = relocateFileWithoutPatchelf(alloc, child_path);
+                unresolved_any.* = unresolved_any.* or result.unresolved;
+            },
             else => {},
         }
     }
@@ -139,6 +192,100 @@ fn relocateFile(alloc: std.mem.Allocator, path: []const u8) void {
 
     // Use patchelf to fix rpath
     patchelfRelocate(alloc, path);
+}
+
+const NativeRelocateResult = struct {
+    unresolved: bool = false,
+};
+
+fn relocateFileWithoutPatchelf(alloc: std.mem.Allocator, path: []const u8) NativeRelocateResult {
+    var result = NativeRelocateResult{};
+
+    var file = std.fs.openFileAbsolute(path, .{ .mode = .read_write }) catch return result;
+    defer file.close();
+
+    var header: [16]u8 = undefined;
+    const n = file.read(&header) catch return result;
+    if (n < 16) return result;
+    if (!std.mem.eql(u8, header[0..4], &ELF_MAGIC)) return result;
+
+    file.seekTo(0) catch return result;
+    const data = file.readToEndAlloc(alloc, 32 * 1024 * 1024) catch return result;
+    defer alloc.free(data);
+
+    if (std.mem.indexOf(u8, data, "@@HOMEBREW") == null) return result;
+
+    const interp = detectInterpreterFromBytes(data) orelse {
+        result.unresolved = true;
+        return result;
+    };
+
+    if (!replaceElfPlaceholderStringsInPlace(data, interp)) {
+        result.unresolved = true;
+        return result;
+    }
+
+    file.seekTo(0) catch return result;
+    file.writeAll(data) catch return result;
+
+    if (std.mem.indexOf(u8, data, "@@HOMEBREW") != null) {
+        result.unresolved = true;
+    }
+    return result;
+}
+
+fn replaceElfPlaceholderStringsInPlace(data: []u8, interp: []const u8) bool {
+    var i: usize = 0;
+    while (i < data.len) {
+        const end_rel = std.mem.indexOfScalar(u8, data[i..], 0) orelse break;
+        const end = i + end_rel;
+        if (end > i and std.mem.indexOf(u8, data[i..end], "@@HOMEBREW") != null) {
+            const src = data[i..end];
+            var buf: [8192]u8 = undefined;
+            if (src.len > buf.len) return false;
+            const replaced = replaceElfString(buf[0..src.len], src, interp) orelse return false;
+            @memset(data[i..end], 0);
+            @memcpy(data[i..][0..replaced.len], replaced);
+        }
+        i = end + 1;
+    }
+    return true;
+}
+
+fn replaceElfString(buf: []u8, src: []const u8, interp: []const u8) ?[]const u8 {
+    const interp_placeholder = "@@HOMEBREW_PREFIX@@/lib/ld.so";
+
+    var out_len: usize = 0;
+    var i: usize = 0;
+    while (i < src.len) {
+        if (std.mem.startsWith(u8, src[i..], interp_placeholder)) {
+            if (out_len + interp.len > buf.len) return null;
+            @memcpy(buf[out_len..][0..interp.len], interp);
+            out_len += interp.len;
+            i += interp_placeholder.len;
+            continue;
+        }
+        if (std.mem.startsWith(u8, src[i..], paths.PLACEHOLDER_PREFIX)) {
+            if (out_len + paths.ELF_FALLBACK_PREFIX.len > buf.len) return null;
+            @memcpy(buf[out_len..][0..paths.ELF_FALLBACK_PREFIX.len], paths.ELF_FALLBACK_PREFIX);
+            out_len += paths.ELF_FALLBACK_PREFIX.len;
+            i += paths.PLACEHOLDER_PREFIX.len;
+            continue;
+        }
+        if (std.mem.startsWith(u8, src[i..], paths.PLACEHOLDER_REPOSITORY)) {
+            if (out_len + paths.ELF_FALLBACK_REPOSITORY.len > buf.len) return null;
+            @memcpy(buf[out_len..][0..paths.ELF_FALLBACK_REPOSITORY.len], paths.ELF_FALLBACK_REPOSITORY);
+            out_len += paths.ELF_FALLBACK_REPOSITORY.len;
+            i += paths.PLACEHOLDER_REPOSITORY.len;
+            continue;
+        }
+        if (std.mem.startsWith(u8, src[i..], paths.PLACEHOLDER_CELLAR)) return null;
+        if (out_len >= buf.len) return null;
+        buf[out_len] = src[i];
+        out_len += 1;
+        i += 1;
+    }
+    return buf[0..out_len];
 }
 
 fn elfContainsPlaceholder(file: std.fs.File) bool {
@@ -260,6 +407,17 @@ fn detectInterpreter(path: []const u8) ?[]const u8 {
 
     // e_machine is at offset 18, little-endian u16
     const e_machine = std.mem.readInt(u16, header[18..20], .little);
+    return interpreterForMachine(e_machine);
+}
+
+fn detectInterpreterFromBytes(data: []const u8) ?[]const u8 {
+    if (data.len < 20) return null;
+    if (!std.mem.eql(u8, data[0..4], &ELF_MAGIC)) return null;
+    const e_machine = std.mem.readInt(u16, data[18..20], .little);
+    return interpreterForMachine(e_machine);
+}
+
+fn interpreterForMachine(e_machine: u16) ?[]const u8 {
     return switch (e_machine) {
         0xB7 => "/lib/ld-linux-aarch64.so.1", // EM_AARCH64
         0x3E => "/lib64/ld-linux-x86-64.so.2", // EM_X86_64

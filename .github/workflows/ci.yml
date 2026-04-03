@@ -69,6 +69,9 @@ jobs:
           test -d /opt/nanobrew/prefix/opt || (echo "FAIL: opt/ directory not created by nb init" && exit 1)
           echo "PASS: opt/ directory exists"
 
+      - name: Linux relocation fallback regression
+        run: bash tests/linux-relocation-failure.sh ./zig-out/bin/nb
+
       - name: Deb parity test
         continue-on-error: true  # Known Zig std.http.Client + musl TLS segfault
         run: bash tests/deb-parity.sh ./zig-out/bin/nb
