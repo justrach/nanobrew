@@ -39,6 +39,8 @@ pub const DebRecord = struct {
 };
 
 pub const Database = struct {
+    pub const MAX_DB_SIZE = 16 * 1024 * 1024; // 16 MiB
+
     alloc: std.mem.Allocator,
     kegs: std.ArrayList(Keg),
     casks: std.ArrayList(CaskRecord),
@@ -57,11 +59,15 @@ pub const Database = struct {
         const file = std.fs.openFileAbsolute(DB_PATH, .{}) catch return db;
         defer file.close();
 
-        var buf: [1024 * 1024]u8 = undefined;
-        const n = file.readAll(&buf) catch return db;
-        if (n == 0) return db;
+        const content = file.readToEndAlloc(alloc, MAX_DB_SIZE) catch |err| {
+            const stderr = std.fs.File.stderr().deprecatedWriter();
+            stderr.print("nb: warning: could not read state database: {}\n", .{err}) catch {};
+            return db;
+        };
+        defer alloc.free(content);
+        if (content.len == 0) return db;
 
-        const parsed = std.json.parseFromSlice(std.json.Value, alloc, buf[0..n], .{}) catch {
+        const parsed = std.json.parseFromSlice(std.json.Value, alloc, content, .{}) catch {
             std.fs.File.stderr().deprecatedWriter().writeAll("warning: nanobrew database parse failed; returning empty database. File may be corrupted: " ++ DB_PATH ++ "\n") catch {};
             return db;
         };
