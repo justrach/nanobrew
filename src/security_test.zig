@@ -9,7 +9,7 @@ const testing = std.testing;
 // Import the modules under test
 const Database = @import("db/database.zig").Database;
 const version = @import("version.zig");
-const extract = @import("deb/extract.zig");
+const extract = @import("security/path.zig");
 const placeholder = @import("platform/placeholder.zig");
 
 // ────────────────────────────────────────────────────────────────────────

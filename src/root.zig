@@ -80,10 +80,9 @@ comptime {
     _ = @import("platform/placeholder.zig");
     _ = relocate;
 
-    // Deb subsystem
+    // Deb subsystem (extract excluded — heavy compression, tested via test-deb-extract)
     _ = deb_index;
     _ = deb_resolver;
-    _ = deb_extract;
     _ = deb_distro;
 
     // Kernel / low-level

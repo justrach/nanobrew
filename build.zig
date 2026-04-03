@@ -67,6 +67,17 @@ pub fn build(b: *std.Build) void {
     // "zig build test" depends on the last suite (which chains to all previous)
     if (last_run) |last| test_step.dependOn(last);
 
+    // Heavy test (opt-in, not in default "test"): compression-heavy deb extraction
+    const extract_mod = b.createModule(.{
+        .root_source_file = b.path("src/test_deb_extract.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    const extract_tests = b.addTest(.{ .root_module = extract_mod });
+    const run_extract = b.addRunArtifact(extract_tests);
+    const extract_step = b.step("test-deb-extract", "Run deb extraction tests (slow — compiles compression libs)");
+    extract_step.dependOn(&run_extract.step);
+
     // ── Linux cross-compilation convenience targets ──
     const linux_x86 = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,

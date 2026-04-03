@@ -145,15 +145,7 @@ pub fn runPostinst(alloc: std.mem.Allocator, deb_path: []const u8, pkg_name: []c
 }
 
 /// Validate that a tar file path is safe (no traversal, no absolute escape).
-pub fn isPathSafe(path: []const u8) bool {
-    if (path.len == 0) return false;
-    // Check for ".." components that could traverse outside prefix
-    var components = std.mem.splitScalar(u8, path, '/');
-    while (components.next()) |comp| {
-        if (std.mem.eql(u8, comp, "..")) return false;
-    }
-    return true;
-}
+pub const isPathSafe = @import("../security/path.zig").isPathSafe;
 
 /// List files inside a tar archive (for tracking installed files).
 /// Rejects paths with traversal components ("..") for safety.
