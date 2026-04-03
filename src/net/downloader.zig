@@ -246,8 +246,15 @@ pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
     const dest_path = std.fmt.bufPrint(&dest_path_buf, "{s}/{s}", .{ BLOBS_DIR, req.expected_sha256 }) catch return error.PathTooLong;
 
     // Rewrite bottle URL if NANOBREW_BOTTLE_DOMAIN or HOMEBREW_BOTTLE_DOMAIN is set (#74)
-    const bottle_domain = std.posix.getenv("NANOBREW_BOTTLE_DOMAIN") orelse
-        std.posix.getenv("HOMEBREW_BOTTLE_DOMAIN");
+    const bottle_domain: ?[]const u8 = blk: {
+        if (std.posix.getenv("NANOBREW_BOTTLE_DOMAIN")) |d| {
+            if (std.mem.startsWith(u8, d, "https://") and d.len > "https://".len) break :blk d;
+        }
+        if (std.posix.getenv("HOMEBREW_BOTTLE_DOMAIN")) |d| {
+            if (std.mem.startsWith(u8, d, "https://") and d.len > "https://".len) break :blk d;
+        }
+        break :blk null;
+    };
     var rewritten_url_buf: [2048]u8 = undefined;
     const effective_url = if (bottle_domain) |domain| blk: {
         const ghcr_prefix = "https://ghcr.io/v2/homebrew/core/";

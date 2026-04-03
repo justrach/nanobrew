@@ -11,6 +11,7 @@ const Database = @import("db/database.zig").Database;
 const version = @import("version.zig");
 const extract = @import("deb/extract.zig");
 const placeholder = @import("platform/placeholder.zig");
+const client = @import("api/client.zig");
 
 // ────────────────────────────────────────────────────────────────────────
 // 1. Path traversal in package names
@@ -316,33 +317,33 @@ test "isPathSafe handles very long paths" {
 }
 
 test "symlink target resolved path must stay within dest_dir" {
-    // Simulates: symlink at "usr/bin/link" -> target "../../etc/passwd"
-    // Resolved: dest_dir + usr/bin -> up 2 -> etc/passwd = dest_dir/etc/passwd — OK (within dest_dir)
-    // But: symlink at "usr/bin/link" -> target "../../../etc/passwd"
-    // Resolved: dest_dir + usr/bin -> up 3 -> escapes dest_dir — REJECT
-
     try testing.expect(extract.isLinkTargetSafe("usr/bin/link", "../../etc/passwd", "/tmp/dest"));
     try testing.expect(extract.isLinkTargetSafe("usr/bin/link", "../lib/libfoo.so", "/tmp/dest"));
     try testing.expect(!extract.isLinkTargetSafe("usr/bin/link", "../../../etc/passwd", "/tmp/dest"));
     try testing.expect(!extract.isLinkTargetSafe("a/link", "../../outside", "/tmp/dest"));
-    // Absolute symlink targets always escape
     try testing.expect(!extract.isLinkTargetSafe("usr/bin/link", "/etc/passwd", "/tmp/dest"));
-    // Null bytes in target
     try testing.expect(!extract.isLinkTargetSafe("usr/bin/link", "../lib\x00/../../etc/passwd", "/tmp/dest"));
 }
 
 test "tar extraction strips setuid and setgid bits from mode" {
-    // The extraction mode mask should strip setuid (04000), setgid (02000),
-    // and sticky (01000) bits. Only rwxrwxrwx (0o777) should be preserved.
-    const raw_mode: u32 = 0o4755; // setuid + rwxr-xr-x
-    const safe_mode = raw_mode & 0o0777;
-    try testing.expectEqual(@as(u32, 0o0755), safe_mode);
+    const raw_mode: u32 = 0o4755;
+    try testing.expectEqual(@as(u32, 0o0755), raw_mode & 0o0777);
+    const raw_mode2: u32 = 0o6755;
+    try testing.expectEqual(@as(u32, 0o0755), raw_mode2 & 0o0777);
+    const raw_mode3: u32 = 0o1755;
+    try testing.expectEqual(@as(u32, 0o0755), raw_mode3 & 0o0777);
+}
 
-    const raw_mode2: u32 = 0o6755; // setuid + setgid
-    const safe_mode2 = raw_mode2 & 0o0777;
-    try testing.expectEqual(@as(u32, 0o0755), safe_mode2);
+// ────────────────────────────────────────────────────────────────────────
+// 11. HTTPS enforcement for API and bottle domain env var overrides
+// ────────────────────────────────────────────────────────────────────────
 
-    const raw_mode3: u32 = 0o1755; // sticky
-    const safe_mode3 = raw_mode3 & 0o0777;
-    try testing.expectEqual(@as(u32, 0o0755), safe_mode3);
+test "isValidDomainOverride rejects non-HTTPS URLs" {
+    try testing.expect(!client.isValidDomainOverride("http://evil.com/api/"));
+    try testing.expect(!client.isValidDomainOverride("ftp://evil.com/"));
+    try testing.expect(!client.isValidDomainOverride("javascript:alert(1)"));
+    try testing.expect(!client.isValidDomainOverride(""));
+    try testing.expect(!client.isValidDomainOverride("file:///etc/passwd"));
+    try testing.expect(client.isValidDomainOverride("https://formulae.brew.sh/api/formula/"));
+    try testing.expect(client.isValidDomainOverride("https://my-mirror.example.com/"));
 }

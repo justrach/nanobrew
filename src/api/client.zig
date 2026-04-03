@@ -16,15 +16,29 @@ const fetch = @import("../net/fetch.zig");
 const API_BASE = "https://formulae.brew.sh/api/formula/";
 const CASK_API_BASE = "https://formulae.brew.sh/api/cask/";
 
+pub fn isValidDomainOverride(url: []const u8) bool {
+    return std.mem.startsWith(u8, url, "https://") and url.len > "https://".len;
+}
+
 /// Get API formula base, respecting NANOBREW_API_DOMAIN / HOMEBREW_API_DOMAIN env vars (#74)
 fn apiFormulaBase() []const u8 {
-    return std.posix.getenv("NANOBREW_API_DOMAIN") orelse
-        std.posix.getenv("HOMEBREW_API_DOMAIN") orelse API_BASE;
+    if (std.posix.getenv("NANOBREW_API_DOMAIN")) |d| {
+        if (isValidDomainOverride(d)) return d;
+    }
+    if (std.posix.getenv("HOMEBREW_API_DOMAIN")) |d| {
+        if (isValidDomainOverride(d)) return d;
+    }
+    return API_BASE;
 }
 
 fn apiCaskBase() []const u8 {
-    return std.posix.getenv("NANOBREW_API_DOMAIN") orelse
-        std.posix.getenv("HOMEBREW_API_DOMAIN") orelse CASK_API_BASE;
+    if (std.posix.getenv("NANOBREW_API_DOMAIN")) |d| {
+        if (isValidDomainOverride(d)) return d;
+    }
+    if (std.posix.getenv("HOMEBREW_API_DOMAIN")) |d| {
+        if (isValidDomainOverride(d)) return d;
+    }
+    return CASK_API_BASE;
 }
 const API_CACHE_DIR = @import("../platform/paths.zig").API_CACHE_DIR;
 
