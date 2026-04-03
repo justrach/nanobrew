@@ -21,6 +21,47 @@ const TEXT_EXTS = [_][]const u8{ ".pc", ".cmake", ".la", ".sh", ".cfg" };
 
 /// Relocate all ELF files and text configs in a keg.
 pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const u8) !void {
+    // Check for patchelf upfront — without it, ELF relocation cannot work.
+    hasPatchelf(alloc) catch {
+        const stderr = std.fs.File.stderr().deprecatedWriter();
+        stderr.print("nb: patchelf not found — attempting auto-install...\n", .{}) catch {};
+
+        // Try common Linux package managers
+        const install_cmds = [_][3][]const u8{
+            .{ "apt-get", "install", "-y" },
+            .{ "dnf", "install", "-y" },
+            .{ "yum", "install", "-y" },
+            .{ "apk", "add", "--no-cache" },
+            .{ "pacman", "-S", "--noconfirm" },
+        };
+
+        var installed = false;
+        for (install_cmds) |cmd| {
+            const result = std.process.Child.run(.{
+                .allocator = alloc,
+                .argv = &.{ cmd[0], cmd[1], cmd[2], "patchelf" },
+            }) catch continue;
+            alloc.free(result.stdout);
+            alloc.free(result.stderr);
+            if (result.term == .Exited and result.term.Exited == 0) {
+                installed = true;
+                break;
+            }
+        }
+
+        if (installed) {
+            hasPatchelf(alloc) catch {
+                stderr.print("nb: {s}: patchelf install succeeded but binary not functional\n", .{name}) catch {};
+                return error.PatchelfNotFound;
+            };
+            stderr.print("nb: patchelf installed successfully\n", .{}) catch {};
+        } else {
+            stderr.print("nb: {s}: could not auto-install patchelf — ELF binary relocation skipped\n", .{name}) catch {};
+            stderr.print("nb: install patchelf manually (e.g. apt install patchelf) and re-run: nb reinstall {s}\n", .{name}) catch {};
+            return error.PatchelfNotFound;
+        }
+    };
+
     var keg_buf: [512]u8 = undefined;
     const keg_dir = std.fmt.bufPrint(&keg_buf, "{s}/{s}/{s}", .{ paths.CELLAR_DIR, name, version }) catch return error.PathTooLong;
 
@@ -43,6 +84,16 @@ pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const 
     var lib_buf: [512]u8 = undefined;
     const lib_path = std.fmt.bufPrint(&lib_buf, "{s}/lib", .{keg_dir}) catch return;
     relocateLaFiles(lib_path) catch {};
+}
+
+fn hasPatchelf(alloc: std.mem.Allocator) !void {
+    const result = std.process.Child.run(.{
+        .allocator = alloc,
+        .argv = &.{ "patchelf", "--version" },
+    }) catch return error.PatchelfNotFound;
+    alloc.free(result.stdout);
+    alloc.free(result.stderr);
+    if (result.term != .Exited or result.term.Exited != 0) return error.PatchelfNotFound;
 }
 
 fn walkAndRelocate(alloc: std.mem.Allocator, dir_path: []const u8) !void {
