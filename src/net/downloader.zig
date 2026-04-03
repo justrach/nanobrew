@@ -286,7 +286,8 @@ pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
     // Download with native HTTP + streaming SHA256
     const uri = std.Uri.parse(effective_url) catch return error.DownloadFailed;
     var http_req = client.request(.GET, uri, .{
-        .redirect_behavior = @enumFromInt(5),
+        // Reduced from 5; HTTPS-to-HTTP downgrade not yet detectable in std.http
+        .redirect_behavior = @enumFromInt(3),
         .extra_headers = extra_headers,
     }) catch return error.DownloadFailed;
     defer http_req.deinit();

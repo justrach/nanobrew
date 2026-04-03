@@ -20,7 +20,8 @@ pub fn get(alloc: std.mem.Allocator, url: []const u8) ![]u8 {
 pub fn getWithClient(alloc: std.mem.Allocator, client: *std.http.Client, url: []const u8) ![]u8 {
     const uri = std.Uri.parse(url) catch return error.InvalidUrl;
     var req = client.request(.GET, uri, .{
-        .redirect_behavior = @enumFromInt(5),
+        // Reduced from 5; HTTPS-to-HTTP downgrade not yet detectable in std.http
+        .redirect_behavior = @enumFromInt(3),
     }) catch return error.FetchFailed;
 
     req.sendBodiless() catch {
@@ -85,7 +86,8 @@ pub fn download(alloc: std.mem.Allocator, url: []const u8, dest_path: []const u8
 pub fn downloadWithClient(client: *std.http.Client, url: []const u8, dest_path: []const u8) !void {
     const uri = std.Uri.parse(url) catch return error.InvalidUrl;
     var req = client.request(.GET, uri, .{
-        .redirect_behavior = @enumFromInt(5),
+        // Reduced from 5; HTTPS-to-HTTP downgrade not yet detectable in std.http
+        .redirect_behavior = @enumFromInt(3),
     }) catch return error.FetchFailed;
 
     req.sendBodiless() catch {
