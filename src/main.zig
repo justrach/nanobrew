@@ -2076,6 +2076,7 @@ fn runOutdated(alloc: std.mem.Allocator) void {
 
         var client: std.http.Client = .{ .allocator = alloc };
         defer client.deinit();
+        client.initDefaultProxies(alloc) catch {};
 
         var url_buf: [512]u8 = undefined;
         const index_url = std.fmt.bufPrint(&url_buf, "{s}/dists/{s}/main/binary-{s}/Packages.gz", .{
@@ -2449,6 +2450,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
     // Native HTTP client — shared across all downloads (connection reuse)
     var client: std.http.Client = .{ .allocator = alloc };
     defer client.deinit();
+    client.initDefaultProxies(alloc) catch {};
 
     // Fetch and merge package indices from all components (main + universe)
     var all_pkgs_list: std.ArrayList(nb.deb_index.DebPackage) = .empty;
@@ -2718,6 +2720,7 @@ fn runDebUpgrade(alloc: std.mem.Allocator) void {
 
     var client: std.http.Client = .{ .allocator = alloc };
     defer client.deinit();
+    client.initDefaultProxies(alloc) catch {};
 
     var all_pkgs_list: std.ArrayList(nb.deb_index.DebPackage) = .empty;
     defer {

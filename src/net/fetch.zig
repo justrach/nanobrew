@@ -12,6 +12,7 @@ const flate = std.compress.flate;
 pub fn get(alloc: std.mem.Allocator, url: []const u8) ![]u8 {
     var client: std.http.Client = .{ .allocator = alloc };
     defer client.deinit();
+    client.initDefaultProxies(alloc) catch {};
     return getWithClient(alloc, &client, url);
 }
 
@@ -76,6 +77,7 @@ fn decompressGzip(alloc: std.mem.Allocator, data: []const u8) ![]u8 {
 pub fn download(alloc: std.mem.Allocator, url: []const u8, dest_path: []const u8) !void {
     var client: std.http.Client = .{ .allocator = alloc };
     defer client.deinit();
+    client.initDefaultProxies(alloc) catch {};
     return downloadWithClient(&client, url, dest_path);
 }
 

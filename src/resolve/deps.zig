@@ -16,12 +16,14 @@ pub const DepResolver = struct {
     client: ?std.http.Client,
 
     pub fn init(alloc: std.mem.Allocator) DepResolver {
-        return .{
+        var resolver: DepResolver = .{
             .alloc = alloc,
             .formulae = std.StringHashMap(Formula).init(alloc),
             .edges = std.StringHashMap([]const []const u8).init(alloc),
             .client = std.http.Client{ .allocator = alloc },
         };
+        if (resolver.client) |*c| c.initDefaultProxies(alloc) catch {};
+        return resolver;
     }
 
     pub fn deinit(self: *DepResolver) void {
