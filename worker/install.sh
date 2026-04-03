@@ -35,7 +35,7 @@ if [ -z "$LATEST" ]; then
     exit 1
 fi
 # Validate tag format to prevent URL injection
-if ! echo "$LATEST" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+'; then
+if ! echo "$LATEST" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+[a-zA-Z0-9._-]*$'; then
   echo "  Error: invalid release tag format: $LATEST"
   exit 1
 fi
@@ -49,30 +49,32 @@ echo "  Downloading nb ($ARCH_LABEL)..."
 TMPDIR_DL="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_DL"' EXIT
 
-curl -fsSL "$URL" -o "$TMPDIR_DL/$TARBALL"
-
-# Download and verify SHA256 checksum
+# Download checksum first (small, fail fast if release is incomplete)
 SHA_URL="${URL}.sha256"
-echo "  Verifying SHA256 checksum..."
-if curl -fsSL "$SHA_URL" -o "$TMPDIR_DL/$TARBALL.sha256" 2>/dev/null; then
-  EXPECTED=$(cut -d' ' -f1 < "$TMPDIR_DL/$TARBALL.sha256")
-  # Validate checksum format
-  if ! echo "$EXPECTED" | grep -qE '^[0-9a-f]{64}$'; then
+echo "  Fetching SHA256 checksum..."
+if ! curl -fsSL "$SHA_URL" -o "$TMPDIR_DL/$TARBALL.sha256"; then
+    echo "  Error: could not download SHA256 checksum file"
+    exit 1
+fi
+EXPECTED=$(cut -d' ' -f1 < "$TMPDIR_DL/$TARBALL.sha256")
+if ! echo "$EXPECTED" | grep -qE '^[0-9a-f]{64}$'; then
     echo "  Error: invalid SHA256 format in checksum file"
     exit 1
-  fi
-  ACTUAL=$(shasum -a 256 "$TMPDIR_DL/$TARBALL" | cut -d' ' -f1)
-  if [ "$EXPECTED" != "$ACTUAL" ]; then
+fi
+
+# Download tarball
+curl -fsSL "$URL" -o "$TMPDIR_DL/$TARBALL"
+
+# Verify integrity
+echo "  Verifying SHA256 checksum..."
+ACTUAL=$(shasum -a 256 "$TMPDIR_DL/$TARBALL" | cut -d' ' -f1)
+if [ "$EXPECTED" != "$ACTUAL" ]; then
     echo "  Error: SHA256 verification failed!"
     echo "  Expected: $EXPECTED"
     echo "  Actual:   $ACTUAL"
     exit 1
-  fi
-  echo "  SHA256 verified."
-else
-  echo "  Error: could not download SHA256 checksum file"
-  exit 1
 fi
+echo "  SHA256 verified."
 
 tar --no-same-permissions -xzf "$TMPDIR_DL/$TARBALL" -C "$TMPDIR_DL"
 
