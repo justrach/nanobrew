@@ -1370,8 +1370,27 @@ fn runUpdate(alloc: std.mem.Allocator) void {
         }
     }
 
+    // Generate random suffix for temp paths to prevent symlink attacks
+    var rand_buf: [8]u8 = undefined;
+    std.crypto.random.bytes(&rand_buf);
+    var rand_hex: [16]u8 = undefined;
+    const rand_charset = "0123456789abcdef";
+    for (rand_buf, 0..) |byte, i| {
+        rand_hex[i * 2] = rand_charset[byte >> 4];
+        rand_hex[i * 2 + 1] = rand_charset[byte & 0x0f];
+    }
+    var tmp_tar_buf: [256]u8 = undefined;
+    const tmp_tar = std.fmt.bufPrint(&tmp_tar_buf, "{s}/cache/nb-update-{s}.tar.gz", .{ ROOT, &rand_hex }) catch {
+        stderr.print("nb: update failed: path too long\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    var tmp_dir_buf: [256]u8 = undefined;
+    const tmp_dir = std.fmt.bufPrint(&tmp_dir_buf, "{s}/cache/nb-update-{s}", .{ ROOT, &rand_hex }) catch {
+        stderr.print("nb: update failed: path too long\n", .{}) catch {};
+        std.process.exit(1);
+    };
+
     // Download tarball to temp file
-    const tmp_tar = ROOT ++ "/cache/nb-update.tar.gz";
     nb.fetch.download(alloc, tarball_url, tmp_tar) catch {
         stderr.print("nb: update failed: could not download release tarball\n", .{}) catch {};
         std.process.exit(1);
@@ -1422,9 +1441,12 @@ fn runUpdate(alloc: std.mem.Allocator) void {
         std.process.exit(1);
     };
 
-    // Extract tarball using tar (to a temp directory)
-    const tmp_dir = ROOT ++ "/cache/nb-update-extract";
-    std.fs.makeDirAbsolute(tmp_dir) catch {};
+    // Extract tarball using tar (to a temp directory — must not already exist)
+    std.fs.makeDirAbsolute(tmp_dir) catch |err| {
+        stderr.print("nb: update failed: could not create temp dir: {}\n", .{err}) catch {};
+        std.fs.deleteFileAbsolute(tmp_tar) catch {};
+        std.process.exit(1);
+    };
 
     var extract = std.process.Child.init(
         &.{ "tar", "xzf", tmp_tar, "-C", tmp_dir },
@@ -1460,46 +1482,66 @@ fn runUpdate(alloc: std.mem.Allocator) void {
         },
     }
 
-    // Replace current binary — use cp to handle cross-device moves
-    const extracted_bin = tmp_dir ++ "/nb";
-    var replace = std.process.Child.init(
-        &.{ "cp", "-f", extracted_bin, exe_path },
-        std.heap.page_allocator,
-    );
-    replace.stdout_behavior = .Ignore;
-    replace.stderr_behavior = .Inherit;
-
-    replace.spawn() catch {
-        stderr.print("nb: update failed: could not replace binary\n", .{}) catch {};
-        std.fs.deleteFileAbsolute(tmp_tar) catch {};
+    // Replace current binary atomically: copy to staged temp, then rename
+    var extracted_bin_buf: [512]u8 = undefined;
+    const extracted_bin = std.fmt.bufPrint(&extracted_bin_buf, "{s}/nb", .{tmp_dir}) catch {
         std.process.exit(1);
     };
 
-    const replace_term = replace.wait() catch {
-        stderr.print("nb: update failed: binary replacement error\n", .{}) catch {};
-        std.fs.deleteFileAbsolute(tmp_tar) catch {};
+    // Stage: write to a temp location on the same filesystem as the executable
+    var staged_buf: [512]u8 = undefined;
+    const staged_path = std.fmt.bufPrint(&staged_buf, "{s}.new-{s}", .{ exe_path, &rand_hex }) catch {
         std.process.exit(1);
     };
 
-    switch (replace_term) {
-        .Exited => |code| {
-            if (code != 0) {
-                stderr.print("nb: update failed: could not replace binary (exit {d})\n", .{code}) catch {};
-                std.fs.deleteFileAbsolute(tmp_tar) catch {};
-                std.process.exit(1);
-            }
-        },
-        else => {
-            stderr.print("nb: update failed: binary replacement terminated abnormally\n", .{}) catch {};
+    // Copy extracted binary to staged path
+    {
+        const src = std.fs.openFileAbsolute(extracted_bin, .{}) catch {
+            stderr.print("nb: update failed: extracted binary not found\n", .{}) catch {};
             std.fs.deleteFileAbsolute(tmp_tar) catch {};
+            std.fs.deleteTreeAbsolute(tmp_dir) catch {};
             std.process.exit(1);
-        },
+        };
+        defer src.close();
+        const dst = std.fs.createFileAbsolute(staged_path, .{ .mode = 0o755 }) catch {
+            stderr.print("nb: update failed: could not create staged binary\n", .{}) catch {};
+            std.fs.deleteFileAbsolute(tmp_tar) catch {};
+            std.fs.deleteTreeAbsolute(tmp_dir) catch {};
+            std.process.exit(1);
+        };
+        defer dst.close();
+        var copy_buf: [65536]u8 = undefined;
+        while (true) {
+            const n = src.read(&copy_buf) catch {
+                stderr.print("nb: update failed: could not read extracted binary\n", .{}) catch {};
+                std.fs.deleteFileAbsolute(tmp_tar) catch {};
+                std.fs.deleteTreeAbsolute(tmp_dir) catch {};
+                std.fs.deleteFileAbsolute(staged_path) catch {};
+                std.process.exit(1);
+            };
+            if (n == 0) break;
+            dst.writeAll(copy_buf[0..n]) catch {
+                stderr.print("nb: update failed: could not write staged binary\n", .{}) catch {};
+                std.fs.deleteFileAbsolute(tmp_tar) catch {};
+                std.fs.deleteTreeAbsolute(tmp_dir) catch {};
+                std.fs.deleteFileAbsolute(staged_path) catch {};
+                std.process.exit(1);
+            };
+        }
     }
+
+    // Atomic rename: replaces the executable in one syscall
+    std.fs.renameAbsolute(staged_path, exe_path) catch |err| {
+        stderr.print("nb: update failed: could not rename binary: {}\n", .{err}) catch {};
+        std.fs.deleteFileAbsolute(staged_path) catch {};
+        std.fs.deleteFileAbsolute(tmp_tar) catch {};
+        std.fs.deleteTreeAbsolute(tmp_dir) catch {};
+        std.process.exit(1);
+    };
 
     // Cleanup temp files
     std.fs.deleteFileAbsolute(tmp_tar) catch {};
-    std.fs.deleteFileAbsolute(extracted_bin) catch {};
-    std.fs.deleteDirAbsolute(tmp_dir) catch {};
+    std.fs.deleteTreeAbsolute(tmp_dir) catch {};
 
     stdout.print("==> Updated nanobrew to v{s} (was v{s})\n", .{ latest_ver, VERSION }) catch {};
 }
