@@ -35,18 +35,20 @@ pub fn build(b: *std.Build) void {
     run_step.dependOn(&run_cmd.step);
 
     // ── Tests ──
-    // Each subsystem compiles and runs as a separate binary.
-    // "zig build test" runs all of them in parallel (less CPU than one monolith).
+    // Each subsystem is a separate binary. "zig build test" runs them sequentially
+    // to avoid CPU spikes from parallel compilation. Run individually with
+    // "zig build test-api", "zig build test-deb", etc.
     const test_suites = [_]struct { name: []const u8, src: []const u8, desc: []const u8 }{
-        .{ .name = "test-api", .src = "src/test_api.zig", .desc = "Run API tests (client, formula, cask, tap)" },
-        .{ .name = "test-deb", .src = "src/test_deb.zig", .desc = "Run .deb subsystem tests" },
         .{ .name = "test-platform", .src = "src/test_platform.zig", .desc = "Run platform layer tests" },
         .{ .name = "test-core", .src = "src/test_core.zig", .desc = "Run core module tests (version, deps, db, store, kernel)" },
+        .{ .name = "test-api", .src = "src/test_api.zig", .desc = "Run API tests (client, formula, cask, tap)" },
         .{ .name = "test-security", .src = "src/test_security.zig", .desc = "Run security tests" },
+        .{ .name = "test-deb", .src = "src/test_deb.zig", .desc = "Run .deb subsystem tests" },
     };
 
-    const test_step = b.step("test", "Run all unit tests");
+    const test_step = b.step("test", "Run all unit tests (sequentially)");
 
+    var last_run: ?*std.Build.Step = null;
     for (test_suites) |suite| {
         const suite_mod = b.createModule(.{
             .root_source_file = b.path(suite.src),
@@ -55,12 +57,15 @@ pub fn build(b: *std.Build) void {
         });
         const suite_tests = b.addTest(.{ .root_module = suite_mod });
         const run_suite = b.addRunArtifact(suite_tests);
+        // Chain sequentially: each suite waits for the previous one
+        if (last_run) |prev| run_suite.step.dependOn(prev);
+        last_run = &run_suite.step;
         // Individual targets (zig build test-api, etc.)
         const suite_step = b.step(suite.name, suite.desc);
         suite_step.dependOn(&run_suite.step);
-        // Also wire into "zig build test" (all run in parallel)
-        test_step.dependOn(&run_suite.step);
     }
+    // "zig build test" depends on the last suite (which chains to all previous)
+    if (last_run) |last| test_step.dependOn(last);
 
     // ── Linux cross-compilation convenience targets ──
     const linux_x86 = b.resolveTargetQuery(.{
