@@ -24,34 +24,37 @@ pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const 
     hasPatchelf(alloc) catch {
         const stderr = std.fs.File.stderr().deprecatedWriter();
         stderr.print("nb: patchelf not found — attempting auto-install...\n", .{}) catch {};
-        const install_cmds = [_][4][]const u8{
-            .{ "sudo", "apt-get", "install", "-y" },
-            .{ "sudo", "dnf", "install", "-y" },
-            .{ "sudo", "yum", "install", "-y" },
-            .{ "sudo", "apk", "add", "--no-cache" },
-            .{ "sudo", "pacman", "-S", "--noconfirm" },
+
+        // Try without sudo first (works in containers/root), then with sudo
+        const install_cmds = [_][]const []const u8{
+            &.{ "apt-get", "install", "-y", "patchelf" },
+            &.{ "dnf", "install", "-y", "patchelf" },
+            &.{ "yum", "install", "-y", "patchelf" },
+            &.{ "apk", "add", "--no-cache", "patchelf" },
+            &.{ "pacman", "-S", "--noconfirm", "patchelf" },
+            &.{ "sudo", "apt-get", "install", "-y", "patchelf" },
+            &.{ "sudo", "dnf", "install", "-y", "patchelf" },
+            &.{ "sudo", "yum", "install", "-y", "patchelf" },
+            &.{ "sudo", "apk", "add", "--no-cache", "patchelf" },
+            &.{ "sudo", "pacman", "-S", "--noconfirm", "patchelf" },
         };
-        var installed = false;
         for (install_cmds) |cmd| {
             const result = std.process.Child.run(.{
                 .allocator = alloc,
-                .argv = &.{ cmd[0], cmd[1], cmd[2], cmd[3], "patchelf" },
+                .argv = cmd,
             }) catch continue;
             alloc.free(result.stdout);
             alloc.free(result.stderr);
-            if (result.term == .Exited and result.term.Exited == 0) { installed = true; break; }
+            if (result.term == .Exited and result.term.Exited == 0) break;
         }
-        if (installed) {
-            hasPatchelf(alloc) catch {
-                stderr.print("nb: {s}: patchelf install succeeded but binary not functional\n", .{name}) catch {};
-                return error.PatchelfNotFound;
-            };
-            stderr.print("nb: patchelf installed successfully\n", .{}) catch {};
-        } else {
-            stderr.print("nb: {s}: could not auto-install patchelf — ELF binary relocation skipped\n", .{name}) catch {};
+
+        // Always recheck — handles race condition in parallel installs
+        hasPatchelf(alloc) catch {
+            stderr.print("nb: {s}: could not install patchelf — ELF binary relocation skipped\n", .{name}) catch {};
             stderr.print("nb: install patchelf manually (e.g. apt install patchelf) and re-run: nb reinstall {s}\n", .{name}) catch {};
             return error.PatchelfNotFound;
-        }
+        };
+        stderr.print("nb: patchelf installed successfully\n", .{}) catch {};
     };
 
     var keg_buf: [512]u8 = undefined;
