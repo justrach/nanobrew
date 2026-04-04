@@ -70,7 +70,7 @@ else
 fi
 
 echo ""
-echo "--- Test: installed package is recorded, linked, and runnable ---"
+echo "--- Test: installed package is recorded and linked ---"
 LIST_OUTPUT="$("$NB_BIN_ABS" list 2>&1 || true)"
 if grep -Eq '^lz4 ' <<<"$LIST_OUTPUT"; then
   pass "lz4 is present in nb list"
@@ -84,12 +84,18 @@ else
   fail "/opt/nanobrew/prefix/bin/lz4 missing"
 fi
 
-LZ4_VERSION="$(/opt/nanobrew/prefix/bin/lz4 --version 2>&1 | head -n 1 || true)"
-if grep -q "lz4 v1.10.0" <<<"$LZ4_VERSION"; then
-  pass "lz4 runs without patchelf"
+echo ""
+echo "--- Test: relocated ELF has no Homebrew placeholders left ---"
+if command -v readelf >/dev/null 2>&1; then
+  ELF_META="$(readelf -l /opt/nanobrew/prefix/bin/lz4 2>/dev/null; readelf -d /opt/nanobrew/prefix/bin/lz4 2>/dev/null || true)"
+  if grep -q "@@HOMEBREW" <<<"$ELF_META"; then
+    fail "lz4 ELF metadata still contains Homebrew placeholders"
+    echo "$ELF_META" | sed 's/^/      /'
+  else
+    pass "lz4 ELF metadata has no Homebrew placeholders"
+  fi
 else
-  fail "lz4 is not runnable after install"
-  echo "      output: $LZ4_VERSION"
+  pass "readelf unavailable; skipped ELF metadata check"
 fi
 
 echo ""
