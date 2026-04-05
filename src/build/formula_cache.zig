@@ -62,10 +62,34 @@ pub fn getVerifiedFormula(alloc: std.mem.Allocator, name: []const u8, version: [
 
     // Try to download fresh content
     const fresh_content = fetch.get(alloc, url) catch |err| {
-        // Network failure: try cached content
+        // Network failure: try cached content with hash verification
         const cached = std.fs.cwd().readFileAlloc(alloc, cache_path, 10 * 1024 * 1024) catch {
             return err;
         };
+
+        // Verify cached content against stored hash pin
+        var stored_hash: [64]u8 = undefined;
+        const hash_file = std.fs.openFileAbsolute(hash_path, .{}) catch {
+            alloc.free(cached);
+            return err;
+        };
+        defer hash_file.close();
+        const n = hash_file.readAll(&stored_hash) catch {
+            alloc.free(cached);
+            return err;
+        };
+        if (n != 64) {
+            alloc.free(cached);
+            return err;
+        }
+        var cached_hex: [64]u8 = undefined;
+        computeSha256Hex(cached, &cached_hex);
+        if (!std.mem.eql(u8, &cached_hex, &stored_hash)) {
+            stderr.print("nb: WARNING: cached formula for {s} has been tampered with\n", .{name}) catch {};
+            alloc.free(cached);
+            return error.FormulaSourceChanged;
+        }
+
         stderr.print("nb: warning: network fetch failed for {s}, using cached formula\n", .{name}) catch {};
         return cached;
     };
@@ -94,18 +118,32 @@ pub fn getVerifiedFormula(alloc: std.mem.Allocator, name: []const u8, version: [
         }
     } else |_| {}
 
-    // First fetch: create cache directory, write content and hash
+    // First fetch: create cache directory, write content and hash.
+    // Fail closed: if we cannot persist the hash pin, do not return content —
+    // otherwise we have trust-on-first-use with no persisted hash to verify later.
     std.fs.makeDirAbsolute(FORMULA_CACHE_DIR) catch {};
 
-    if (std.fs.createFileAbsolute(cache_path, .{})) |file| {
-        defer file.close();
-        file.writeAll(fresh_content) catch {};
-    } else |_| {}
+    const cache_file = std.fs.createFileAbsolute(cache_path, .{}) catch {
+        alloc.free(fresh_content);
+        return error.CacheWriteFailed;
+    };
+    cache_file.writeAll(fresh_content) catch {
+        cache_file.close();
+        alloc.free(fresh_content);
+        return error.CacheWriteFailed;
+    };
+    cache_file.close();
 
-    if (std.fs.createFileAbsolute(hash_path, .{})) |file| {
-        defer file.close();
-        file.writeAll(&fresh_hex) catch {};
-    } else |_| {}
+    const pin_file = std.fs.createFileAbsolute(hash_path, .{}) catch {
+        alloc.free(fresh_content);
+        return error.CacheWriteFailed;
+    };
+    pin_file.writeAll(&fresh_hex) catch {
+        pin_file.close();
+        alloc.free(fresh_content);
+        return error.CacheWriteFailed;
+    };
+    pin_file.close();
 
     return fresh_content;
 }
