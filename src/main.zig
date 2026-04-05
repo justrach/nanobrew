@@ -1494,6 +1494,14 @@ fn runUpdate(alloc: std.mem.Allocator) void {
         std.process.exit(1);
     };
 
+    // Preserve the existing binary's permission mode; fall back to 0o755
+    const existing_mode: std.posix.mode_t = blk: {
+        const exe_file = std.fs.openFileAbsolute(exe_path, .{}) catch break :blk 0o755;
+        defer exe_file.close();
+        const st = exe_file.stat() catch break :blk 0o755;
+        break :blk st.mode & 0o7777;
+    };
+
     // Copy extracted binary to staged path
     {
         const src = std.fs.openFileAbsolute(extracted_bin, .{}) catch {
@@ -1503,7 +1511,7 @@ fn runUpdate(alloc: std.mem.Allocator) void {
             std.process.exit(1);
         };
         defer src.close();
-        const dst = std.fs.createFileAbsolute(staged_path, .{ .mode = 0o755 }) catch {
+        const dst = std.fs.createFileAbsolute(staged_path, .{ .mode = existing_mode }) catch {
             stderr.print("nb: update failed: could not create staged binary\n", .{}) catch {};
             std.fs.deleteFileAbsolute(tmp_tar) catch {};
             std.fs.deleteTreeAbsolute(tmp_dir) catch {};
