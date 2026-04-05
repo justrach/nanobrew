@@ -391,12 +391,14 @@ fn extractZip(alloc: std.mem.Allocator, zip_path: []const u8, dest: []const u8) 
     defer alloc.free(list_result.stdout);
     defer alloc.free(list_result.stderr);
 
-    // Scan listed paths for traversal
+    // Scan listed paths for traversal sequences ("../" or "/..")
     var lines = std.mem.splitScalar(u8, list_result.stdout, '\n');
     while (lines.next()) |line| {
         const trimmed = std.mem.trimRight(u8, std.mem.trimLeft(u8, line, " "), " \r");
         if (trimmed.len == 0) continue;
-        if (std.mem.indexOf(u8, trimmed, "..") != null) {
+        if (std.mem.indexOf(u8, trimmed, "../") != null or
+            std.mem.indexOf(u8, trimmed, "/..") != null)
+        {
             return error.UnsafePath;
         }
     }
@@ -415,7 +417,7 @@ fn extractZip(alloc: std.mem.Allocator, zip_path: []const u8, dest: []const u8) 
 fn extractTarGz(alloc: std.mem.Allocator, tar_path: []const u8, dest: []const u8) !void {
     const result = std.process.Child.run(.{
         .allocator = alloc,
-        .argv = &.{ "tar", "--no-same-permissions", "xzf", tar_path, "-C", dest },
+        .argv = &.{ "tar", "-xzf", tar_path, "--no-same-permissions", "-C", dest },
         .max_output_bytes = 4096,
     }) catch return error.ExtractFailed;
     defer alloc.free(result.stdout);
