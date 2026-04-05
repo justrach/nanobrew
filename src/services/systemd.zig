@@ -108,6 +108,7 @@ pub fn isServiceFileSafe(content: []const u8, keg_prefix: []const u8) bool {
             const end = std.mem.indexOfAny(u8, exec_path, " \t") orelse exec_path.len;
             const bin_path = exec_path[0..end];
             if (!std.mem.startsWith(u8, bin_path, keg_prefix)) return false;
+            if (std.mem.indexOf(u8, bin_path, "..") != null) return false;
         }
     }
     return true;

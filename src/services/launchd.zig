@@ -102,6 +102,23 @@ pub fn isPlistSafe(content: []const u8, keg_prefix: []const u8) bool {
                 if (std.mem.indexOf(u8, rest, "</string>")) |end| {
                     const prog_path = rest[0..end];
                     if (!std.mem.startsWith(u8, prog_path, keg_prefix)) return false;
+                    if (std.mem.indexOf(u8, prog_path, "..") != null) return false;
+                }
+            }
+        }
+    }
+
+    // Check Program — single <string> value must also start with keg_prefix
+    if (std.mem.indexOf(u8, content, "<key>Program</key>")) |idx| {
+        const after = content[idx..];
+        if (std.mem.indexOf(u8, after, "<string>")) |s_idx| {
+            const str_start = s_idx + "<string>".len;
+            if (str_start < after.len) {
+                const rest = after[str_start..];
+                if (std.mem.indexOf(u8, rest, "</string>")) |end| {
+                    const prog_path = rest[0..end];
+                    if (!std.mem.startsWith(u8, prog_path, keg_prefix)) return false;
+                    if (std.mem.indexOf(u8, prog_path, "..") != null) return false;
                 }
             }
         }
