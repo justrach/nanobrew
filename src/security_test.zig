@@ -14,6 +14,8 @@ const placeholder = @import("platform/placeholder.zig");
 const store = @import("store/store.zig");
 const client = @import("api/client.zig");
 
+const postinstall = @import("build/postinstall.zig");
+
 // ────────────────────────────────────────────────────────────────────────
 // 1. Path traversal in package names
 // ────────────────────────────────────────────────────────────────────────
@@ -347,6 +349,77 @@ test "isValidDomainOverride rejects non-HTTPS URLs" {
     try testing.expect(!client.isValidDomainOverride("file:///etc/passwd"));
     try testing.expect(client.isValidDomainOverride("https://formulae.brew.sh/api/formula/"));
     try testing.expect(client.isValidDomainOverride("https://my-mirror.example.com/"));
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// 10. Shell injection in post-install script parsing
+// ────────────────────────────────────────────────────────────────────────
+
+test "parseSystemCall returns separate argv elements, not a flat shell string" {
+    const alloc = testing.allocator;
+    const keg = "/opt/nanobrew/prefix/Cellar/test/1.0";
+
+    // Simulate: system "/bin/rm", "-rf", "/"
+    // The old code would join this into "/bin/rm -rf /" and pass to /bin/sh -c
+    // The new code must return separate argv elements
+    const parsed = postinstall.parseSystemCall(alloc, "\"/bin/rm\", \"/tmp/target\"", keg) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer parsed.deinit(alloc);
+
+    // Must have exactly 2 separate argv elements — NOT a single shell string
+    try testing.expectEqual(@as(usize, 2), parsed.argv.len);
+    try testing.expectEqualStrings("/bin/rm", parsed.argv[0]);
+    try testing.expectEqualStrings("/tmp/target", parsed.argv[1]);
+
+    // Verify: the result is an argv slice, not a flat string that could be
+    // passed to /bin/sh -c. Each argument is its own element.
+    // If this were the old code, it would be a single "rm /tmp/target" string.
+}
+
+test "parseSystemCall preserves shell metacharacters as data, not commands" {
+    const alloc = testing.allocator;
+    const keg = "/opt/nanobrew/prefix/Cellar/test/1.0";
+
+    // Shell metacharacters in arguments must remain literal data in argv
+    // elements and never be interpreted by a shell.
+    const parsed = postinstall.parseSystemCall(
+        alloc,
+        "\"/usr/bin/echo\", \"/tmp/hello; rm -rf /\", \"/tmp/$(whoami)\"",
+        keg,
+    ) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer parsed.deinit(alloc);
+
+    try testing.expectEqual(@as(usize, 3), parsed.argv.len);
+    try testing.expectEqualStrings("/usr/bin/echo", parsed.argv[0]);
+    // The semicolon and rm command must be a single literal argument,
+    // not split or interpreted by a shell. Because the value starts
+    // with '/', resolvePath returns it verbatim.
+    try testing.expectEqualStrings("/tmp/hello; rm -rf /", parsed.argv[1]);
+    // The $() must be a literal string, not a command substitution
+    try testing.expectEqualStrings("/tmp/$(whoami)", parsed.argv[2]);
+}
+
+test "parseSystemCall with backtick injection stays as argv element" {
+    const alloc = testing.allocator;
+    const keg = "/opt/nanobrew/prefix/Cellar/test/1.0";
+
+    const parsed = postinstall.parseSystemCall(
+        alloc,
+        "\"/usr/bin/env\", \"/tmp/`cat /etc/shadow`\"",
+        keg,
+    ) orelse {
+        return error.TestUnexpectedResult;
+    };
+    defer parsed.deinit(alloc);
+
+    try testing.expectEqual(@as(usize, 2), parsed.argv.len);
+    try testing.expectEqualStrings("/usr/bin/env", parsed.argv[0]);
+    // Backticks must be preserved as literal text in the argument,
+    // not interpreted as shell command substitution
+    try testing.expectEqualStrings("/tmp/`cat /etc/shadow`", parsed.argv[1]);
 }
 
 // ────────────────────────────────────────────────────────────────────────
