@@ -516,6 +516,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
 
 /// Render live progress UI with spinners and checkmarks.
 /// Blocks until all packages reach .done or .failed.
+/// Batches all writes into a single stack buffer per frame to minimise syscalls.
 fn renderProgress(
     stdout_file: std.fs.File,
     names: []const []const u8,
@@ -540,11 +541,15 @@ fn renderProgress(
     // Reserve N lines
     for (0..n) |_| stdout_file.writeAll("\n") catch {};
 
+    // Stack buffer for one full frame — one syscall per frame instead of ~10-20.
+    var frame_buf: [4096]u8 = undefined;
+
     while (true) {
+        var stream = std.io.fixedBufferStream(&frame_buf);
+        const writer = stream.writer();
+
         // Move cursor up N lines
-        var esc_buf: [16]u8 = undefined;
-        const esc = std.fmt.bufPrint(&esc_buf, "\x1b[{d}A", .{n}) catch "";
-        stdout_file.writeAll(esc) catch {};
+        writer.print("\x1b[{d}A", .{n}) catch {};
 
         var all_done = true;
         for (names, 0..) |name, i| {
@@ -552,30 +557,32 @@ fn renderProgress(
             const phase: Phase = @enumFromInt(raw);
 
             // Clear line
-            stdout_file.writeAll("\x1b[2K") catch {};
+            writer.writeAll("\x1b[2K") catch {};
 
             switch (phase) {
                 .done => {
-                    stdout_file.writeAll("    \x1b[32m✓\x1b[0m ") catch {};
-                    stdout_file.writeAll(name) catch {};
-                    stdout_file.writeAll("\n") catch {};
+                    writer.writeAll("    \x1b[32m✓\x1b[0m ") catch {};
+                    writer.writeAll(name) catch {};
+                    writer.writeAll("\n") catch {};
                 },
                 .failed => {
-                    stdout_file.writeAll("    \x1b[31m✗\x1b[0m ") catch {};
-                    stdout_file.writeAll(name) catch {};
-                    stdout_file.writeAll("\n") catch {};
+                    writer.writeAll("    \x1b[31m✗\x1b[0m ") catch {};
+                    writer.writeAll(name) catch {};
+                    writer.writeAll("\n") catch {};
                 },
                 else => {
                     all_done = false;
                     const fi = tick % frame_count;
                     const start = fi * frame_bytes;
-                    stdout_file.writeAll("    ") catch {};
-                    stdout_file.writeAll(spinner[start .. start + frame_bytes]) catch {};
-                    stdout_file.writeAll(" ") catch {};
-                    stdout_file.writeAll(name) catch {};
-                    // Pad to align phase labels
-                    var pad: usize = max_len - name.len + 1;
-                    while (pad > 0) : (pad -= 1) stdout_file.writeAll(" ") catch {};
+                    writer.writeAll("    ") catch {};
+                    writer.writeAll(spinner[start .. start + frame_bytes]) catch {};
+                    writer.writeAll(" ") catch {};
+                    writer.writeAll(name) catch {};
+                    // Pad to align phase labels — write all spaces in one call
+                    const pad = max_len - name.len + 1;
+                    var spaces: [64]u8 = undefined;
+                    @memset(&spaces, ' ');
+                    writer.writeAll(spaces[0..@min(pad, 64)]) catch {};
                     const label: []const u8 = switch (phase) {
                         .waiting => "waiting...",
                         .downloading => "downloading...",
@@ -585,11 +592,14 @@ fn renderProgress(
                         .linking => "linking...",
                         .done, .failed => unreachable,
                     };
-                    stdout_file.writeAll(label) catch {};
-                    stdout_file.writeAll("\n") catch {};
+                    writer.writeAll(label) catch {};
+                    writer.writeAll("\n") catch {};
                 },
             }
         }
+
+        // Flush entire frame in one syscall
+        stdout_file.writeAll(stream.getWritten()) catch {};
 
         if (all_done) break;
 
