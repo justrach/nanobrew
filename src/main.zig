@@ -666,6 +666,8 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf) orelse f.version;
     platform.relocate.relocateKeg(alloc, f.name, actual_ver) catch |err| {
         stderr.print("nb: {s}: relocate failed: {}\n", .{ f.name, err }) catch {};
+        had_error.store(true, .release);
+        return;
     };
 
     // 4b. Replace @@HOMEBREW_*@@ placeholders in text files (shebangs, scripts, configs)
@@ -675,6 +677,8 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     phase.store(@intFromEnum(Phase.linking), .release);
     nb.linker.linkKeg(f.name, actual_ver) catch |err| {
         stderr.print("nb: {s}: link failed: {}\n", .{ f.name, err }) catch {};
+        had_error.store(true, .release);
+        return;
     };
 
     // 6. Post-install (non-fatal)
