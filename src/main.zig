@@ -737,10 +737,24 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
             continue;
         };
 
-        nb.linker.unlinkKeg(name, keg.version) catch {};
-        nb.cellar.remove(name, keg.version) catch {};
-        db.recordRemoval(name, alloc) catch {};
-        stdout.print("==> Removed {s}\n", .{name}) catch {};
+        var remove_ok = true;
+        nb.linker.unlinkKeg(name, keg.version) catch |err| {
+            stderr.print("nb: error: failed to unlink {s}: {}\n", .{ name, err }) catch {};
+            remove_ok = false;
+        };
+        nb.cellar.remove(name, keg.version) catch |err| {
+            stderr.print("nb: error: failed to remove keg for {s}: {}\n", .{ name, err }) catch {};
+            remove_ok = false;
+        };
+        db.recordRemoval(name, alloc) catch |err| {
+            stderr.print("nb: error: failed to update database for {s}: {}\n", .{ name, err }) catch {};
+            remove_ok = false;
+        };
+        if (remove_ok) {
+            stdout.print("==> Removed {s}\n", .{name}) catch {};
+        } else {
+            stderr.print("nb: {s} partially removed — check errors above\n", .{name}) catch {};
+        }
     }
 }
 
