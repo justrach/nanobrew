@@ -139,12 +139,12 @@ fn startsWithKeyword(line: []const u8, keyword: []const u8) bool {
 
 fn parseRubyCommand(alloc: std.mem.Allocator, line: []const u8, name: []const u8, keg_path: []const u8) ?ParsedCommand {
     _ = name;
-    // system "cmd", "arg1", "arg2" → argv: [cmd, arg1, arg2]
+    // system "cmd", "arg1", "arg2" -> argv: [cmd, arg1, arg2]
     if (std.mem.startsWith(u8, line, "system ")) {
         return parseSystemCall(alloc, line["system ".len..], keg_path);
     }
 
-    // (prefix/"path").mkpath → argv: [mkdir, -p, path]
+    // (prefix/"path").mkpath -> argv: [mkdir, -p, path]
     if (std.mem.indexOf(u8, line, ".mkpath")) |_| {
         if (extractPathExpr(line)) |path_expr| {
             const resolved = resolvePath(alloc, path_expr, keg_path) catch return null;
@@ -152,7 +152,7 @@ fn parseRubyCommand(alloc: std.mem.Allocator, line: []const u8, name: []const u8
         }
     }
 
-    // mkdir_p "path" → argv: [mkdir, -p, path]
+    // mkdir_p "path" -> argv: [mkdir, -p, path]
     if (std.mem.startsWith(u8, line, "mkdir_p ")) {
         if (extractQuotedString(line["mkdir_p ".len..])) |path| {
             const resolved = resolvePath(alloc, path, keg_path) catch return null;
@@ -160,7 +160,7 @@ fn parseRubyCommand(alloc: std.mem.Allocator, line: []const u8, name: []const u8
         }
     }
 
-    // ln_sf source, target → argv: [ln, -sf, source, target]
+    // ln_sf source, target -> argv: [ln, -sf, source, target]
     if (std.mem.startsWith(u8, line, "ln_sf ")) {
         return parseLnSf(alloc, line["ln_sf ".len..], keg_path);
     }
@@ -184,10 +184,14 @@ fn buildArgv3(alloc: std.mem.Allocator, arg0: []const u8, arg1: []const u8, owne
 }
 
 pub fn parseSystemCall(alloc: std.mem.Allocator, args_str: []const u8, keg_path: []const u8) ?ParsedCommand {
+    return parseSystemCallInner(alloc, args_str, keg_path) catch null;
+}
+
+fn parseSystemCallInner(alloc: std.mem.Allocator, args_str: []const u8, keg_path: []const u8) !ParsedCommand {
     var parts: std.ArrayList([]const u8) = .empty;
-    defer {
-        // On failure, free any already-resolved parts
-        // (on success, ownership transfers to the returned ParsedCommand)
+    errdefer {
+        for (parts.items) |p| alloc.free(p);
+        parts.deinit(alloc);
     }
 
     var rest = args_str;
@@ -196,12 +200,11 @@ pub fn parseSystemCall(alloc: std.mem.Allocator, args_str: []const u8, keg_path:
         if (rest.len == 0) break;
 
         if (extractQuotedString(rest)) |quoted| {
-            const resolved = resolvePath(alloc, quoted, keg_path) catch return null;
+            const resolved = try resolvePath(alloc, quoted, keg_path);
+            // resolved ownership transfers to parts on append; free directly on failure.
             parts.append(alloc, resolved) catch {
                 alloc.free(resolved);
-                for (parts.items) |p| alloc.free(p);
-                parts.deinit(alloc);
-                return null;
+                return error.OutOfMemory;
             };
             // Advance past the quoted string + quotes + comma
             const skip = std.mem.indexOf(u8, rest[1..], &[_]u8{rest[0]});
@@ -211,56 +214,38 @@ pub fn parseSystemCall(alloc: std.mem.Allocator, args_str: []const u8, keg_path:
         } else break;
     }
 
-    if (parts.items.len == 0) {
-        parts.deinit(alloc);
-        return null;
-    }
+    if (parts.items.len == 0) return error.NoArgs;
 
     // Transfer the items into a standalone argv slice
-    const argv = alloc.dupe([]const u8, parts.items) catch {
-        for (parts.items) |p| alloc.free(p);
-        parts.deinit(alloc);
-        return null;
-    };
+    const argv = try alloc.dupe([]const u8, parts.items);
     parts.deinit(alloc);
     return .{ .argv = argv };
 }
 
 fn parseLnSf(alloc: std.mem.Allocator, args_str: []const u8, keg_path: []const u8) ?ParsedCommand {
+    return parseLnSfInner(alloc, args_str, keg_path) catch null;
+}
+
+fn parseLnSfInner(alloc: std.mem.Allocator, args_str: []const u8, keg_path: []const u8) !ParsedCommand {
     // Parse: "source", "target" or source, target
     var rest = std.mem.trim(u8, args_str, " \t");
-    const src = extractQuotedString(rest) orelse return null;
+    const src = extractQuotedString(rest) orelse return error.ParseFailed;
     // Skip past first quoted string
-    const skip = std.mem.indexOf(u8, rest[1..], &[_]u8{rest[0]});
-    if (skip == null) return null;
-    rest = std.mem.trim(u8, rest[skip.? + 2..], " \t,");
-    const tgt = extractQuotedString(rest) orelse return null;
+    const skip = std.mem.indexOf(u8, rest[1..], &[_]u8{rest[0]}) orelse return error.ParseFailed;
+    rest = std.mem.trim(u8, rest[skip + 2..], " \t,");
+    const tgt = extractQuotedString(rest) orelse return error.ParseFailed;
 
-    const rsrc = resolvePath(alloc, src, keg_path) catch return null;
-    const rtgt = resolvePath(alloc, tgt, keg_path) catch {
-        alloc.free(rsrc);
-        return null;
-    };
+    const rsrc = try resolvePath(alloc, src, keg_path);
+    errdefer alloc.free(rsrc);
+    const rtgt = try resolvePath(alloc, tgt, keg_path);
+    errdefer alloc.free(rtgt);
 
-    const a0 = alloc.dupe(u8, "ln") catch {
-        alloc.free(rsrc);
-        alloc.free(rtgt);
-        return null;
-    };
-    const a1 = alloc.dupe(u8, "-sf") catch {
-        alloc.free(a0);
-        alloc.free(rsrc);
-        alloc.free(rtgt);
-        return null;
-    };
+    const a0 = try alloc.dupe(u8, "ln");
+    errdefer alloc.free(a0);
+    const a1 = try alloc.dupe(u8, "-sf");
+    errdefer alloc.free(a1);
 
-    const argv = alloc.alloc([]const u8, 4) catch {
-        alloc.free(a0);
-        alloc.free(a1);
-        alloc.free(rsrc);
-        alloc.free(rtgt);
-        return null;
-    };
+    const argv = try alloc.alloc([]const u8, 4);
     argv[0] = a0;
     argv[1] = a1;
     argv[2] = rsrc;
