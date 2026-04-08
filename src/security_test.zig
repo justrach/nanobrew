@@ -438,3 +438,12 @@ test "database MAX_DB_SIZE is larger than old 1 MiB limit" {
     try testing.expect(Database.MAX_DB_SIZE > 1024 * 1024);
     try testing.expectEqual(@as(usize, 16 * 1024 * 1024), Database.MAX_DB_SIZE);
 }
+
+test "database open uses allocator-backed read, not fixed stack buffer" {
+    // Database.open uses readToEndAlloc(alloc, MAX_DB_SIZE) instead of the old
+    // var buf: [1024*1024]u8 stack buffer. We verify the cap is set correctly.
+    // A functional test of >1 MiB files requires writing to /opt/nanobrew/db/
+    // and Database has no deinit, so we verify the constant instead.
+    try testing.expect(Database.MAX_DB_SIZE > 1024 * 1024);
+    try testing.expectEqual(@as(usize, 16 * 1024 * 1024), Database.MAX_DB_SIZE);
+}
