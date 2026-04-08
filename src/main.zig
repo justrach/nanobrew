@@ -194,6 +194,29 @@ fn runInit() void {
         };
     }
 
+    // Create /opt/homebrew -> /opt/nanobrew/prefix compatibility symlink
+    // Homebrew bottles embed literal /opt/homebrew/ paths in binary data segments.
+    // These can't be safely rewritten (different string lengths). The symlink
+    // catches all such references without binary patching.
+    std.fs.symLinkAbsolute(PREFIX, "/opt/homebrew", .{}) catch |err| switch (err) {
+        error.PathAlreadyExists => {
+            // Check if it's already a symlink pointing to our prefix
+            var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+            const target = std.fs.readLinkAbsolute("/opt/homebrew", &target_buf) catch return;
+            if (!std.mem.eql(u8, target, PREFIX)) {
+                const s = std.fs.File.stderr().deprecatedWriter();
+                s.print("nb: warning: /opt/homebrew exists but does not point to nanobrew prefix\n", .{}) catch {};
+                s.print("nb: hint: if Homebrew is not installed, run: sudo ln -sf {s} /opt/homebrew\n", .{PREFIX}) catch {};
+            }
+        },
+        error.AccessDenied => {
+            // nb init runs with sudo, so this shouldn't happen, but warn if it does
+            const s = std.fs.File.stderr().deprecatedWriter();
+            s.print("nb: warning: could not create /opt/homebrew compatibility symlink (permission denied)\n", .{}) catch {};
+        },
+        else => {},
+    };
+
     // If running as root (sudo), chown to the real user so nb install doesn't need sudo
     if (std.posix.getenv("SUDO_USER")) |real_user| {
         // Validate SUDO_USER contains only valid Unix username characters
