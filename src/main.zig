@@ -667,6 +667,7 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     platform.relocate.relocateKeg(alloc, f.name, actual_ver) catch |err| {
         stderr.print("nb: {s}: relocate failed: {}\n", .{ f.name, err }) catch {};
         had_error.store(true, .release);
+        phase.store(@intFromEnum(Phase.failed), .release);
         return;
     };
 
@@ -678,6 +679,7 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     nb.linker.linkKeg(f.name, actual_ver) catch |err| {
         stderr.print("nb: {s}: link failed: {}\n", .{ f.name, err }) catch {};
         had_error.store(true, .release);
+        phase.store(@intFromEnum(Phase.failed), .release);
         return;
     };
 
