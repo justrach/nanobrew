@@ -156,6 +156,29 @@ pub const DepResolver = struct {
             }
         }
 
+        // Build reverse adjacency map: dep -> list of nodes that depend on dep.
+        // This lets us find dependents in O(out-degree) instead of O(V+E) per dequeue.
+        var reverse_edges = std.StringHashMap(std.ArrayList([]const u8)).init(self.alloc);
+        defer {
+            var rev_it = reverse_edges.valueIterator();
+            while (rev_it.next()) |list| list.deinit(self.alloc);
+            reverse_edges.deinit();
+        }
+
+        var build_iter = self.edges.iterator();
+        while (build_iter.next()) |entry| {
+            const dependent = entry.key_ptr.*;
+            for (entry.value_ptr.*) |dep| {
+                if (std.mem.eql(u8, dep, dependent)) continue; // skip self-dep
+                if (!self.formulae.contains(dep)) continue;
+                const gop = try reverse_edges.getOrPut(dep);
+                if (!gop.found_existing) {
+                    gop.value_ptr.* = .empty;
+                }
+                try gop.value_ptr.append(self.alloc, dependent);
+            }
+        }
+
         var queue: std.ArrayList([]const u8) = .empty;
         defer queue.deinit(self.alloc);
 
@@ -167,22 +190,21 @@ pub const DepResolver = struct {
         }
 
         var result: std.ArrayList(Formula) = .empty;
+        // front: index into queue.items — increment instead of shifting the array.
+        var front: usize = 0;
 
-        while (queue.items.len > 0) {
-            const sorted_name = queue.orderedRemove(0);
+        while (front < queue.items.len) {
+            const sorted_name = queue.items[front];
+            front += 1;
             const f = self.formulae.get(sorted_name) orelse continue;
             try result.append(self.alloc, f);
 
-            var re_iter = self.edges.iterator();
-            while (re_iter.next()) |entry| {
-                for (entry.value_ptr.*) |dep| {
-                    if (std.mem.eql(u8, dep, entry.key_ptr.*)) continue; // skip self-dep
-                    if (std.mem.eql(u8, dep, sorted_name)) {
-                        if (in_degree.getPtr(entry.key_ptr.*)) |count| {
-                            count.* -= 1;
-                            if (count.* == 0) {
-                                try queue.append(self.alloc, entry.key_ptr.*);
-                            }
+            if (reverse_edges.get(sorted_name)) |dependents| {
+                for (dependents.items) |dependent| {
+                    if (in_degree.getPtr(dependent)) |count| {
+                        count.* -= 1;
+                        if (count.* == 0) {
+                            try queue.append(self.alloc, dependent);
                         }
                     }
                 }
