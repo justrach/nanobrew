@@ -3123,7 +3123,9 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
     for (extract_items.items) |item| {
         if (db) |*d| {
             const pkg = resolved[item.pkg_idx];
-            d.recordDebInstall(pkg.name, pkg.version, pkg.sha256, &.{}) catch {};
+            d.recordDebInstall(pkg.name, pkg.version, pkg.sha256, &.{}) catch |err| {
+                stderr.print("nb: warning: failed to update database for {s}: {}\n", .{ pkg.name, err }) catch {};
+            };
         }
     }
 
@@ -3176,7 +3178,9 @@ fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
             removed_files += 1;
         }
 
-        db.recordDebRemoval(name) catch {};
+        db.recordDebRemoval(name) catch |err| {
+            stderr.print("nb: warning: failed to update database for {s}: {}\n", .{ name, err }) catch {};
+        };
         stdout.print("==> Removed {s} ({d} files)\n", .{ name, removed_files }) catch {};
     }
 
