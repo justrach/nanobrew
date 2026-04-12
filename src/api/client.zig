@@ -71,6 +71,76 @@ pub fn fetchFormula(alloc: std.mem.Allocator, name: []const u8) !Formula {
     return fetchFormulaWithClient(alloc, null, name);
 }
 
+/// Resolve a formula name that might be an alias (e.g., "python" -> "python@3.14").
+/// Returns the actual formula name if found, or null if not found or on network error.
+pub fn resolveFormulaAlias(alloc: std.mem.Allocator, name: []const u8) ?[]const u8 {
+    const formula_list_json = fetchFormulaList(alloc) catch return null;
+    defer alloc.free(formula_list_json);
+
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, formula_list_json, .{}) catch return null;
+    defer parsed.deinit();
+
+    if (parsed.value != .array) return null;
+
+    for (parsed.value.array.items) |item| {
+        if (item != .object) continue;
+        const obj = item.object;
+
+        // Check if this formula's name matches
+        const formula_name = getStr(obj, "name") orelse continue;
+        if (std.mem.eql(u8, formula_name, name)) {
+            // Exact match found - no need to resolve
+            return null;
+        }
+
+        // Check aliases
+        if (obj.get("aliases")) |aliases_val| {
+            if (aliases_val == .array) {
+                for (aliases_val.array.items) |alias_item| {
+                    if (alias_item == .string) {
+                        if (std.mem.eql(u8, alias_item.string, name)) {
+                            // Found alias match! Return the actual formula name
+                            return alloc.dupe(u8, formula_name) catch null;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    return null;
+}
+
+/// Fetch the cached formula list JSON (longer TTL since formulae don't change often).
+fn fetchFormulaList(alloc: std.mem.Allocator) ![]u8 {
+    const list_cache_path = API_CACHE_DIR ++ "/_formula_list.json";
+
+    // Check cache with 24-hour TTL
+    if (readCachedList(alloc, list_cache_path, 24 * 3600 * std.time.ns_per_s)) |data| return data;
+
+    const body = fetch.get(alloc, "https://formulae.brew.sh/api/formula.json") catch return error.FetchFailed;
+
+    // Write to cache
+    std.fs.makeDirAbsolute(API_CACHE_DIR) catch {};
+    if (std.fs.createFileAbsolute(list_cache_path, .{})) |file| {
+        defer file.close();
+        file.writeAll(body) catch {};
+    } else |_| {}
+
+    return body;
+}
+
+/// Read cached file with custom TTL.
+fn readCachedList(alloc: std.mem.Allocator, path: []const u8, ttl_ns: u64) ?[]u8 {
+    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
+    defer file.close();
+    const stat = file.stat() catch return null;
+    const now = std.time.nanoTimestamp();
+    const age_ns = now - stat.mtime;
+    if (age_ns > ttl_ns) return null;
+    return file.readToEndAlloc(alloc, 64 * 1024 * 1024) catch null;
+}
+
 /// Fetch formula using a shared HTTP client (avoids repeated TLS handshakes).
 pub fn fetchFormulaWithClient(alloc: std.mem.Allocator, client: ?*std.http.Client, name: []const u8) !Formula {
     // Tap formula: "user/tap/formula" -> fetch from GitHub
@@ -91,7 +161,20 @@ pub fn fetchFormulaWithClient(alloc: std.mem.Allocator, client: ?*std.http.Clien
         return formula;
     }
 
-    return fetchAndCache(alloc, client, name, cache_path);
+    const result = fetchAndCache(alloc, client, name, cache_path);
+    if (result == error.FormulaNotFound) {
+        // Try to resolve as an alias (e.g., "python" -> "python@3.14")
+        if (resolveFormulaAlias(alloc, name)) |resolved_name| {
+            defer alloc.free(resolved_name);
+            if (!std.mem.eql(u8, resolved_name, name)) {
+                // Found an alias, fetch with the resolved name
+                const r = fetchFormulaWithClient(alloc, client, resolved_name) catch return result;
+                // Return the formula with its resolved name
+                return r;
+            }
+        }
+    }
+    return result;
 }
 
 fn isTapRef(name: []const u8) bool {

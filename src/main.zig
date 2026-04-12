@@ -317,7 +317,8 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     {
         var any_missing = false;
         for (formulae.items) |name| {
-            if (!resolver.hasFormula(name)) {
+            // Use hasFormulaOrAlias to handle aliases like "python" -> "python@3.14"
+            if (!resolver.hasFormulaOrAlias(alloc, name)) {
                 stderr.print("nb: formula not found: '{s}'\n", .{name}) catch {};
                 any_missing = true;
             }

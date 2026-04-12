@@ -111,7 +111,25 @@ pub const DepResolver = struct {
     }
 
     pub fn hasFormula(self: *DepResolver, name: []const u8) bool {
-        return self.formulae.contains(name) or self.formulae.contains(tapShortName(name));
+        // Check exact name
+        if (self.formulae.contains(name)) return true;
+        // Check tapShortName (for "user/tap/formula" -> "formula")
+        if (self.formulae.contains(tapShortName(name))) return true;
+        return false;
+    }
+
+    /// Check if a name (which might be an alias) matches any stored formula.
+    /// This requires network access to check aliases, so it's only used when direct lookup fails.
+    pub fn hasFormulaOrAlias(self: *DepResolver, alloc: std.mem.Allocator, name: []const u8) bool {
+        // First check direct match
+        if (self.formulae.contains(name)) return true;
+        if (self.formulae.contains(tapShortName(name))) return true;
+        // Try to resolve as alias
+        const resolved = api.resolveFormulaAlias(alloc, name) orelse return false;
+        defer alloc.free(resolved);
+        if (self.formulae.contains(resolved)) return true;
+        if (self.formulae.contains(tapShortName(resolved))) return true;
+        return false;
     }
 
     pub fn topologicalSort(self: *DepResolver) ![]const Formula {
