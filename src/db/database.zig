@@ -39,6 +39,8 @@ pub const DebRecord = struct {
 };
 
 pub const Database = struct {
+    pub const MAX_DB_SIZE = 16 * 1024 * 1024; // 16 MiB
+
     alloc: std.mem.Allocator,
     kegs: std.ArrayList(Keg),
     casks: std.ArrayList(CaskRecord),
