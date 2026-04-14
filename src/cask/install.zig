@@ -258,6 +258,7 @@ pub fn installCask(alloc: std.mem.Allocator, cask: Cask) !void {
                 alloc.free(result.stderr);
                 if (result.term.Exited != 0) {
                     stderr.print("nb: installer failed for {s}\n", .{pkg_name}) catch {};
+                    any_artifact_failed = true;
                 }
             },
             .uninstall => {}, // only used during removal

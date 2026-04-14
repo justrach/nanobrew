@@ -666,6 +666,9 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf) orelse f.version;
     platform.relocate.relocateKeg(alloc, f.name, actual_ver) catch |err| {
         stderr.print("nb: {s}: relocate failed: {}\n", .{ f.name, err }) catch {};
+        had_error.store(true, .release);
+        phase.store(@intFromEnum(Phase.failed), .release);
+        return;
     };
 
     // 4b. Replace @@HOMEBREW_*@@ placeholders in text files (shebangs, scripts, configs)
@@ -675,6 +678,9 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     phase.store(@intFromEnum(Phase.linking), .release);
     nb.linker.linkKeg(f.name, actual_ver) catch |err| {
         stderr.print("nb: {s}: link failed: {}\n", .{ f.name, err }) catch {};
+        had_error.store(true, .release);
+        phase.store(@intFromEnum(Phase.failed), .release);
+        return;
     };
 
     // 6. Post-install (non-fatal)
@@ -737,10 +743,24 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
             continue;
         };
 
-        nb.linker.unlinkKeg(name, keg.version) catch {};
-        nb.cellar.remove(name, keg.version) catch {};
-        db.recordRemoval(name, alloc) catch {};
-        stdout.print("==> Removed {s}\n", .{name}) catch {};
+        var remove_ok = true;
+        nb.linker.unlinkKeg(name, keg.version) catch |err| {
+            stderr.print("nb: error: failed to unlink {s}: {}\n", .{ name, err }) catch {};
+            remove_ok = false;
+        };
+        nb.cellar.remove(name, keg.version) catch |err| {
+            stderr.print("nb: error: failed to remove keg for {s}: {}\n", .{ name, err }) catch {};
+            remove_ok = false;
+        };
+        db.recordRemoval(name, alloc) catch |err| {
+            stderr.print("nb: error: failed to update database for {s}: {}\n", .{ name, err }) catch {};
+            remove_ok = false;
+        };
+        if (remove_ok) {
+            stdout.print("==> Removed {s}\n", .{name}) catch {};
+        } else {
+            stderr.print("nb: {s} partially removed — check errors above\n", .{name}) catch {};
+        }
     }
 }
 
@@ -3105,7 +3125,9 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
     for (extract_items.items) |item| {
         if (db) |*d| {
             const pkg = resolved[item.pkg_idx];
-            d.recordDebInstall(pkg.name, pkg.version, pkg.sha256, &.{}) catch {};
+            d.recordDebInstall(pkg.name, pkg.version, pkg.sha256, &.{}) catch |err| {
+                stderr.print("nb: warning: failed to update database for {s}: {}\n", .{ pkg.name, err }) catch {};
+            };
         }
     }
 
@@ -3158,7 +3180,9 @@ fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
             removed_files += 1;
         }
 
-        db.recordDebRemoval(name) catch {};
+        db.recordDebRemoval(name) catch |err| {
+            stderr.print("nb: warning: failed to update database for {s}: {}\n", .{ name, err }) catch {};
+        };
         stdout.print("==> Removed {s} ({d} files)\n", .{ name, removed_files }) catch {};
     }
 

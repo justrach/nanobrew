@@ -44,6 +44,7 @@ pub const Database = struct {
     casks: std.ArrayList(CaskRecord),
     debs: std.ArrayList(DebRecord),
     history: std.StringHashMap(std.ArrayList(HistoryEntry)),
+    dirty: bool = false,
 
     pub fn open(alloc: std.mem.Allocator) !Database {
         var db = Database{
@@ -192,7 +193,9 @@ pub const Database = struct {
     }
 
     pub fn close(self: *Database) void {
-        self.save() catch {};
+        self.save() catch |err| {
+            std.fs.File.stderr().deprecatedWriter().print("nb: WARNING: failed to save package database: {}\n", .{err}) catch {};
+        };
     }
 
     pub fn recordInstall(self: *Database, name: []const u8, version: []const u8, sha256: []const u8) !void {
@@ -218,7 +221,7 @@ pub const Database = struct {
             .pinned = false,
             .installed_at = now,
         });
-        try self.save();
+        self.dirty = true;
     }
 
     fn pushHistory(self: *Database, name: []const u8, old: Keg) !void {
@@ -242,7 +245,7 @@ pub const Database = struct {
                 i += 1;
             }
         }
-        try self.save();
+        self.dirty = true;
     }
 
     pub fn findKeg(self: *Database, name: []const u8) ?Keg {
@@ -281,7 +284,7 @@ pub const Database = struct {
             .apps = dapps,
             .binaries = dbins,
         });
-        try self.save();
+        self.dirty = true;
     }
 
     pub fn recordCaskRemoval(self: *Database, token: []const u8, alloc: std.mem.Allocator) !void {
@@ -294,7 +297,7 @@ pub const Database = struct {
                 i += 1;
             }
         }
-        try self.save();
+        self.dirty = true;
     }
 
     pub fn findCask(self: *Database, token: []const u8) ?CaskRecord {
@@ -314,7 +317,7 @@ pub const Database = struct {
         for (self.kegs.items) |*keg| {
             if (std.mem.eql(u8, keg.name, name)) {
                 keg.pinned = pinned;
-                try self.save();
+                self.dirty = true;
                 return;
             }
         }
@@ -352,7 +355,7 @@ pub const Database = struct {
             .sha256 = try self.alloc.dupe(u8, sha256),
             .installed_at = now,
         });
-        try self.save();
+        self.dirty = true;
     }
 
     pub fn recordDebRemoval(self: *Database, name: []const u8) !void {
@@ -364,7 +367,7 @@ pub const Database = struct {
                 i += 1;
             }
         }
-        try self.save();
+        self.dirty = true;
     }
 
     pub fn findDeb(self: *Database, name: []const u8) ?DebRecord {
@@ -411,6 +414,7 @@ pub const Database = struct {
     }
 
     fn save(self: *Database) !void {
+        if (!self.dirty) return;
         const file = try std.fs.createFileAbsolute(DB_PATH, .{});
         defer {
             file.sync() catch {};
@@ -487,6 +491,7 @@ pub const Database = struct {
             writer.writeAll("]}") catch {};
         }
         writer.writeAll("]}") catch {};
+        self.dirty = false;
     }
 };
 
