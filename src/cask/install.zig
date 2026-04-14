@@ -12,6 +12,7 @@ const fetch = @import("../net/fetch.zig");
 const builtin = @import("builtin");
 
 const PREFIX = paths.PREFIX;
+const CASKROOM_DIR = paths.CASKROOM_DIR;
 const CACHE_TMP = paths.TMP_DIR;
 
 pub fn installCask(alloc: std.mem.Allocator, cask: Cask) !void {
@@ -45,9 +46,9 @@ pub fn installCask(alloc: std.mem.Allocator, cask: Cask) !void {
     // 2. Create Caskroom entry
     var caskroom_buf: [512]u8 = undefined;
     const caskroom_path = cask.caskroomPath(&caskroom_buf);
-    std.fs.makeDirAbsolute("/opt/nanobrew/prefix/Caskroom") catch {};
+    std.fs.makeDirAbsolute(CASKROOM_DIR) catch {};
     var token_dir_buf: [512]u8 = undefined;
-    const token_dir = std.fmt.bufPrint(&token_dir_buf, "/opt/nanobrew/prefix/Caskroom/{s}", .{safe_token}) catch return error.PathTooLong;
+    const token_dir = std.fmt.bufPrint(&token_dir_buf, "{s}/{s}", .{ CASKROOM_DIR, safe_token }) catch return error.PathTooLong;
     std.fs.makeDirAbsolute(token_dir) catch {};
     std.fs.makeDirAbsolute(caskroom_path) catch {};
 
