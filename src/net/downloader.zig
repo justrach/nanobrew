@@ -52,18 +52,22 @@ pub const ParallelDownloader = struct {
     }
 
     const WorkerContext = struct {
-        alloc: std.mem.Allocator,
+        gpa: std.mem.Allocator,
         items: []const DownloadRequest,
         next_index: *std.atomic.Value(usize),
         had_error: *std.atomic.Value(bool),
     };
 
     fn workerFn(ctx: WorkerContext) void {
-        // downloadOne() creates its own HTTP client per call (each thread-safe)
+        // Each worker owns its arena — no GPA mutex contention per download.
+        // reset(.retain_capacity) recycles backing pages lock-free between items.
+        var arena = std.heap.ArenaAllocator.init(ctx.gpa);
+        defer arena.deinit();
         while (true) {
             const idx = ctx.next_index.fetchAdd(1, .monotonic);
             if (idx >= ctx.items.len) break;
-            downloadOne(ctx.alloc, ctx.items[idx]) catch {
+            defer _ = arena.reset(.retain_capacity);
+            downloadOne(arena.allocator(), ctx.items[idx]) catch {
                 ctx.had_error.store(true, .release);
             };
         }
@@ -77,7 +81,7 @@ pub const ParallelDownloader = struct {
         var next_index = std.atomic.Value(usize).init(0);
 
         const ctx = WorkerContext{
-            .alloc = self.alloc,
+            .gpa = self.alloc,
             .items = self.queue.items,
             .next_index = &next_index,
             .had_error = &had_error,
@@ -129,23 +133,27 @@ pub const StreamingInstaller = struct {
         var next_index = std.atomic.Value(usize).init(0);
 
         const Ctx = struct {
-            alloc: std.mem.Allocator,
+            gpa: std.mem.Allocator,
             items: []const PackageInfo,
             next: *std.atomic.Value(usize),
             err: *std.atomic.Value(bool),
         };
         const workerFn = struct {
             fn run(ctx: Ctx) void {
+                // Worker-local arena: zero GPA locks per item; one deinit at thread exit.
+                var arena = std.heap.ArenaAllocator.init(ctx.gpa);
+                defer arena.deinit();
                 while (true) {
                     const idx = ctx.next.fetchAdd(1, .monotonic);
                     if (idx >= ctx.items.len) break;
-                    downloadAndExtractOne(ctx.alloc, ctx.items[idx], ctx.err);
+                    defer _ = arena.reset(.retain_capacity);
+                    downloadAndExtractOne(arena.allocator(), ctx.items[idx], ctx.err);
                 }
             }
         }.run;
 
         const ctx = Ctx{
-            .alloc = self.alloc,
+            .gpa = self.alloc,
             .items = to_fetch.items,
             .next = &next_index,
             .err = &had_error,
