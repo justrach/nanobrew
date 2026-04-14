@@ -213,7 +213,13 @@ fn runInit() void {
     }
 
     stdout.print("nanobrew initialized at {s}\n", .{ROOT}) catch {};
-    stdout.print("Add to your shell: export PATH=\"{s}/bin:$PATH\"\n", .{PREFIX}) catch {};
+    const shell = std.posix.getenv("SHELL") orelse "";
+    const is_fish = std.mem.endsWith(u8, shell, "/fish") or std.mem.eql(u8, shell, "fish");
+    if (is_fish) {
+        stdout.print("Add to your fish config: fish_add_path {s}/bin\n", .{PREFIX}) catch {};
+    } else {
+        stdout.print("Add to your shell: export PATH=\"{s}/bin:$PATH\"\n", .{PREFIX}) catch {};
+    }
 }
 
 /// Validate a package name is safe (no path traversal, no control chars, no null bytes).
