@@ -329,8 +329,8 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     stdout.print("    [{d:.0}ms]\n", .{resolve_ms}) catch {};
 
     const all_formulae = resolver.topologicalSort() catch {
-        stderr.print("nb: dependency cycle detected\n", .{}) catch {};
-        std.process.exit(1);
+        stderr.print("nb: warning: dependency cycle detected for '{s}', skipping\n", .{formulae.items[0]}) catch {};
+        return;
     };
     defer alloc.free(all_formulae);
 
