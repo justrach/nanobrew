@@ -107,6 +107,7 @@ pub fn runPostinst(alloc: std.mem.Allocator, deb_path: []const u8, pkg_name: []c
         };
         if (postinst_exit != 0) {
             stderr_writer.print("    warning: postinst exited {d} for {s}\n", .{ postinst_exit, pkg_name }) catch {};
+        }
     } else |_| {}
 }
 

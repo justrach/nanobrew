@@ -242,6 +242,10 @@ pub const Database = struct {
                 const old = self.kegs.items[i];
                 // Save to history (best-effort)
                 self.pushHistory(name, old) catch {};
+                // Free heap strings before removing from list
+                self.alloc.free(old.name);
+                self.alloc.free(old.version);
+                self.alloc.free(old.sha256);
                 _ = self.kegs.orderedRemove(i);
             } else {
                 i += 1;
@@ -259,14 +263,16 @@ pub const Database = struct {
     }
 
     fn pushHistory(self: *Database, name: []const u8, old: Keg) !void {
-        const hist_name = try self.alloc.dupe(u8, name);
-        var hist_list = self.history.get(name) orelse std.ArrayList(HistoryEntry).empty;
-        try hist_list.append(self.alloc, .{
+        const gop = try self.history.getOrPut(name);
+        if (!gop.found_existing) {
+            gop.key_ptr.* = try self.alloc.dupe(u8, name);
+            gop.value_ptr.* = .empty;
+        }
+        try gop.value_ptr.append(self.alloc, .{
             .version = self.alloc.dupe(u8, old.version) catch "",
             .sha256 = self.alloc.dupe(u8, old.sha256) catch "",
             .installed_at = old.installed_at,
         });
-        try self.history.put(hist_name, hist_list);
     }
 
     pub fn recordRemoval(self: *Database, name: []const u8, alloc: std.mem.Allocator) !void {
@@ -274,6 +280,10 @@ pub const Database = struct {
         var i: usize = 0;
         while (i < self.kegs.items.len) {
             if (std.mem.eql(u8, self.kegs.items[i].name, name)) {
+                const keg = self.kegs.items[i];
+                self.alloc.free(keg.name);
+                self.alloc.free(keg.version);
+                self.alloc.free(keg.sha256);
                 _ = self.kegs.orderedRemove(i);
             } else {
                 i += 1;
@@ -300,6 +310,13 @@ pub const Database = struct {
         var i: usize = 0;
         while (i < self.casks.items.len) {
             if (std.mem.eql(u8, self.casks.items[i].token, token)) {
+                const old_cask = self.casks.items[i];
+                self.alloc.free(old_cask.token);
+                self.alloc.free(old_cask.version);
+                for (old_cask.apps) |a| self.alloc.free(a);
+                self.alloc.free(old_cask.apps);
+                for (old_cask.binaries) |b| self.alloc.free(b);
+                self.alloc.free(old_cask.binaries);
                 _ = self.casks.orderedRemove(i);
             } else {
                 i += 1;
@@ -326,6 +343,13 @@ pub const Database = struct {
         var i: usize = 0;
         while (i < self.casks.items.len) {
             if (std.mem.eql(u8, self.casks.items[i].token, token)) {
+                const old_cask = self.casks.items[i];
+                self.alloc.free(old_cask.token);
+                self.alloc.free(old_cask.version);
+                for (old_cask.apps) |a| self.alloc.free(a);
+                self.alloc.free(old_cask.apps);
+                for (old_cask.binaries) |b| self.alloc.free(b);
+                self.alloc.free(old_cask.binaries);
                 _ = self.casks.orderedRemove(i);
             } else {
                 i += 1;
@@ -372,6 +396,12 @@ pub const Database = struct {
         var i: usize = 0;
         while (i < self.debs.items.len) {
             if (std.mem.eql(u8, self.debs.items[i].name, name)) {
+                const old_deb = self.debs.items[i];
+                self.alloc.free(old_deb.name);
+                self.alloc.free(old_deb.version);
+                self.alloc.free(old_deb.sha256);
+                for (old_deb.files) |f| self.alloc.free(f);
+                self.alloc.free(old_deb.files);
                 _ = self.debs.orderedRemove(i);
             } else {
                 i += 1;
@@ -396,6 +426,12 @@ pub const Database = struct {
         var i: usize = 0;
         while (i < self.debs.items.len) {
             if (std.mem.eql(u8, self.debs.items[i].name, name)) {
+                const old_deb = self.debs.items[i];
+                self.alloc.free(old_deb.name);
+                self.alloc.free(old_deb.version);
+                self.alloc.free(old_deb.sha256);
+                for (old_deb.files) |f| self.alloc.free(f);
+                self.alloc.free(old_deb.files);
                 _ = self.debs.orderedRemove(i);
             } else {
                 i += 1;
@@ -448,14 +484,16 @@ pub const Database = struct {
     }
 
     fn save(self: *Database) !void {
-        const file = try std.fs.createFileAbsolute(DB_PATH, .{});
-        defer {
-            file.sync() catch {};
-            file.close();
-        }
+        // Write to a temp file first, then rename atomically.
+        // This ensures readers always see a complete file — a SIGKILL
+        // or power-loss mid-write cannot corrupt state.json.
+        const tmp_path = DB_PATH ++ ".tmp";
+        const file = try std.fs.createFileAbsolute(tmp_path, .{});
+        errdefer std.fs.deleteFileAbsolute(tmp_path) catch {};
 
         const writer = file.deprecatedWriter();
-        writer.writeAll("{\"kegs\":[") catch return;
+        var write_ok = true;
+        writer.writeAll("{\"kegs\":[") catch { write_ok = false; };
         for (self.kegs.items, 0..) |keg, i| {
             if (i > 0) writer.writeAll(",") catch {};
             writer.writeAll("{\"name\":") catch {};
@@ -468,7 +506,7 @@ pub const Database = struct {
                 if (keg.pinned) "true" else "false", keg.installed_at,
             }) catch {};
         }
-        writer.writeAll("],\"casks\":[") catch return;
+        writer.writeAll("],\"casks\":[") catch { write_ok = false; };
         for (self.casks.items, 0..) |c, i| {
             if (i > 0) writer.writeAll(",") catch {};
             writer.writeAll("{\"token\":") catch {};
@@ -488,7 +526,7 @@ pub const Database = struct {
             writer.writeAll("]}") catch {};
         }
         // Serialize history
-        writer.writeAll("],\"history\":{") catch return;
+        writer.writeAll("],\"history\":{") catch { write_ok = false; };
         var hist_iter = self.history.iterator();
         var hist_first = true;
         while (hist_iter.next()) |entry| {
@@ -507,7 +545,7 @@ pub const Database = struct {
             writer.writeAll("]") catch {};
         }
         // Serialize deb packages
-        writer.writeAll("},\"deb_packages\":[") catch return;
+        writer.writeAll("},\"deb_packages\":[") catch { write_ok = false; };
         for (self.debs.items, 0..) |d, i| {
             if (i > 0) writer.writeAll(",") catch {};
             writer.writeAll("{\"name\":") catch {};
@@ -523,7 +561,18 @@ pub const Database = struct {
             }
             writer.writeAll("]}") catch {};
         }
-        writer.writeAll("]}") catch {};
+        writer.writeAll("]}") catch { write_ok = false; };
+
+        file.sync() catch {};
+        file.close();
+
+        if (!write_ok) {
+            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            return error.SaveFailed;
+        }
+
+        // Atomic rename: readers see either the old complete file or the new one
+        try std.fs.renameAbsolute(tmp_path, DB_PATH);
     }
 };
 
