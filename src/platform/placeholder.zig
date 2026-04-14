@@ -15,11 +15,36 @@ pub fn hasPlaceholder(s: []const u8) bool {
 }
 
 pub fn replacePlaceholders(alloc: std.mem.Allocator, input: []const u8) ![]u8 {
-    const pass1 = try std.mem.replaceOwned(u8, alloc, input, paths.PLACEHOLDER_CELLAR, paths.REAL_CELLAR);
-    defer alloc.free(pass1);
-    const pass2 = try std.mem.replaceOwned(u8, alloc, pass1, paths.PLACEHOLDER_PREFIX, paths.REAL_PREFIX);
-    defer alloc.free(pass2);
-    return try std.mem.replaceOwned(u8, alloc, pass2, paths.PLACEHOLDER_REPOSITORY, paths.REAL_REPOSITORY);
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(alloc);
+    var i: usize = 0;
+    while (i < input.len) {
+        if (i + paths.PLACEHOLDER_CELLAR.len <= input.len and
+            std.mem.eql(u8, input[i..][0..paths.PLACEHOLDER_CELLAR.len], paths.PLACEHOLDER_CELLAR))
+        {
+            try result.appendSlice(alloc, paths.REAL_CELLAR);
+            i += paths.PLACEHOLDER_CELLAR.len;
+        } else if (i + paths.PLACEHOLDER_PREFIX.len <= input.len and
+            std.mem.eql(u8, input[i..][0..paths.PLACEHOLDER_PREFIX.len], paths.PLACEHOLDER_PREFIX))
+        {
+            try result.appendSlice(alloc, paths.REAL_PREFIX);
+            i += paths.PLACEHOLDER_PREFIX.len;
+        } else if (i + paths.PLACEHOLDER_REPOSITORY.len <= input.len and
+            std.mem.eql(u8, input[i..][0..paths.PLACEHOLDER_REPOSITORY.len], paths.PLACEHOLDER_REPOSITORY))
+        {
+            try result.appendSlice(alloc, paths.REAL_REPOSITORY);
+            i += paths.PLACEHOLDER_REPOSITORY.len;
+        } else if (i + paths.PLACEHOLDER_LIBRARY.len <= input.len and
+            std.mem.eql(u8, input[i..][0..paths.PLACEHOLDER_LIBRARY.len], paths.PLACEHOLDER_LIBRARY))
+        {
+            try result.appendSlice(alloc, paths.REAL_LIBRARY);
+            i += paths.PLACEHOLDER_LIBRARY.len;
+        } else {
+            try result.append(alloc, input[i]);
+            i += 1;
+        }
+    }
+    return result.toOwnedSlice(alloc);
 }
 
 /// Scan a file for @@HOMEBREW placeholder bytes.
