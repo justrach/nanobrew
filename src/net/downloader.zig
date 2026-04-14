@@ -294,7 +294,7 @@ pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
 
     http_req.sendBodiless() catch return error.DownloadFailed;
 
-    var redirect_buf: [8192]u8 = undefined;
+    var redirect_buf: [32768]u8 = undefined;
     var response = http_req.receiveHead(&redirect_buf) catch return error.DownloadFailed;
     if (response.head.status != .ok) return error.DownloadFailed;
 
