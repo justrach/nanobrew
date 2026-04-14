@@ -823,6 +823,14 @@ fn runLeaves(alloc: std.mem.Allocator, args: []const []const u8) void {
     var pkg_deps = std.StringHashMap([]const []const u8).init(alloc);
     defer pkg_deps.deinit();
 
+    // Keep fetched formulae alive until both loops finish; depended_on and
+    // pkg_deps hold slices that point into formula memory.
+    var fetched_formulae: std.ArrayList(nb.formula.Formula) = .empty;
+    defer {
+        for (fetched_formulae.items) |f| f.deinit(alloc);
+        fetched_formulae.deinit(alloc);
+    }
+
     // Fetch dependency info for each installed package from the API cache
     var fetch_failures: usize = 0;
     for (kegs) |keg| {
@@ -830,10 +838,15 @@ fn runLeaves(alloc: std.mem.Allocator, args: []const []const u8) void {
             fetch_failures += 1;
             continue;
         };
+        fetched_formulae.append(alloc, formula) catch {
+            formula.deinit(alloc);
+            continue;
+        };
+        const f = &fetched_formulae.items[fetched_formulae.items.len - 1];
         if (show_tree) {
-            pkg_deps.put(keg.name, formula.dependencies) catch {};
+            pkg_deps.put(keg.name, f.dependencies) catch {};
         }
-        for (formula.dependencies) |dep| {
+        for (f.dependencies) |dep| {
             if (std.mem.eql(u8, dep, keg.name)) continue; // skip self-dep
             // Check if the dep is actually installed
             for (kegs) |other| {
