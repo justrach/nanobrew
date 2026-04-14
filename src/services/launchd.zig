@@ -85,7 +85,56 @@ pub fn isRunning(alloc: std.mem.Allocator, label: []const u8) bool {
     return result.term.Exited == 0;
 }
 
+pub fn isPlistSafe(content: []const u8, keg_prefix: []const u8) bool {
+    // Check for UserName root
+    if (std.mem.indexOf(u8, content, "<key>UserName</key>")) |idx| {
+        const after = content[idx..];
+        if (std.mem.indexOf(u8, after, "<string>root</string>")) |_| return false;
+    }
+
+    // Check ProgramArguments — first <string> after the key must start with keg_prefix
+    if (std.mem.indexOf(u8, content, "<key>ProgramArguments</key>")) |idx| {
+        const after = content[idx..];
+        if (std.mem.indexOf(u8, after, "<string>")) |s_idx| {
+            const str_start = s_idx + "<string>".len;
+            if (str_start < after.len) {
+                const rest = after[str_start..];
+                if (std.mem.indexOf(u8, rest, "</string>")) |end| {
+                    const prog_path = rest[0..end];
+                    if (!std.mem.startsWith(u8, prog_path, keg_prefix)) return false;
+                    if (std.mem.indexOf(u8, prog_path, "..") != null) return false;
+                }
+            }
+        }
+    }
+
+    // Check Program — single <string> value must also start with keg_prefix
+    if (std.mem.indexOf(u8, content, "<key>Program</key>")) |idx| {
+        const after = content[idx..];
+        if (std.mem.indexOf(u8, after, "<string>")) |s_idx| {
+            const str_start = s_idx + "<string>".len;
+            if (str_start < after.len) {
+                const rest = after[str_start..];
+                if (std.mem.indexOf(u8, rest, "</string>")) |end| {
+                    const prog_path = rest[0..end];
+                    if (!std.mem.startsWith(u8, prog_path, keg_prefix)) return false;
+                    if (std.mem.indexOf(u8, prog_path, "..") != null) return false;
+                }
+            }
+        }
+    }
+
+    return true;
+}
+
 pub fn start(alloc: std.mem.Allocator, plist_path: []const u8) !void {
+    const plist_content = std.fs.cwd().readFileAlloc(alloc, plist_path, 64 * 1024) catch return error.LaunchctlFailed;
+    defer alloc.free(plist_content);
+    if (!isPlistSafe(plist_content, paths.CELLAR_DIR)) {
+        const err_writer = std.io.getStdErr().writer();
+        err_writer.print("nb: refusing to load unsafe plist: {s}\n", .{plist_path}) catch {};
+        return error.LaunchctlFailed;
+    }
     const result = std.process.Child.run(.{
         .allocator = alloc,
         .argv = &.{ "launchctl", "load", "-w", plist_path },

