@@ -122,23 +122,45 @@ pub const StreamingInstaller = struct {
 
         if (to_fetch.items.len == 0) return;
 
+        // Cap at 8 concurrent threads — matches ParallelDownloader behaviour.
+        // Spawning one thread per package exhausts file descriptors on large installs.
+        const num_threads = @min(to_fetch.items.len, 8);
         var had_error = std.atomic.Value(bool).init(false);
-        var threads: std.ArrayList(std.Thread) = .empty;
-        defer threads.deinit(self.alloc);
+        var next_index = std.atomic.Value(usize).init(0);
 
-        for (to_fetch.items) |pkg| {
-            const t = std.Thread.spawn(.{}, downloadAndExtractOne, .{ self.alloc, pkg, &had_error }) catch {
+        const Ctx = struct {
+            alloc: std.mem.Allocator,
+            items: []const PackageInfo,
+            next: *std.atomic.Value(usize),
+            err: *std.atomic.Value(bool),
+        };
+        const workerFn = struct {
+            fn run(ctx: Ctx) void {
+                while (true) {
+                    const idx = ctx.next.fetchAdd(1, .monotonic);
+                    if (idx >= ctx.items.len) break;
+                    downloadAndExtractOne(ctx.alloc, ctx.items[idx], ctx.err);
+                }
+            }
+        }.run;
+
+        const ctx = Ctx{
+            .alloc = self.alloc,
+            .items = to_fetch.items,
+            .next = &next_index,
+            .err = &had_error,
+        };
+
+        var threads: [8]std.Thread = undefined;
+        var spawned: usize = 0;
+        for (0..num_threads) |_| {
+            threads[spawned] = std.Thread.spawn(.{}, workerFn, .{ctx}) catch {
                 had_error.store(true, .release);
                 continue;
             };
-            threads.append(self.alloc, t) catch {
-                t.join(); // Don't leak the thread handle
-                continue;
-            };
+            spawned += 1;
         }
-        for (threads.items) |t| {
-            t.join();
-        }
+        for (threads[0..spawned]) |t| t.join();
 
         if (had_error.load(.acquire)) {
             return error.DownloadExtractFailed;
