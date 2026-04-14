@@ -2887,7 +2887,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
             url_storage: [1024]u8,
             url_len: usize,
             sha256: []const u8,
-            cache_path_storage: [512]u8,
+    var cached: usize = 0;
             cache_path_len: usize,
         };
 
@@ -3040,6 +3040,12 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
         extract_items.append(alloc, item) catch continue;
     }
 
+    // Count already-cached packages (downloaded in a previous run)
+    for (extract_items.items) |item| {
+        if (!item.needs_download) cached += 1;
+    }
+
+    // Thread pool for extraction
     // Thread pool for extraction
     const ExtractCtx = struct {
         items: []const ExtractItem,
