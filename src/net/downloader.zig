@@ -204,7 +204,7 @@ fn fetchGhcrTokenUncached(alloc: std.mem.Allocator, client: *std.http.Client, re
     defer req.deinit();
     req.sendBodiless() catch return null;
 
-    var redirect_buf: [8192]u8 = undefined;
+    var redirect_buf: [32768]u8 = undefined;
     var response = req.receiveHead(&redirect_buf) catch return null;
     if (response.head.status != .ok) return null;
 
