@@ -7,6 +7,8 @@
 //   - Atomic writes (tmp -> rename to blobs/)
 //   - Skip if blob already cached
 //   - GHCR token caching (4 min TTL)
+//   - Per-worker persistent HTTP client (1 TLS handshake per worker, not per download)
+//   - Pre-fetched GHCR token shared across all workers (no per-download token race)
 
 const std = @import("std");
 const store = @import("../store/store.zig");
@@ -56,18 +58,27 @@ pub const ParallelDownloader = struct {
         items: []const DownloadRequest,
         next_index: *std.atomic.Value(usize),
         had_error: *std.atomic.Value(bool),
+        /// Pre-fetched GHCR bearer token shared read-only by all workers.
+        /// Eliminates N-1 redundant token fetches (one per download) on cold cache.
+        preauth_token: ?[]const u8,
     };
 
     fn workerFn(ctx: WorkerContext) void {
-        // Each worker owns its arena — no GPA mutex contention per download.
-        // reset(.retain_capacity) recycles backing pages lock-free between items.
+        // One TLS client per worker — reused across all items this worker handles.
+        // std.http.Client pools connections; successive requests to the same host
+        // reuse the existing TLS session instead of a full handshake each time.
+        var client: std.http.Client = .{ .allocator = ctx.gpa };
+        defer client.deinit();
+
+        // Per-download arena: zero GPA mutex calls per allocation; single deinit at exit.
         var arena = std.heap.ArenaAllocator.init(ctx.gpa);
         defer arena.deinit();
+
         while (true) {
             const idx = ctx.next_index.fetchAdd(1, .monotonic);
             if (idx >= ctx.items.len) break;
             defer _ = arena.reset(.retain_capacity);
-            downloadOne(arena.allocator(), ctx.items[idx]) catch {
+            downloadOneWithClient(arena.allocator(), &client, ctx.items[idx], ctx.preauth_token) catch {
                 ctx.had_error.store(true, .release);
             };
         }
@@ -75,6 +86,17 @@ pub const ParallelDownloader = struct {
 
     pub fn downloadAll(self: *ParallelDownloader) !void {
         if (self.queue.items.len == 0) return;
+
+        // Pre-fetch the GHCR token once for the entire batch. All Homebrew core
+        // bottles share the same repo ("homebrew/core") and therefore the same token.
+        // This replaces N per-download token fetches (disk open + optional HTTP RTT)
+        // with a single fetch that all workers share read-only.
+        const preauth_token: ?[]const u8 = blk: {
+            var tmp_client: std.http.Client = .{ .allocator = self.alloc };
+            defer tmp_client.deinit();
+            break :blk fetchGhcrToken(self.alloc, &tmp_client, self.queue.items[0].url) catch null;
+        };
+        defer if (preauth_token) |t| self.alloc.free(t);
 
         const num_threads = @min(self.queue.items.len, 8);
         var had_error = std.atomic.Value(bool).init(false);
@@ -85,6 +107,7 @@ pub const ParallelDownloader = struct {
             .items = self.queue.items,
             .next_index = &next_index,
             .had_error = &had_error,
+            .preauth_token = preauth_token,
         };
 
         var threads: [8]std.Thread = undefined;
@@ -126,8 +149,14 @@ pub const StreamingInstaller = struct {
 
         if (to_fetch.items.len == 0) return;
 
-        // Cap at 8 concurrent threads — matches ParallelDownloader behaviour.
-        // Spawning one thread per package exhausts file descriptors on large installs.
+        // Pre-fetch the GHCR token once — same rationale as ParallelDownloader.
+        const preauth_token: ?[]const u8 = blk: {
+            var tmp_client: std.http.Client = .{ .allocator = self.alloc };
+            defer tmp_client.deinit();
+            break :blk fetchGhcrToken(self.alloc, &tmp_client, to_fetch.items[0].url) catch null;
+        };
+        defer if (preauth_token) |t| self.alloc.free(t);
+
         const num_threads = @min(to_fetch.items.len, 8);
         var had_error = std.atomic.Value(bool).init(false);
         var next_index = std.atomic.Value(usize).init(0);
@@ -137,17 +166,23 @@ pub const StreamingInstaller = struct {
             items: []const PackageInfo,
             next: *std.atomic.Value(usize),
             err: *std.atomic.Value(bool),
+            preauth_token: ?[]const u8,
         };
         const workerFn = struct {
             fn run(ctx: Ctx) void {
-                // Worker-local arena: zero GPA locks per item; one deinit at thread exit.
+                // Persistent client: 1 TLS handshake per worker, reused across all downloads.
+                var client: std.http.Client = .{ .allocator = ctx.gpa };
+                defer client.deinit();
+
+                // Per-download arena for temporaries.
                 var arena = std.heap.ArenaAllocator.init(ctx.gpa);
                 defer arena.deinit();
+
                 while (true) {
                     const idx = ctx.next.fetchAdd(1, .monotonic);
                     if (idx >= ctx.items.len) break;
                     defer _ = arena.reset(.retain_capacity);
-                    downloadAndExtractOne(arena.allocator(), ctx.items[idx], ctx.err);
+                    downloadAndExtractOne(arena.allocator(), &client, ctx.items[idx], ctx.err, ctx.preauth_token);
                 }
             }
         }.run;
@@ -157,6 +192,7 @@ pub const StreamingInstaller = struct {
             .items = to_fetch.items,
             .next = &next_index,
             .err = &had_error,
+            .preauth_token = preauth_token,
         };
 
         var threads: [8]std.Thread = undefined;
@@ -176,7 +212,13 @@ pub const StreamingInstaller = struct {
     }
 };
 
-fn downloadAndExtractOne(alloc: std.mem.Allocator, pkg: PackageInfo, had_error: *std.atomic.Value(bool)) void {
+fn downloadAndExtractOne(
+    alloc: std.mem.Allocator,
+    client: *std.http.Client,
+    pkg: PackageInfo,
+    had_error: *std.atomic.Value(bool),
+    preauth_token: ?[]const u8,
+) void {
     var blob_buf: [512]u8 = undefined;
     const blob_path = std.fmt.bufPrint(&blob_buf, "{s}/{s}", .{ BLOBS_DIR, pkg.sha256 }) catch {
         had_error.store(true, .release);
@@ -184,7 +226,7 @@ fn downloadAndExtractOne(alloc: std.mem.Allocator, pkg: PackageInfo, had_error: 
     };
 
     if (!fileExists(blob_path)) {
-        downloadOne(alloc, .{ .url = pkg.url, .expected_sha256 = pkg.sha256 }) catch {
+        downloadOneWithClient(alloc, client, .{ .url = pkg.url, .expected_sha256 = pkg.sha256 }, preauth_token) catch {
             had_error.store(true, .release);
             return;
         };
@@ -195,6 +237,7 @@ fn downloadAndExtractOne(alloc: std.mem.Allocator, pkg: PackageInfo, had_error: 
         return;
     };
 }
+
 const TOKEN_CACHE_DIR = paths.TOKEN_CACHE_DIR;
 
 fn fetchGhcrToken(alloc: std.mem.Allocator, client: *std.http.Client, url: []const u8) !?[]const u8 {
@@ -271,7 +314,14 @@ fn scopeToCacheName(repo: []const u8, buf: *[256]u8) ?[]const u8 {
     return buf[0..repo.len];
 }
 
-pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
+/// Internal: download using an existing HTTP client and optional pre-fetched token.
+/// `preauth_token` is a read-only slice owned by the caller — not freed here.
+fn downloadOneWithClient(
+    alloc: std.mem.Allocator,
+    client: *std.http.Client,
+    req: DownloadRequest,
+    preauth_token: ?[]const u8,
+) !void {
     var dest_path_buf: [512]u8 = undefined;
     const dest_path = std.fmt.bufPrint(&dest_path_buf, "{s}/{s}", .{ BLOBS_DIR, req.expected_sha256 }) catch return error.PathTooLong;
 
@@ -295,16 +345,18 @@ pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
         break :blk req.url;
     } else req.url;
 
-    // Each thread gets its own HTTP client (thread-local connections)
-    var client: std.http.Client = .{ .allocator = alloc };
-    defer client.deinit();
-
-    // Fetch GHCR bearer token if needed (skip for custom bottle domains)
-    const token = if (bottle_domain != null and !std.mem.startsWith(u8, effective_url, "https://ghcr.io"))
-        null
+    // Determine auth token:
+    //   1. preauth_token if URL is ghcr.io (caller pre-fetched for the batch)
+    //   2. null if custom bottle domain that is not ghcr.io (no auth required)
+    //   3. fresh fetch (disk-cached with 4-min TTL) otherwise
+    const is_ghcr = std.mem.startsWith(u8, effective_url, "https://ghcr.io");
+    const skip_auth = bottle_domain != null and !is_ghcr;
+    const fresh_token: ?[]const u8 = if (!skip_auth and preauth_token == null)
+        try fetchGhcrToken(alloc, client, effective_url)
     else
-        try fetchGhcrToken(alloc, &client, effective_url);
-    defer if (token) |t| alloc.free(t);
+        null;
+    defer if (fresh_token) |t| alloc.free(t);
+    const token: ?[]const u8 = if (skip_auth) null else (preauth_token orelse fresh_token);
 
     // Build auth header
     var auth_buf: [4096]u8 = undefined;
@@ -373,6 +425,14 @@ pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
         if (err == error.PathAlreadyExists) return;
         return err;
     };
+}
+
+/// Public single-download entry point for callers without a persistent client.
+/// Workers should call downloadOneWithClient directly for connection reuse.
+pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
+    var client: std.http.Client = .{ .allocator = alloc };
+    defer client.deinit();
+    return downloadOneWithClient(alloc, &client, req, null);
 }
 
 fn fileExists(path: []const u8) bool {
