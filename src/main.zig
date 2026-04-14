@@ -2041,18 +2041,25 @@ fn cleanupOrphans(alloc: std.mem.Allocator, dry_run: bool, reclaimed: *u64, stdo
     if (std.fs.openDirAbsolute(ROOT ++ "/cache/blobs", .{ .iterate = true })) |d| {
         var dir = d;
         defer dir.close();
-        var iter = dir.iterate();
         while (iter.next() catch null) |entry| {
             if (!valid_shas.contains(entry.name)) {
                 var path_buf: [1024]u8 = undefined;
                 const path = std.fmt.bufPrint(&path_buf, "{s}/cache/blobs/{s}", .{ ROOT, entry.name }) catch continue;
-                reclaimed.* += 10 * 1024 * 1024;
+                // Get actual file size instead of using a hardcoded estimate
+                const file_size: u64 = blk: {
+                    const f = std.fs.openFileAbsolute(path, .{}) catch break :blk 0;
+                    defer f.close();
+                    const stat = f.stat() catch break :blk 0;
+                    break :blk stat.size;
+                };
+                reclaimed.* += file_size;
                 if (dry_run) {
                     stdout.print("  Would remove orphaned blob: {s}\n", .{entry.name}) catch {};
                 } else {
                     std.fs.deleteFileAbsolute(path) catch {};
                 }
             }
+        }
         }
     } else |_| {}
 
@@ -2063,11 +2070,29 @@ fn cleanupOrphans(alloc: std.mem.Allocator, dry_run: bool, reclaimed: *u64, stdo
         while (iter.next() catch null) |entry| {
             if (entry.kind != .directory) continue;
             if (!valid_shas.contains(entry.name)) {
+                var path_buf: [1024]u8 = undefined;
+                const path = std.fmt.bufPrint(&path_buf, "{s}/store/{s}", .{ ROOT, entry.name }) catch continue;
+                // Estimate store entry size by summing file sizes one level deep
+                const store_size: u64 = blk: {
+                    var sub = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch break :blk 0;
+                    defer sub.close();
+                    var sub_iter = sub.iterate();
+                    var total: u64 = 0;
+                    while (sub_iter.next() catch null) |sub_entry| {
+                        if (sub_entry.kind != .file and sub_entry.kind != .sym_link) continue;
+                        var fbuf: [1024]u8 = undefined;
+                        const fpath = std.fmt.bufPrint(&fbuf, "{s}/{s}", .{ path, sub_entry.name }) catch continue;
+                        const f = std.fs.openFileAbsolute(fpath, .{}) catch continue;
+                        defer f.close();
+                        const stat = f.stat() catch continue;
+                        total += stat.size;
+                    }
+                    break :blk total;
+                };
+                reclaimed.* += store_size;
                 if (dry_run) {
                     stdout.print("  Would remove orphaned store entry: {s}\n", .{entry.name}) catch {};
                 } else {
-                    var path_buf: [1024]u8 = undefined;
-                    const path = std.fmt.bufPrint(&path_buf, "{s}/store/{s}", .{ ROOT, entry.name }) catch continue;
                     std.fs.deleteTreeAbsolute(path) catch {};
                 }
             }
