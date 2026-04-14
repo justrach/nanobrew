@@ -138,8 +138,12 @@ pub fn installCask(alloc: std.mem.Allocator, cask: Cask) !void {
                 };
                 alloc.free(cp_result.stdout);
                 alloc.free(cp_result.stderr);
-                if (cp_result.term.Exited != 0) {
-                    stderr.print("nb: cp failed for {s} (exit code {d})\n", .{ app_name, cp_result.term.Exited }) catch {};
+                const cp_exit_code: u8 = switch (cp_result.term) {
+                    .Exited => |code| code,
+                    else => 1,
+                };
+                if (cp_exit_code != 0) {
+                    stderr.print("nb: cp failed for {s} (exit code {d})\n", .{ app_name, cp_exit_code }) catch {};
                     any_artifact_failed = true;
                     continue;
                 }
@@ -256,7 +260,7 @@ pub fn installCask(alloc: std.mem.Allocator, cask: Cask) !void {
                 };
                 alloc.free(result.stdout);
                 alloc.free(result.stderr);
-                if (result.term.Exited != 0) {
+                if (switch (result.term) { .Exited => |c| c != 0, else => true }) {
                     stderr.print("nb: installer failed for {s}\n", .{pkg_name}) catch {};
                 }
             },
@@ -357,7 +361,7 @@ fn mountDmg(alloc: std.mem.Allocator, dmg_path: []const u8, out_buf: []u8) ![]co
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
 
-    if (result.term.Exited != 0) return error.MountFailed;
+    if (switch (result.term) { .Exited => |c| c != 0, else => true }) return error.MountFailed;
 
     // Parse mount point from hdiutil output — look for /Volumes/ path
     if (std.mem.indexOf(u8, result.stdout, "/Volumes/")) |start| {
@@ -418,7 +422,7 @@ fn extractZip(alloc: std.mem.Allocator, zip_path: []const u8, dest: []const u8) 
     }) catch return error.ExtractFailed;
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
-    if (result.term.Exited != 0) return error.ExtractFailed;
+    if (switch (result.term) { .Exited => |c| c != 0, else => true }) return error.ExtractFailed;
 }
 
 fn extractTarGz(alloc: std.mem.Allocator, tar_path: []const u8, dest: []const u8) !void {
@@ -430,5 +434,5 @@ fn extractTarGz(alloc: std.mem.Allocator, tar_path: []const u8, dest: []const u8
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
 
-    if (result.term.Exited != 0) return error.ExtractFailed;
+    if (switch (result.term) { .Exited => |c| c != 0, else => true }) return error.ExtractFailed;
 }

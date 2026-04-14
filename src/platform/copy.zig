@@ -34,7 +34,7 @@ pub fn cpFallback(src: []const u8, dst: []const u8) !void {
         }) catch return error.CopyFailed;
         std.heap.page_allocator.free(result.stdout);
         std.heap.page_allocator.free(result.stderr);
-        if (result.term.Exited != 0) return error.CopyFailed;
+        if (switch (result.term) { .Exited => |c| c != 0, else => true }) return error.CopyFailed;
     } else {
         const result = std.process.Child.run(.{
             .allocator = std.heap.page_allocator,
@@ -42,7 +42,7 @@ pub fn cpFallback(src: []const u8, dst: []const u8) !void {
         }) catch return error.CopyFailed;
         std.heap.page_allocator.free(result.stdout);
         std.heap.page_allocator.free(result.stderr);
-        if (result.term.Exited != 0) return error.CopyFailed;
+        if (switch (result.term) { .Exited => |c| c != 0, else => true }) return error.CopyFailed;
     }
 }
 

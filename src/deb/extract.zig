@@ -101,9 +101,12 @@ pub fn runPostinst(alloc: std.mem.Allocator, deb_path: []const u8, pkg_name: []c
         };
         alloc.free(run_result.stdout);
         alloc.free(run_result.stderr);
-        if (run_result.term.Exited != 0) {
-            stderr_writer.print("    warning: postinst exited {d} for {s}\n", .{ run_result.term.Exited, pkg_name }) catch {};
-        }
+        const postinst_exit: u8 = switch (run_result.term) {
+            .Exited => |code| code,
+            else => 1,
+        };
+        if (postinst_exit != 0) {
+            stderr_writer.print("    warning: postinst exited {d} for {s}\n", .{ postinst_exit, pkg_name }) catch {};
     } else |_| {}
 }
 
@@ -264,7 +267,7 @@ fn decompressXzFallback(alloc: std.mem.Allocator, deb_path: []const u8, member_p
     }) catch return error.DecompressFailed;
     alloc.free(ar_result.stderr);
 
-    if (ar_result.term.Exited != 0) {
+    if (switch (ar_result.term) { .Exited => |c| c != 0, else => true }) {
         alloc.free(ar_result.stdout);
         return error.DecompressFailed;
     }
@@ -291,7 +294,7 @@ fn decompressXzFallback(alloc: std.mem.Allocator, deb_path: []const u8, member_p
     }) catch return error.DecompressFailed;
     alloc.free(xz_result.stderr);
 
-    if (xz_result.term.Exited != 0) {
+    if (switch (xz_result.term) { .Exited => |c| c != 0, else => true }) {
         alloc.free(xz_result.stdout);
         return error.DecompressFailed;
     }

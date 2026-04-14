@@ -107,7 +107,7 @@ pub fn buildFromSource(alloc: std.mem.Allocator, formula: Formula) !void {
         const run = extract catch return error.ExtractFailed;
         defer alloc.free(run.stdout);
         defer alloc.free(run.stderr);
-        if (run.term.Exited != 0) return error.ExtractFailed;
+        if (switch (run.term) { .Exited => |c| c != 0, else => true }) return error.ExtractFailed;
     }
 
     // 4. Find source root (tarballs often have one top-level directory)
@@ -192,7 +192,7 @@ pub fn buildFromSource(alloc: std.mem.Allocator, formula: Formula) !void {
                     }) catch continue;
                     alloc.free(cp_result.stdout);
                     alloc.free(cp_result.stderr);
-                    if (cp_result.term.Exited == 0) found_anything = true;
+                    if (switch (cp_result.term) { .Exited => |c| c == 0, else => false }) found_anything = true;
                 } else if (entry.kind == .file) {
                     std.fs.copyFileAbsolute(src_path, dst_path, .{}) catch continue;
                     found_anything = true;
@@ -264,7 +264,7 @@ fn runBuildCmd(alloc: std.mem.Allocator, cwd: []const u8, argv: []const []const 
     }) catch return error.BuildFailed;
     alloc.free(run.stdout);
     alloc.free(run.stderr);
-    if (run.term.Exited != 0) {
+    if (switch (run.term) { .Exited => |c| c != 0, else => true }) {
         stderr.print("nb: build command failed: ", .{}) catch {};
         for (argv) |a| stderr.print("{s} ", .{a}) catch {};
         stderr.print("\n", .{}) catch {};

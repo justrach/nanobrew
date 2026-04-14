@@ -37,7 +37,7 @@ fn extractTarGz(alloc: std.mem.Allocator, blob_path: []const u8, dest_dir: []con
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
 
-    if (result.term.Exited != 0) {
+    if (switch (result.term) { .Exited => |c| c != 0, else => true }) {
         return error.ExtractionFailed;
     }
 }

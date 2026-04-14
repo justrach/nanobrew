@@ -89,7 +89,7 @@ pub fn isRunning(alloc: std.mem.Allocator, label: []const u8) bool {
     }) catch return false;
     alloc.free(result.stdout);
     alloc.free(result.stderr);
-    return result.term.Exited == 0;
+    return switch (result.term) { .Exited => |c| c == 0, else => false };
 }
 
 pub fn start(alloc: std.mem.Allocator, plist_path: []const u8) !void {
@@ -120,7 +120,7 @@ pub fn start(alloc: std.mem.Allocator, plist_path: []const u8) !void {
     }) catch return error.SystemdFailed;
     alloc.free(result.stdout);
     alloc.free(result.stderr);
-    if (result.term.Exited != 0) return error.SystemdFailed;
+    if (switch (result.term) { .Exited => |c| c != 0, else => true }) return error.SystemdFailed;
 }
 
 pub fn stop(alloc: std.mem.Allocator, plist_path: []const u8) !void {
@@ -131,5 +131,5 @@ pub fn stop(alloc: std.mem.Allocator, plist_path: []const u8) !void {
     }) catch return error.SystemdFailed;
     alloc.free(result.stdout);
     alloc.free(result.stderr);
-    if (result.term.Exited != 0) return error.SystemdFailed;
+    if (switch (result.term) { .Exited => |c| c != 0, else => true }) return error.SystemdFailed;
 }
