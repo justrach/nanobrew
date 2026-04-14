@@ -1823,10 +1823,29 @@ fn runDoctor(alloc: std.mem.Allocator) void {
         for (kegs) |keg| {
             var buf: [512]u8 = undefined;
             const cellar_path = std.fmt.bufPrint(&buf, "{s}/Cellar/{s}/{s}", .{ PREFIX, keg.name, keg.version }) catch continue;
-            std.fs.accessAbsolute(cellar_path, .{}) catch {
+            const found = blk: {
+                std.fs.accessAbsolute(cellar_path, .{}) catch {
+                    // Also check Homebrew cellar paths for migrated packages (#172)
+                    const homebrew_cellar_paths = [_][]const u8{
+                        "/opt/homebrew/Cellar",
+                        "/usr/local/Cellar",
+                        "/home/linuxbrew/.linuxbrew/Cellar",
+                    };
+                    for (homebrew_cellar_paths) |hb_cellar| {
+                        var hb_buf: [512]u8 = undefined;
+                        const hb_path = std.fmt.bufPrint(&hb_buf, "{s}/{s}/{s}", .{ hb_cellar, keg.name, keg.version }) catch continue;
+                        std.fs.accessAbsolute(hb_path, .{}) catch continue;
+                        break :blk true;
+                    }
+                    break :blk false;
+                };
+                break :blk true;
+            };
+            if (!found) {
                 stdout.print("  ✗ DB entry '{s}' has no Cellar dir\n", .{keg.name}) catch {};
                 issues += 1;
-            };
+            }
+        }
         }
 
         if (std.fs.openDirAbsolute(ROOT ++ "/store", .{ .iterate = true })) |d| {
