@@ -160,12 +160,15 @@ fn relocateFile(alloc: std.mem.Allocator, path: []const u8) void {
     if (n < 16) return;
     if (!std.mem.eql(u8, header[0..4], &ELF_MAGIC)) return;
 
-    // It's an ELF file — check if it contains placeholders
+    // Always attempt interpreter fixup — bottles may have hardcoded
+    // /home/linuxbrew/.linuxbrew/ paths without @@HOMEBREW markers
+    patchInterpreter(alloc, path);
+
+    // Only do rpath/needed if placeholders are present (saves subprocess cost)
     file.seekTo(0) catch return;
     if (!elfContainsPlaceholder(file)) return;
 
-    // Use patchelf to fix rpath
-    patchelfRelocate(alloc, path);
+    patchelfRelocateRpathAndNeeded(alloc, path);
 }
 
 fn elfContainsPlaceholder(file: std.fs.File) bool {
@@ -186,11 +189,8 @@ fn elfContainsPlaceholder(file: std.fs.File) bool {
     return false;
 }
 
-fn patchelfRelocate(alloc: std.mem.Allocator, path: []const u8) void {
-    // 1. Fix interpreter (PT_INTERP) — critical for executables
-    patchInterpreter(alloc, path);
-
-    // 2. Fix RPATH
+fn patchelfRelocateRpathAndNeeded(alloc: std.mem.Allocator, path: []const u8) void {
+    // 1. Fix RPATH
     const rpath_result = std.process.Child.run(.{
         .allocator = alloc,
         .argv = &.{ "patchelf", "--print-rpath", path },
@@ -213,7 +213,7 @@ fn patchelfRelocate(alloc: std.mem.Allocator, path: []const u8) void {
         }
     }
 
-    // 3. Fix DT_NEEDED entries with placeholders
+    // 2. Fix DT_NEEDED entries with placeholders
     const needed_result = std.process.Child.run(.{
         .allocator = alloc,
         .argv = &.{ "patchelf", "--print-needed", path },
@@ -249,9 +249,12 @@ fn patchInterpreter(alloc: std.mem.Allocator, path: []const u8) void {
     if (result.term != .Exited or result.term.Exited != 0) return; // not an executable (shared lib)
 
     const current = std.mem.trim(u8, result.stdout, " \t\n\r");
-    if (!placeholder.hasPlaceholder(current)) return;
-
-    if (placeholder.replacePlaceholders(alloc, current)) |resolved| {
+    if (!placeholder.hasPlaceholder(current)) {
+        // Also fix hardcoded Linuxbrew interpreter paths (no @@HOMEBREW marker)
+        const linuxbrew_prefix = "/home/linuxbrew/.linuxbrew/";
+        if (!std.mem.startsWith(u8, current, linuxbrew_prefix)) return;
+        // Fall through to detectInterpreter for the correct system path
+    } else if (placeholder.replacePlaceholders(alloc, current)) |resolved| {
         defer alloc.free(resolved);
         if (std.fs.accessAbsolute(resolved, .{})) |_| {
             const set_result = std.process.Child.run(.{
