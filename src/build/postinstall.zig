@@ -69,7 +69,11 @@ fn runPostInstallScript(alloc: std.mem.Allocator, formula: Formula) !void {
             }) catch continue;
             alloc.free(result.stdout);
             alloc.free(result.stderr);
-            if (result.term.Exited != 0) {
+            const failed = switch (result.term) {
+                .Exited => |code| code != 0,
+                else => true,
+            };
+            if (failed) {
                 stderr.print("nb: {s}: post-install command failed: {s}\n", .{ formula.name, cmd }) catch {};
             }
         }

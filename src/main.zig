@@ -1871,11 +1871,19 @@ fn runDoctor(alloc: std.mem.Allocator) void {
         };
         alloc.free(pe.stdout);
         alloc.free(pe.stderr);
-        if (pe.term.Exited == 0) {
-            stdout.print("  ✓ patchelf installed\n", .{}) catch {};
-        } else {
-            stdout.print("  ✗ patchelf not working\n", .{}) catch {};
-            issues += 1;
+        switch (pe.term) {
+            .Exited => |code| {
+                if (code == 0) {
+                    stdout.print("  ✓ patchelf installed\n", .{}) catch {};
+                } else {
+                    stdout.print("  ✗ patchelf not working\n", .{}) catch {};
+                    issues += 1;
+                }
+            },
+            else => {
+                stdout.print("  ✗ patchelf not working\n", .{}) catch {};
+                issues += 1;
+            },
         }
     }
 
@@ -3117,8 +3125,11 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
                 .argv = &.{"ldconfig"},
             }) catch null;
             if (ld_result) |r| {
-                if (r.term.Exited != 0) {
-                    std.fs.File.stderr().deprecatedWriter().print("warning: ldconfig exited with code {d}\n", .{r.term.Exited}) catch {};
+                switch (r.term) {
+                    .Exited => |code| if (code != 0) {
+                        std.fs.File.stderr().deprecatedWriter().print("warning: ldconfig exited with code {d}\n", .{code}) catch {};
+                    },
+                    else => {},
                 }
                 alloc.free(r.stdout);
                 alloc.free(r.stderr);
