@@ -13,6 +13,7 @@ const extract = @import("deb/extract.zig");
 const placeholder = @import("platform/placeholder.zig");
 const store = @import("store/store.zig");
 const client = @import("api/client.zig");
+const linker = @import("linker/linker.zig");
 
 // ────────────────────────────────────────────────────────────────────────
 // 1. Path traversal in package names
@@ -359,4 +360,30 @@ test "isValidSha256 rejects non-hex strings" {
     try testing.expect(!store.isValidSha256("abc"));
     try testing.expect(!store.isValidSha256("zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz"));
     try testing.expect(store.isValidSha256("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+}
+
+// ────────────────────────────────────────────────────────────────────────
+// 10. Linker conflict detection
+// ────────────────────────────────────────────────────────────────────────
+
+test "extractKegName extracts package name from keg path" {
+    try testing.expectEqualStrings("wget", linker.extractKegName("/opt/nanobrew/prefix/Cellar/wget/1.24.5/lib/libfoo.so"));
+    try testing.expectEqualStrings("tree", linker.extractKegName("/opt/nanobrew/prefix/Cellar/tree/2.3.2/bin/tree"));
+    try testing.expectEqualStrings("", linker.extractKegName("/usr/lib/libfoo.so"));
+}
+
+test "isConflict detects different packages" {
+    const keg_a = "/opt/nanobrew/prefix/Cellar/pkgA/1.0/bin/foo";
+    const keg_b = "/opt/nanobrew/prefix/Cellar/pkgB/2.0";
+    try testing.expect(linker.isConflict(keg_a, keg_b));
+}
+
+test "isConflict allows same package different version" {
+    const target = "/opt/nanobrew/prefix/Cellar/wget/1.24.4/bin/wget";
+    const keg = "/opt/nanobrew/prefix/Cellar/wget/1.24.5";
+    try testing.expect(!linker.isConflict(target, keg));
+}
+
+test "isConflict flags non-cellar paths" {
+    try testing.expect(linker.isConflict("/usr/bin/foo", "/opt/nanobrew/prefix/Cellar/pkg/1.0"));
 }
