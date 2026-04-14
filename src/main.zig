@@ -1404,11 +1404,59 @@ fn runUpdate(alloc: std.mem.Allocator) void {
         std.process.exit(1);
     };
 
-    // Download tarball to temp file
-    nb.fetch.download(alloc, tarball_url, tmp_tar) catch {
-        stderr.print("nb: update failed: could not download release tarball\n", .{}) catch {};
-        std.process.exit(1);
+    // Download tarball to temp file (native HTTP with curl/wget fallback)
+    const download_ok: bool = blk: {
+        nb.fetch.download(alloc, tarball_url, tmp_tar) catch {
+            // Native download failed; try curl
+            const curl = std.process.Child.run(.{
+                .allocator = alloc,
+                .argv = &.{ "curl", "-fsSL", "--retry", "3", "-o", tmp_tar, tarball_url },
+            }) catch {
+                // curl unavailable; try wget
+                const wget = std.process.Child.run(.{
+                    .allocator = alloc,
+                    .argv = &.{ "wget", "-q", "--tries=3", "-O", tmp_tar, tarball_url },
+                }) catch {
+                    break :blk false;
+                };
+                defer alloc.free(wget.stdout);
+                defer alloc.free(wget.stderr);
+                const wget_ok = switch (wget.term) {
+                    .Exited => |code| code == 0,
+                    else => false,
+                };
+                break :blk wget_ok;
+            };
+            defer alloc.free(curl.stdout);
+            defer alloc.free(curl.stderr);
+            const curl_ok = switch (curl.term) {
+                .Exited => |code| code == 0,
+                else => false,
+            };
+            if (!curl_ok) {
+                // curl failed; try wget
+                const wget = std.process.Child.run(.{
+                    .allocator = alloc,
+                    .argv = &.{ "wget", "-q", "--tries=3", "-O", tmp_tar, tarball_url },
+                }) catch {
+                    break :blk false;
+                };
+                defer alloc.free(wget.stdout);
+                defer alloc.free(wget.stderr);
+                const wget_ok = switch (wget.term) {
+                    .Exited => |code| code == 0,
+                    else => false,
+                };
+                break :blk wget_ok;
+            }
+            break :blk true;
+        };
+        break :blk true;
     };
+    if (!download_ok) {
+        stderr.print("nb: update failed: could not download release tarball (tried native HTTP, curl, wget)\n", .{}) catch {};
+        std.process.exit(1);
+    }
 
     // Compute SHA256 of downloaded tarball
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});

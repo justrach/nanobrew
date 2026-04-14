@@ -31,7 +31,7 @@ pub fn getWithClient(alloc: std.mem.Allocator, client: *std.http.Client, url: []
         return error.FetchFailed;
     };
 
-    var head_buf: [8192]u8 = undefined;
+    var head_buf: [32768]u8 = undefined;
     var response = req.receiveHead(&head_buf) catch {
         req.deinit();
         return error.FetchFailed;
@@ -99,7 +99,7 @@ pub fn downloadWithClient(client: *std.http.Client, url: []const u8, dest_path: 
         return error.FetchFailed;
     };
 
-    var head_buf: [8192]u8 = undefined;
+    var head_buf: [32768]u8 = undefined;
     var response = req.receiveHead(&head_buf) catch {
         req.deinit();
         return error.FetchFailed;
