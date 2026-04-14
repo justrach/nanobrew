@@ -158,6 +158,7 @@ pub const DepResolver = struct {
 
         var queue: std.ArrayList([]const u8) = .empty;
         defer queue.deinit(self.alloc);
+        var queue_head: usize = 0; // index pointer — O(1) dequeue, no array shifts
 
         var deg_iter = in_degree.iterator();
         while (deg_iter.next()) |entry| {
@@ -168,8 +169,9 @@ pub const DepResolver = struct {
 
         var result: std.ArrayList(Formula) = .empty;
 
-        while (queue.items.len > 0) {
-            const sorted_name = queue.orderedRemove(0);
+        while (queue_head < queue.items.len) {
+            const sorted_name = queue.items[queue_head];
+            queue_head += 1;
             const f = self.formulae.get(sorted_name) orelse continue;
             try result.append(self.alloc, f);
 
