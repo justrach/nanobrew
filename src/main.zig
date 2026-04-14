@@ -1120,22 +1120,21 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
                 if (idx >= ctx.items.len) break;
                 const item = ctx.items[idx];
 
-                const latest_ver: ?[]const u8 = blk: {
-                    if (item.is_cask) {
-                        const cask = nb.api_client.fetchCask(ctx.alloc_, item.name) catch break :blk null;
-                        defer cask.deinit(ctx.alloc_);
-                        break :blk cask.version;
-                    } else {
-                        const formula = nb.api_client.fetchFormulaWithClient(ctx.alloc_, &client, item.name) catch break :blk null;
-                        defer formula.deinit(ctx.alloc_);
-                        break :blk formula.version;
+                if (item.is_cask) {
+                    const cask = nb.api_client.fetchCask(ctx.alloc_, item.name) catch continue;
+                    defer cask.deinit(ctx.alloc_);
+                    if (nb.version.isNewer(cask.version, item.old_ver)) {
+                        const len = @min(cask.version.len, 128);
+                        @memcpy(ctx.results[idx].new_ver_buf[0..len], cask.version[0..len]);
+                        ctx.results[idx].new_ver_len = len;
+                        ctx.results[idx].has_update = true;
                     }
-                };
-
-                if (latest_ver) |ver| {
-                    if (nb.version.isNewer(ver, item.old_ver)) {
-                        const len = @min(ver.len, 128);
-                        @memcpy(ctx.results[idx].new_ver_buf[0..len], ver[0..len]);
+                } else {
+                    const formula = nb.api_client.fetchFormulaWithClient(ctx.alloc_, &client, item.name) catch continue;
+                    defer formula.deinit(ctx.alloc_);
+                    if (nb.version.isNewer(formula.version, item.old_ver)) {
+                        const len = @min(formula.version.len, 128);
+                        @memcpy(ctx.results[idx].new_ver_buf[0..len], formula.version[0..len]);
                         ctx.results[idx].new_ver_len = len;
                         ctx.results[idx].has_update = true;
                     }
