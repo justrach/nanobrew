@@ -17,7 +17,7 @@ jobs:
             zig_target: aarch64-macos
           - arch: x86_64
             zig_target: x86_64-macos
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
@@ -28,6 +28,44 @@ jobs:
 
       - name: Build
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+
+      - name: Import signing certificate
+        env:
+          APPLE_CERT_P12: ${{ secrets.APPLE_DEVELOPER_ID_P12 }}
+          APPLE_CERT_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          echo "$APPLE_CERT_P12" | base64 -d > /tmp/cert.p12
+          security create-keychain -p "" build.keychain
+          security default-keychain -s build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import /tmp/cert.p12 -k build.keychain -P "$APPLE_CERT_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -s -k "" build.keychain
+          rm /tmp/cert.p12
+
+      - name: Sign binary
+        run: |
+          codesign --sign "Developer ID Application: Rachit Pradhan (WWP9DLJ27P)" \
+            --options runtime \
+            --timestamp \
+            --force \
+            zig-out/bin/nb
+          codesign --verify --deep --strict zig-out/bin/nb
+
+      - name: Notarize
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+        run: |
+          xcrun notarytool store-credentials "codedb-notary" \
+            --apple-id "$APPLE_ID" \
+            --team-id "$APPLE_TEAM_ID" \
+            --password "$APPLE_APP_SPECIFIC_PASSWORD"
+          ditto -c -k --keepParent zig-out/bin/nb nb-notarize.zip
+          xcrun notarytool submit nb-notarize.zip \
+            --keychain-profile "codedb-notary" \
+            --wait
+          rm nb-notarize.zip
 
       - name: Package
         run: |
@@ -63,6 +101,9 @@ jobs:
 
       - name: Build
         run: zig build ${{ matrix.build_cmd }} -Doptimize=ReleaseFast
+
+      - name: Smoke test
+        run: ./zig-out/bin/nb help
 
       - name: Package
         run: |
