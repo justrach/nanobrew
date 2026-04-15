@@ -1055,6 +1055,237 @@ document.querySelectorAll('[data-observe]').forEach(el => obs.observe(el));
 </body>
 </html>`;
 
+const RELEASE_190_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>nanobrew v0.1.190 — Zig 0.16 + faster everything</title>
+<meta name="description" content="nanobrew v0.1.190: Zig 0.16.0 compiler, native tar extraction, persistent HTTP, O(1) dep resolution, and 15+ correctness fixes. 11.8x faster than Homebrew on warm installs.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --gold: #FFB800;
+    --gold-soft: rgba(255, 184, 0, 0.12);
+    --bg: #FFFFFF;
+    --surface: #F7F7F7;
+    --border: #E5E5E5;
+    --text: #404040;
+    --bright: #111111;
+    --muted: #777;
+    --dim: #AAAAAA;
+    --apt-bar: #E8E8E8;
+    --fd: 'Inter', system-ui, -apple-system, sans-serif;
+    --fm: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: var(--fm); font-size: 15px; line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 820px; margin: 0 auto; padding: 0 2rem; }
+
+  nav { padding: 1.5rem 0; display: flex; justify-content: space-between; align-items: center; }
+  .nav-mark { font-family: var(--fd); font-weight: 700; font-size: 1rem; color: var(--bright); text-decoration: none; }
+  .nav-links { display: flex; gap: 1.5rem; }
+  .nav-links a { color: var(--muted); text-decoration: none; font-size: 0.82rem; font-weight: 500; }
+  .nav-links a:hover { color: var(--bright); }
+
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+
+  .hero { padding: 4rem 0 3rem; text-align: center; }
+  .hero h1 {
+    font-family: var(--fd); font-weight: 700;
+    font-size: clamp(1.8rem, 4.5vw, 2.6rem);
+    color: var(--bright); letter-spacing: -0.02em; line-height: 1.15;
+    animation: fadeUp 0.7s ease-out both;
+  }
+  .hero h1 em { color: var(--gold); font-style: normal; }
+  .hero p {
+    font-size: 1rem; color: var(--muted); margin-top: 1rem; max-width: 560px; margin-inline: auto;
+    animation: fadeUp 0.7s ease-out 0.12s both;
+  }
+  .hero code {
+    display: inline-block; margin-top: 1.5rem; padding: 0.6rem 1.4rem;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    font-size: 0.88rem; color: var(--bright); font-weight: 500;
+    animation: fadeUp 0.7s ease-out 0.24s both;
+  }
+
+  .stat {
+    padding: 4rem 0; text-align: center; border-top: 1px solid var(--border);
+  }
+  .stat-num {
+    font-family: var(--fd); font-weight: 900;
+    font-size: clamp(3.5rem, 10vw, 6rem);
+    color: var(--gold); line-height: 1; letter-spacing: -0.03em;
+    text-shadow: 0 0 80px var(--gold-soft);
+    animation: fadeUp 0.8s ease-out 0.3s both;
+  }
+  .stat-label { font-size: 1rem; color: var(--muted); margin-top: 0.6rem; animation: fadeUp 0.8s ease-out 0.38s both; }
+  .stat-ctx { font-size: 0.82rem; color: var(--dim); margin-top: 1.5rem; animation: fadeUp 0.8s ease-out 0.44s both; }
+  .stat-ctx em { color: var(--muted); font-style: normal; font-weight: 500; }
+
+  .bench { padding: 4rem 0; border-top: 1px solid var(--border); }
+  .bench h2 { font-family: var(--fd); font-weight: 700; font-size: 1.4rem; color: var(--bright); margin-bottom: 0.5rem; }
+  .bench-sub { font-size: 0.8rem; color: var(--dim); margin-bottom: 2.5rem; }
+
+  .bg { margin-bottom: 2.5rem; }
+  .bg-title { font-weight: 500; font-size: 0.88rem; color: var(--text); margin-bottom: 0.6rem; }
+  .bg-title span { color: var(--dim); font-weight: 400; font-size: 0.82rem; }
+  .br { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.35rem; height: 30px; }
+  .br-l { width: 4.5rem; text-align: right; font-size: 0.72rem; color: var(--muted); flex-shrink: 0; }
+  .br-t { flex: 1; height: 100%; background: var(--surface); border-radius: 4px; overflow: hidden; }
+  .br-b {
+    height: 100%; border-radius: 4px; display: flex; align-items: center;
+    padding: 0 0.7rem; font-size: 0.72rem; font-weight: 500; white-space: nowrap;
+    width: 0; transition: width 1.2s cubic-bezier(0.22, 1, 0.36, 1);
+  }
+  .br-b.apt { background: var(--apt-bar); color: var(--muted); }
+  .br-b.nb { background: var(--gold); color: var(--bg); }
+  .bg.visible .br:nth-child(2) .br-b { transition-delay: 0s; }
+  .bg.visible .br:nth-child(3) .br-b { transition-delay: 0.12s; }
+  .bg-note {
+    font-size: 0.72rem; color: var(--gold); margin-top: 0.35rem;
+    padding-left: 5.1rem; font-weight: 500; opacity: 0; transition: opacity 0.5s 0.6s;
+  }
+  .bg.visible .bg-note { opacity: 1; }
+
+  .how { padding: 4rem 0; border-top: 1px solid var(--border); }
+  .how h2 { font-family: var(--fd); font-weight: 700; font-size: 1.4rem; color: var(--bright); margin-bottom: 1.5rem; }
+  .how-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; }
+  .how-card {
+    padding: 1.5rem; background: var(--surface); border-radius: 8px; border: 1px solid var(--border);
+  }
+  .how-card h3 { font-size: 0.9rem; color: var(--bright); margin-bottom: 0.4rem; }
+  .how-card p { font-size: 0.78rem; color: var(--muted); line-height: 1.5; }
+  .how-card .num { font-family: var(--fd); font-weight: 800; font-size: 1.4rem; color: var(--gold); margin-bottom: 0.3rem; }
+
+  .method { padding: 4rem 0; border-top: 1px solid var(--border); }
+  .method h2 { font-family: var(--fd); font-weight: 700; font-size: 1.4rem; color: var(--bright); margin-bottom: 0.5rem; }
+  .method-sub { font-size: 0.8rem; color: var(--dim); margin-bottom: 1.5rem; }
+  .method table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .method th { text-align: left; padding: 0.6rem 0.8rem; border-bottom: 2px solid var(--border); color: var(--muted); font-weight: 500; }
+  .method td { padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--border); }
+  .method td:last-child { font-weight: 600; color: var(--gold); }
+
+  footer { padding: 3rem 0; border-top: 1px solid var(--border); text-align: center; font-size: 0.75rem; color: var(--dim); }
+  footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="nav-mark" href="/">nanobrew</a>
+    <div class="nav-links">
+      <a href="https://github.com/justrach/nanobrew">GitHub</a>
+      <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/">macOS benchmarks</a>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <h1>nanobrew v0.1.190<br><em>Zig 0.16 + faster everything</em></h1>
+    <p>Zig 0.16.0 compiler, native tar extraction, persistent HTTP, O(1) dep resolution, and 15+ correctness fixes.</p>
+    <code>nb update  # to v0.1.190</code>
+  </section>
+
+  <section class="stat">
+    <span class="stat-num">11.8x</span>
+    <span class="stat-label">faster than Homebrew on warm installs</span>
+    <p class="stat-ctx"><em>tree</em>: Homebrew 2.25s → nanobrew 0.19s</p>
+  </section>
+
+  <section class="bench">
+    <h2>Performance benchmarks</h2>
+    <p class="bench-sub">Apple Silicon, macOS, median of 3 runs</p>
+
+    <div class="bg" data-observe>
+      <div class="bg-title">tree <span>warm install</span></div>
+      <div class="br"><div class="br-l">Homebrew</div><div class="br-t"><div class="br-b apt" style="width:100%">Homebrew 2.25s</div></div></div>
+      <div class="br"><div class="br-l">nanobrew</div><div class="br-t"><div class="br-b nb" style="width:8.4%">nanobrew 0.19s</div></div></div>
+      <div class="bg-note">11.8x faster</div>
+    </div>
+
+    <div class="bg" data-observe>
+      <div class="bg-title">tree <span>cold install</span></div>
+      <div class="br"><div class="br-l">Homebrew</div><div class="br-t"><div class="br-b apt" style="width:100%">Homebrew 8.99s</div></div></div>
+      <div class="br"><div class="br-l">nanobrew</div><div class="br-t"><div class="br-b nb" style="width:13.2%">nanobrew 1.19s</div></div></div>
+      <div class="bg-note">7.6x faster</div>
+    </div>
+
+    <div class="bg" data-observe>
+      <div class="bg-title">wget + 5 deps <span>warm install</span></div>
+      <div class="br"><div class="br-l">Homebrew</div><div class="br-t"><div class="br-b apt" style="width:100%">Homebrew 2.43s</div></div></div>
+      <div class="br"><div class="br-l">nanobrew</div><div class="br-t"><div class="br-b nb" style="width:23.9%">nanobrew 0.58s</div></div></div>
+      <div class="bg-note">4.2x faster</div>
+    </div>
+
+    <div class="bg" data-observe>
+      <div class="bg-title">wget + 5 deps <span>cold install</span></div>
+      <div class="br"><div class="br-l">Homebrew</div><div class="br-t"><div class="br-b apt" style="width:100%">Homebrew 16.84s</div></div></div>
+      <div class="br"><div class="br-l">nanobrew</div><div class="br-t"><div class="br-b nb" style="width:66.9%">nanobrew 11.26s</div></div></div>
+      <div class="bg-note">1.5x faster</div>
+    </div>
+  </section>
+
+  <section class="how">
+    <h2>What changed in v0.1.190</h2>
+    <div class="how-grid">
+      <div class="how-card">
+        <div class="num">0.16</div>
+        <h3>Zig 0.16 compiler</h3>
+        <p>New std.Io threading model. Mach-O relocation (install_name_tool, codesign) now runs via real I/O — was silently failing with a stub allocator that returned OOM on every alloc.</p>
+      </div>
+      <div class="how-card">
+        <div class="num">0</div>
+        <h3>Subprocess calls for tar</h3>
+        <p>Native Zig USTAR/GNU tar parser replaces tar xzf subprocess. No fork/exec for extraction. File permissions preserved exactly from mode bits.</p>
+      </div>
+      <div class="how-card">
+        <div class="num">O(1)</div>
+        <h3>Dep resolution queue</h3>
+        <p>Topological sort called orderedRemove(0) on every step — O(n²). Replaced with an index cursor: O(V+E) total. Noticeable on packages with 10+ transitive deps.</p>
+      </div>
+      <div class="how-card">
+        <div class="num">1×</div>
+        <h3>GHCR token per batch</h3>
+        <p>Auth token prefetched once before parallel workers start. HTTP client reused across all downloads. Head buffer bumped to 32 KiB, fixing truncated redirects.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="method">
+    <h2>What was fixed</h2>
+    <p class="method-sub">15+ bugs addressed in this release</p>
+    <table>
+      <tr><th>Bug</th><th>Detail</th></tr>
+      <tr><td>Mach-O relocation</td><td>install_name_tool/codesign never ran — stub allocator OOM on first alloc</td></tr>
+      <tr><td>Non-atomic DB save</td><td>state.json written via temp + rename, safe against power-loss</td></tr>
+      <tr><td>Release tarball</td><td>Binary inside tarball is now named nb (was nb-arch-os), fixing nb update</td></tr>
+      <tr><td>UB in ReleaseFast</td><td>6 files used direct .Exited field access — converted to exhaustive switch</td></tr>
+      <tr><td>ncurses man pages</td><td>walkAndReplaceText no longer skips man/ dir — placeholders now replaced</td></tr>
+      <tr><td>Unbounded threads</td><td>Download worker count capped at 8</td></tr>
+      <tr><td>nb cleanup size</td><td>Reported hardcoded 10 MB regardless of actual bytes freed — fixed</td></tr>
+    </table>
+  </section>
+
+  <footer>
+    <p>nanobrew v0.1.190 &mdash; <a href="https://github.com/justrach/nanobrew">GitHub</a> &mdash; Apache-2.0</p>
+  </footer>
+</div>
+<script>
+const obs = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); }), { threshold: 0.2 });
+document.querySelectorAll('[data-observe]').forEach(el => obs.observe(el));
+</script>
+</body>
+</html>`;
+
 export default {
   async fetch(request) {
     const url = new URL(request.url);
@@ -1129,6 +1360,15 @@ export default {
         headers: {
           "content-type": "text/html; charset=utf-8",
           "cache-control": "public, max-age=3600",
+        },
+      });
+    }
+
+    if (url.pathname === "/v0.1.190" || url.pathname === "/v-0.1.190") {
+      return new Response(RELEASE_190_HTML, {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "public, max-age=86400",
         },
       });
     }
