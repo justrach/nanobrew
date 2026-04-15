@@ -417,7 +417,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             dir.close(g_io);
             // Already installed: rerun generic keg repair steps so stale text
             // placeholders and missing prefix links are healed too.
-            platform.relocate.relocateKeg(alloc, f.name, actual_ver) catch {};
+            platform.relocate.relocateKeg(alloc, g_io, f.name, actual_ver) catch {};
             platform.relocate.replaceKegPlaceholders(g_io, f.name, actual_ver);
             nb.linker.linkKeg(f.name, actual_ver) catch {};
         } else |_| {
@@ -742,7 +742,7 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     phase.store(@intFromEnum(Phase.relocating), .release);
     var ver_buf: [256]u8 = undefined;
     const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf) orelse f.version;
-    platform.relocate.relocateKeg(alloc, f.name, actual_ver) catch |err| {
+    platform.relocate.relocateKeg(alloc, g_io, f.name, actual_ver) catch |err| {
         stderr.print("nb: {s}: relocate failed: {}\n", .{ f.name, err }) catch {};
     };
 
@@ -2311,7 +2311,7 @@ fn runRollback(alloc: std.mem.Allocator, args: []const []const u8) void {
 
         var ver_buf: [256]u8 = undefined;
         const actual_ver = nb.cellar.detectKegVersion(name, prev.version, &ver_buf) orelse prev.version;
-        platform.relocate.relocateKeg(alloc, name, actual_ver) catch {};
+        platform.relocate.relocateKeg(alloc, g_io, name, actual_ver) catch {};
         platform.relocate.replaceKegPlaceholders(g_io, name, actual_ver);
         nb.linker.linkKeg(name, actual_ver) catch {};
         db.recordInstall(name, prev.version, prev.sha256) catch {};

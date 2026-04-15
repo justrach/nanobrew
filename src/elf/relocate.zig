@@ -35,8 +35,8 @@ fn run(alloc: std.mem.Allocator, lib_io: std.Io, argv: []const []const u8) ?std.
 }
 
 /// Relocate all ELF files and text configs in a keg.
-pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const u8) !void {
-    const lib_io = std.Io.Threaded.global_single_threaded.io();
+pub fn relocateKeg(alloc: std.mem.Allocator, io: std.Io, name: []const u8, version: []const u8) !void {
+    const lib_io = io;
     hasPatchelf(alloc, lib_io) catch {
         printErr(lib_io, "nb: patchelf not found — attempting auto-install...\n", .{});
 
