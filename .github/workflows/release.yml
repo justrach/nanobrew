@@ -24,7 +24,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.1
+          version: 0.16.0
 
       - name: Build
         run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
@@ -59,7 +59,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.15.1
+          version: 0.16.0
 
       - name: Build
         run: zig build ${{ matrix.build_cmd }} -Doptimize=ReleaseFast
