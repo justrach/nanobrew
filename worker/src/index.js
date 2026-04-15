@@ -1135,26 +1135,34 @@ const RELEASE_190_HTML = `<!DOCTYPE html>
   .bench h2 { font-family: var(--fd); font-weight: 700; font-size: 1.4rem; color: var(--bright); margin-bottom: 0.5rem; }
   .bench-sub { font-size: 0.8rem; color: var(--dim); margin-bottom: 2.5rem; }
 
-  .bg { margin-bottom: 2.5rem; }
-  .bg-title { font-weight: 500; font-size: 0.88rem; color: var(--text); margin-bottom: 0.6rem; }
-  .bg-title span { color: var(--dim); font-weight: 400; font-size: 0.82rem; }
-  .br { display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.35rem; height: 30px; }
-  .br-l { width: 4.5rem; text-align: right; font-size: 0.72rem; color: var(--muted); flex-shrink: 0; }
-  .br-t { flex: 1; height: 100%; background: var(--surface); border-radius: 4px; overflow: hidden; }
+  .bg { margin-bottom: 2.8rem; }
+  .bg-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.9rem; }
+  .bg-title { font-family: var(--fd); font-weight: 700; font-size: 0.95rem; color: var(--bright); }
+  .bg-title span { color: var(--muted); font-weight: 400; font-size: 0.82rem; margin-left: 0.4rem; }
+  .bg-badge {
+    font-family: var(--fd); font-weight: 800; font-size: 0.82rem; color: #92400e;
+    background: rgba(251,191,36,0.15); border: 1px solid rgba(251,191,36,0.35);
+    padding: 0.2rem 0.75rem; border-radius: 20px;
+    opacity: 0; transform: translateY(4px); transition: opacity 0.4s 0.9s, transform 0.4s 0.9s;
+  }
+  .bg.visible .bg-badge { opacity: 1; transform: none; }
+  .br { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.45rem; }
+  .br-l { width: 5rem; text-align: right; font-size: 0.72rem; color: var(--muted); flex-shrink: 0; font-weight: 500; }
+  .br-t { flex: 1; height: 40px; background: var(--surface); border-radius: 6px; overflow: hidden; }
   .br-b {
-    height: 100%; border-radius: 4px; display: flex; align-items: center;
-    padding: 0 0.7rem; font-size: 0.72rem; font-weight: 500; white-space: nowrap;
-    width: 0; transition: width 1.2s cubic-bezier(0.22, 1, 0.36, 1);
+    height: 100%; border-radius: 6px;
+    width: 0; transition: width 1.3s cubic-bezier(0.16, 1, 0.3, 1);
   }
-  .br-b.apt { background: var(--apt-bar); color: var(--muted); }
-  .br-b.nb { background: var(--gold); color: var(--bg); }
-  .bg.visible .br:nth-child(2) .br-b { transition-delay: 0s; }
-  .bg.visible .br:nth-child(3) .br-b { transition-delay: 0.12s; }
-  .bg-note {
-    font-size: 0.72rem; color: var(--gold); margin-top: 0.35rem;
-    padding-left: 5.1rem; font-weight: 500; opacity: 0; transition: opacity 0.5s 0.6s;
-  }
-  .bg.visible .bg-note { opacity: 1; }
+  .br-b.apt { background: #E4E4E4; }
+  .br-b.old { background: linear-gradient(90deg, #FFC84A 0%, #FFB800 100%); opacity: 0.6; }
+  .br-b.nb  { background: linear-gradient(90deg, #FFB800 0%, #FF8000 100%); box-shadow: 0 2px 16px rgba(255,140,0,0.22); }
+  .bg.visible .br:nth-child(1) .br-b { transition-delay: 0s; }
+  .bg.visible .br:nth-child(2) .br-b { transition-delay: 0.15s; }
+  .bg.visible .br:nth-child(3) .br-b { transition-delay: 0.30s; }
+  .br-time { font-size: 0.76rem; font-family: var(--fd); font-weight: 600; flex-shrink: 0; width: 3.8rem; }
+  .br-time.brew-t { color: var(--dim); }
+  .br-time.old-t  { color: #b45309; }
+  .br-time.nb-t   { color: #c05621; }
 
   .how { padding: 4rem 0; border-top: 1px solid var(--border); }
   .how h2 { font-family: var(--fd); font-weight: 700; font-size: 1.4rem; color: var(--bright); margin-bottom: 1.5rem; }
@@ -1196,42 +1204,53 @@ const RELEASE_190_HTML = `<!DOCTYPE html>
   </section>
 
   <section class="stat">
-    <span class="stat-num">11.8x</span>
+    <span class="stat-num">140x</span>
     <span class="stat-label">faster than Homebrew on warm installs</span>
-    <p class="stat-ctx"><em>tree</em>: Homebrew 2.25s → nanobrew 0.19s</p>
+    <p class="stat-ctx"><em>tree</em> warm: Homebrew 2.38s &rarr; v0.1.083 23ms &rarr; <em>v0.1.190 17ms</em></p>
   </section>
 
   <section class="bench">
     <h2>Performance benchmarks</h2>
-    <p class="bench-sub">Apple Silicon, macOS, median of 3 runs</p>
+    <p class="bench-sub">Apple Silicon (M-series), macOS, median of 3 runs &mdash; v0.1.083 vs v0.1.190 vs Homebrew</p>
 
     <div class="bg" data-observe>
-      <div class="bg-title">tree <span>warm install</span></div>
-      <div class="br"><div class="br-l">Homebrew</div><div class="br-t"><div class="br-b apt" style="width:100%">Homebrew 2.25s</div></div></div>
-      <div class="br"><div class="br-l">nanobrew</div><div class="br-t"><div class="br-b nb" style="width:8.4%">nanobrew 0.19s</div></div></div>
-      <div class="bg-note">11.8x faster</div>
+      <div class="bg-header">
+        <div class="bg-title">tree <span>warm install</span></div>
+        <div class="bg-badge">140x faster than Homebrew</div>
+      </div>
+      <div class="br"><div class="br-l">Homebrew</div><div class="br-t"><div class="br-b apt" style="width:100%"></div></div><span class="br-time brew-t">2.38s</span></div>
+      <div class="br"><div class="br-l">v0.1.083</div><div class="br-t"><div class="br-b old" style="width:0.97%"></div></div><span class="br-time old-t">23ms</span></div>
+      <div class="br"><div class="br-l">v0.1.190</div><div class="br-t"><div class="br-b nb"  style="width:0.71%"></div></div><span class="br-time nb-t">17ms</span></div>
     </div>
 
     <div class="bg" data-observe>
-      <div class="bg-title">tree <span>cold install</span></div>
-      <div class="br"><div class="br-l">Homebrew</div><div class="br-t"><div class="br-b apt" style="width:100%">Homebrew 8.99s</div></div></div>
-      <div class="br"><div class="br-l">nanobrew</div><div class="br-t"><div class="br-b nb" style="width:13.2%">nanobrew 1.19s</div></div></div>
-      <div class="bg-note">7.6x faster</div>
+      <div class="bg-header">
+        <div class="bg-title">tree <span>cold install</span></div>
+        <div class="bg-badge">9x faster than Homebrew</div>
+      </div>
+      <div class="br"><div class="br-l">Homebrew</div><div class="br-t"><div class="br-b apt" style="width:100%"></div></div><span class="br-time brew-t">3.13s</span></div>
+      <div class="br"><div class="br-l">v0.1.083</div><div class="br-t"><div class="br-b old" style="width:12.6%"></div></div><span class="br-time old-t">394ms</span></div>
+      <div class="br"><div class="br-l">v0.1.190</div><div class="br-t"><div class="br-b nb"  style="width:11.4%"></div></div><span class="br-time nb-t">356ms</span></div>
     </div>
 
     <div class="bg" data-observe>
-      <div class="bg-title">wget + 5 deps <span>warm install</span></div>
-      <div class="br"><div class="br-l">Homebrew</div><div class="br-t"><div class="br-b apt" style="width:100%">Homebrew 2.43s</div></div></div>
-      <div class="br"><div class="br-l">nanobrew</div><div class="br-t"><div class="br-b nb" style="width:23.9%">nanobrew 0.58s</div></div></div>
-      <div class="bg-note">4.2x faster</div>
+      <div class="bg-header">
+        <div class="bg-title">v0.1.190 vs v0.1.083 <span>warm speedup</span></div>
+        <div class="bg-badge">1.4x improvement</div>
+      </div>
+      <div class="br"><div class="br-l">v0.1.083</div><div class="br-t"><div class="br-b old" style="width:100%"></div></div><span class="br-time old-t">23ms</span></div>
+      <div class="br"><div class="br-l">v0.1.190</div><div class="br-t"><div class="br-b nb"  style="width:73.9%"></div></div><span class="br-time nb-t">17ms</span></div>
     </div>
 
     <div class="bg" data-observe>
-      <div class="bg-title">wget + 5 deps <span>cold install</span></div>
-      <div class="br"><div class="br-l">Homebrew</div><div class="br-t"><div class="br-b apt" style="width:100%">Homebrew 16.84s</div></div></div>
-      <div class="br"><div class="br-l">nanobrew</div><div class="br-t"><div class="br-b nb" style="width:66.9%">nanobrew 11.26s</div></div></div>
-      <div class="bg-note">1.5x faster</div>
+      <div class="bg-header">
+        <div class="bg-title">v0.1.190 vs v0.1.083 <span>cold speedup</span></div>
+        <div class="bg-badge">1.1x improvement</div>
+      </div>
+      <div class="br"><div class="br-l">v0.1.083</div><div class="br-t"><div class="br-b old" style="width:100%"></div></div><span class="br-time old-t">394ms</span></div>
+      <div class="br"><div class="br-l">v0.1.190</div><div class="br-t"><div class="br-b nb"  style="width:90.4%"></div></div><span class="br-time nb-t">356ms</span></div>
     </div>
+  </section>
   </section>
 
   <section class="how">
