@@ -19,11 +19,26 @@ const ELF_MAGIC = [4]u8{ 0x7f, 'E', 'L', 'F' };
 // Text config file extensions that may contain placeholders
 const TEXT_EXTS = [_][]const u8{ ".pc", ".cmake", ".la", ".sh", ".cfg" };
 
+fn printErr(lib_io: std.Io, comptime fmt: []const u8, args: anytype) void {
+    var buf: [512]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch fmt;
+    std.Io.File.stderr().writeStreamingAll(lib_io, msg) catch {};
+}
+
+fn run(alloc: std.mem.Allocator, lib_io: std.Io, argv: []const []const u8) ?std.process.RunResult {
+    const r = std.process.run(alloc, lib_io, .{
+        .argv = argv,
+        .stdout_limit = .limited(256 * 1024),
+        .stderr_limit = .limited(4096),
+    }) catch return null;
+    return r;
+}
+
 /// Relocate all ELF files and text configs in a keg.
 pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const u8) !void {
-    hasPatchelf(alloc) catch {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
-        stderr.print("nb: patchelf not found — attempting auto-install...\n", .{}) catch {};
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+    hasPatchelf(alloc, lib_io) catch {
+        printErr(lib_io, "nb: patchelf not found — attempting auto-install...\n", .{});
 
         // Try without sudo first (works in containers/root), then with sudo
         const install_cmds = [_][]const []const u8{
@@ -39,22 +54,21 @@ pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const 
             &.{ "sudo", "pacman", "-S", "--noconfirm", "patchelf" },
         };
         for (install_cmds) |cmd| {
-            const result = std.process.Child.run(.{
-                .allocator = alloc,
-                .argv = cmd,
-            }) catch continue;
-            alloc.free(result.stdout);
-            alloc.free(result.stderr);
-            if (result.term == .Exited and result.term.Exited == 0) break;
+            if (run(alloc, lib_io, cmd)) |r| {
+                const ok = switch (r.term) { .exited => |c| c == 0, else => false };
+                alloc.free(r.stdout);
+                alloc.free(r.stderr);
+                if (ok) break;
+            }
         }
 
         // Always recheck — handles race condition in parallel installs
-        hasPatchelf(alloc) catch {
-            stderr.print("nb: {s}: could not install patchelf — ELF binary relocation skipped\n", .{name}) catch {};
-            stderr.print("nb: install patchelf manually (e.g. apt install patchelf) and re-run: nb reinstall {s}\n", .{name}) catch {};
+        hasPatchelf(alloc, lib_io) catch {
+            printErr(lib_io, "nb: {s}: could not install patchelf — ELF binary relocation skipped\n", .{name});
+            printErr(lib_io, "nb: install patchelf manually (e.g. apt install patchelf) and re-run: nb reinstall {s}\n", .{name});
             return error.PatchelfNotFound;
         };
-        stderr.print("nb: patchelf installed successfully\n", .{}) catch {};
+        printErr(lib_io, "nb: patchelf installed successfully\n", .{});
     };
 
     var keg_buf: [512]u8 = undefined;
@@ -64,7 +78,7 @@ pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const 
     for (ELF_DIRS) |subdir| {
         var sub_buf: [512]u8 = undefined;
         const sub_path = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ keg_dir, subdir }) catch continue;
-        walkAndRelocate(alloc, sub_path) catch {};
+        walkAndRelocate(alloc, lib_io, sub_path) catch {};
     }
 
     // Also relocate text config files in lib/pkgconfig, lib/cmake, etc.
@@ -72,113 +86,114 @@ pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const 
     for (text_dirs) |subdir| {
         var sub_buf: [512]u8 = undefined;
         const sub_path = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ keg_dir, subdir }) catch continue;
-        walkAndRelocateText(sub_path) catch {};
+        walkAndRelocateText(lib_io, sub_path) catch {};
     }
 
     // Also check .la files in lib/ directly
     var lib_buf: [512]u8 = undefined;
     const lib_path = std.fmt.bufPrint(&lib_buf, "{s}/lib", .{keg_dir}) catch return;
-    relocateLaFiles(lib_path) catch {};
+    relocateLaFiles(lib_io, lib_path) catch {};
 }
 
-fn hasPatchelf(alloc: std.mem.Allocator) !void {
-    const result = std.process.Child.run(.{
-        .allocator = alloc,
+fn hasPatchelf(alloc: std.mem.Allocator, lib_io: std.Io) !void {
+    const r = std.process.run(alloc, lib_io, .{
         .argv = &.{ "patchelf", "--version" },
+        .stdout_limit = .limited(256),
+        .stderr_limit = .limited(256),
     }) catch return error.PatchelfNotFound;
-    defer alloc.free(result.stdout);
-    defer alloc.free(result.stderr);
-
-    if (result.term != .Exited or result.term.Exited != 0) {
-        return error.PatchelfNotFound;
-    }
+    defer alloc.free(r.stdout);
+    defer alloc.free(r.stderr);
+    if (switch (r.term) { .exited => |c| c != 0, else => true }) return error.PatchelfNotFound;
 }
 
-fn walkAndRelocate(alloc: std.mem.Allocator, dir_path: []const u8) !void {
-    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return;
-    defer dir.close();
-
-    var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
-        var child_buf: [2048]u8 = undefined;
-        const child_path = std.fmt.bufPrint(&child_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
-
-        switch (entry.kind) {
-            .directory => walkAndRelocate(alloc, child_path) catch {},
-            .file => relocateFile(alloc, child_path),
-            else => {},
-        }
-    }
-}
-
-fn walkAndRelocateText(dir_path: []const u8) !void {
-    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return;
-    defer dir.close();
-
-    var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
-        if (entry.kind == .directory) {
+fn walkAndRelocate(alloc: std.mem.Allocator, lib_io: std.Io, dir_path: []const u8) !void {
+    if (std.Io.Dir.openDirAbsolute(lib_io, dir_path, .{ .iterate = true })) |d| {
+        var dir = d;
+        var iter = dir.iterate();
+        while (iter.next(lib_io) catch null) |entry| {
             var child_buf: [2048]u8 = undefined;
             const child_path = std.fmt.bufPrint(&child_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
-            walkAndRelocateText(child_path) catch {};
-            continue;
-        }
-        if (entry.kind != .file) continue;
-
-        for (TEXT_EXTS) |ext| {
-            if (std.mem.endsWith(u8, entry.name, ext)) {
-                var path_buf: [2048]u8 = undefined;
-                const file_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch break;
-                _ = placeholder.relocateTextFile(file_path);
-                break;
+            switch (entry.kind) {
+                .directory => walkAndRelocate(alloc, lib_io, child_path) catch {},
+                .file => relocateFile(alloc, lib_io, child_path),
+                else => {},
             }
         }
-    }
+        dir.close(lib_io);
+    } else |_| {}
 }
 
-fn relocateLaFiles(dir_path: []const u8) !void {
-    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return;
-    defer dir.close();
-
-    var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
-        if (entry.kind != .file) continue;
-        if (!std.mem.endsWith(u8, entry.name, ".la")) continue;
-        var path_buf: [2048]u8 = undefined;
-        const file_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
-        _ = placeholder.relocateTextFile(file_path);
-    }
+fn walkAndRelocateText(lib_io: std.Io, dir_path: []const u8) !void {
+    if (std.Io.Dir.openDirAbsolute(lib_io, dir_path, .{ .iterate = true })) |d| {
+        var dir = d;
+        var iter = dir.iterate();
+        while (iter.next(lib_io) catch null) |entry| {
+            if (entry.kind == .directory) {
+                var child_buf: [2048]u8 = undefined;
+                const child_path = std.fmt.bufPrint(&child_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
+                walkAndRelocateText(lib_io, child_path) catch {};
+                continue;
+            }
+            if (entry.kind != .file) continue;
+            for (TEXT_EXTS) |ext| {
+                if (std.mem.endsWith(u8, entry.name, ext)) {
+                    var path_buf: [2048]u8 = undefined;
+                    const file_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch break;
+                    _ = placeholder.relocateTextFile(lib_io, file_path);
+                    break;
+                }
+            }
+        }
+        dir.close(lib_io);
+    } else |_| {}
 }
 
-fn relocateFile(alloc: std.mem.Allocator, path: []const u8) void {
-    var file = std.fs.openFileAbsolute(path, .{}) catch return;
-    defer file.close();
+fn relocateLaFiles(lib_io: std.Io, dir_path: []const u8) !void {
+    if (std.Io.Dir.openDirAbsolute(lib_io, dir_path, .{ .iterate = true })) |d| {
+        var dir = d;
+        var iter = dir.iterate();
+        while (iter.next(lib_io) catch null) |entry| {
+            if (entry.kind != .file) continue;
+            if (!std.mem.endsWith(u8, entry.name, ".la")) continue;
+            var path_buf: [2048]u8 = undefined;
+            const file_path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
+            _ = placeholder.relocateTextFile(lib_io, file_path);
+        }
+        dir.close(lib_io);
+    } else |_| {}
+}
+
+fn relocateFile(alloc: std.mem.Allocator, lib_io: std.Io, path: []const u8) void {
+    const file = std.Io.Dir.openFileAbsolute(lib_io, path, .{}) catch return;
 
     // Read ELF header to detect format
     var header: [16]u8 = undefined;
-    const n = file.read(&header) catch return;
-    if (n < 16) return;
-    if (!std.mem.eql(u8, header[0..4], &ELF_MAGIC)) return;
+    const n = file.readPositionalAll(lib_io, &header, 0) catch { file.close(lib_io); return; };
+    if (n < 16) { file.close(lib_io); return; }
+    if (!std.mem.eql(u8, header[0..4], &ELF_MAGIC)) { file.close(lib_io); return; }
 
     // It's an ELF file — check if it contains placeholders
-    file.seekTo(0) catch return;
-    if (!elfContainsPlaceholder(file)) return;
+    const has_placeholder = elfContainsPlaceholder(lib_io, file);
+    file.close(lib_io);
+    if (!has_placeholder) return;
 
     // Use patchelf to fix rpath
-    patchelfRelocate(alloc, path);
+    patchelfRelocate(alloc, lib_io, path);
 }
 
-fn elfContainsPlaceholder(file: std.fs.File) bool {
+fn elfContainsPlaceholder(lib_io: std.Io, file: std.Io.File) bool {
     var buf: [65536]u8 = undefined;
     var overlap: usize = 0;
     const needle = "@@HOMEBREW";
+    var offset: u64 = 0;
     while (true) {
         if (overlap > 0) {
             const src = buf[buf.len - overlap ..];
             std.mem.copyForwards(u8, buf[0..overlap], src);
         }
-        const n = file.read(buf[overlap..]) catch return false;
+        const n = file.readPositionalAll(lib_io, buf[overlap..], offset) catch return false;
         if (n == 0) break;
+        offset += @intCast(n);
         const total = overlap + n;
         if (std.mem.indexOf(u8, buf[0..total], needle) != null) return true;
         overlap = @min(needle.len - 1, total);
@@ -186,38 +201,29 @@ fn elfContainsPlaceholder(file: std.fs.File) bool {
     return false;
 }
 
-fn patchelfRelocate(alloc: std.mem.Allocator, path: []const u8) void {
+fn patchelfRelocate(alloc: std.mem.Allocator, lib_io: std.Io, path: []const u8) void {
     // 1. Fix interpreter (PT_INTERP) — critical for executables
-    patchInterpreter(alloc, path);
+    patchInterpreter(alloc, lib_io, path);
 
     // 2. Fix RPATH
-    const rpath_result = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "patchelf", "--print-rpath", path },
-    }) catch return;
-    defer alloc.free(rpath_result.stderr);
-    defer alloc.free(rpath_result.stdout);
-
-    if (rpath_result.term == .Exited and rpath_result.term.Exited == 0) {
-        const current_rpath = std.mem.trim(u8, rpath_result.stdout, " \t\n\r");
-        if (current_rpath.len > 0 and placeholder.hasPlaceholder(current_rpath)) {
-            const new_rpath = placeholder.replacePlaceholders(alloc, current_rpath) catch return;
-            defer alloc.free(new_rpath);
-
-            const set_result = std.process.Child.run(.{
-                .allocator = alloc,
-                .argv = &.{ "patchelf", "--set-rpath", new_rpath, path },
-            }) catch return;
-            alloc.free(set_result.stdout);
-            alloc.free(set_result.stderr);
+    if (run(alloc, lib_io, &.{ "patchelf", "--print-rpath", path })) |rpath_result| {
+        defer alloc.free(rpath_result.stderr);
+        defer alloc.free(rpath_result.stdout);
+        if (switch (rpath_result.term) { .exited => |c| c == 0, else => false }) {
+            const current_rpath = std.mem.trim(u8, rpath_result.stdout, " \t\n\r");
+            if (current_rpath.len > 0 and placeholder.hasPlaceholder(current_rpath)) {
+                const new_rpath = placeholder.replacePlaceholders(alloc, current_rpath) catch return;
+                defer alloc.free(new_rpath);
+                if (run(alloc, lib_io, &.{ "patchelf", "--set-rpath", new_rpath, path })) |r| {
+                    alloc.free(r.stdout);
+                    alloc.free(r.stderr);
+                }
+            }
         }
     }
 
     // 3. Fix DT_NEEDED entries with placeholders
-    const needed_result = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "patchelf", "--print-needed", path },
-    }) catch return;
+    const needed_result = run(alloc, lib_io, &.{ "patchelf", "--print-needed", path }) orelse return;
     defer alloc.free(needed_result.stderr);
 
     var lines_iter = std.mem.splitScalar(u8, needed_result.stdout, '\n');
@@ -227,61 +233,51 @@ fn patchelfRelocate(alloc: std.mem.Allocator, path: []const u8) void {
         if (placeholder.hasPlaceholder(lib)) {
             const new_lib = placeholder.replacePlaceholders(alloc, lib) catch continue;
             defer alloc.free(new_lib);
-            const replace_result = std.process.Child.run(.{
-                .allocator = alloc,
-                .argv = &.{ "patchelf", "--replace-needed", lib, new_lib, path },
-            }) catch continue;
-            alloc.free(replace_result.stdout);
-            alloc.free(replace_result.stderr);
+            if (run(alloc, lib_io, &.{ "patchelf", "--replace-needed", lib, new_lib, path })) |r| {
+                alloc.free(r.stdout);
+                alloc.free(r.stderr);
+            }
         }
     }
     alloc.free(needed_result.stdout);
 }
 
-fn patchInterpreter(alloc: std.mem.Allocator, path: []const u8) void {
-    const result = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "patchelf", "--print-interpreter", path },
-    }) catch return;
+fn patchInterpreter(alloc: std.mem.Allocator, lib_io: std.Io, path: []const u8) void {
+    const result = run(alloc, lib_io, &.{ "patchelf", "--print-interpreter", path }) orelse return;
     defer alloc.free(result.stderr);
     defer alloc.free(result.stdout);
 
-    if (result.term != .Exited or result.term.Exited != 0) return; // not an executable (shared lib)
+    if (switch (result.term) { .exited => |c| c != 0, else => true }) return;
 
     const current = std.mem.trim(u8, result.stdout, " \t\n\r");
     if (!placeholder.hasPlaceholder(current)) return;
 
     if (placeholder.replacePlaceholders(alloc, current)) |resolved| {
         defer alloc.free(resolved);
-        if (std.fs.accessAbsolute(resolved, .{})) |_| {
-            const set_result = std.process.Child.run(.{
-                .allocator = alloc,
-                .argv = &.{ "patchelf", "--set-interpreter", resolved, path },
-            }) catch return;
-            alloc.free(set_result.stdout);
-            alloc.free(set_result.stderr);
+        if (std.Io.Dir.accessAbsolute(lib_io, resolved, .{})) |_| {
+            if (run(alloc, lib_io, &.{ "patchelf", "--set-interpreter", resolved, path })) |r| {
+                alloc.free(r.stdout);
+                alloc.free(r.stderr);
+            }
             return;
         } else |_| {}
     } else |_| {}
 
-    const new_interp = detectInterpreter(path) orelse return;
-
-    const set_result = std.process.Child.run(.{
-        .allocator = alloc,
-        .argv = &.{ "patchelf", "--set-interpreter", new_interp, path },
-    }) catch return;
-    alloc.free(set_result.stdout);
-    alloc.free(set_result.stderr);
+    const new_interp = detectInterpreter(lib_io, path) orelse return;
+    if (run(alloc, lib_io, &.{ "patchelf", "--set-interpreter", new_interp, path })) |r| {
+        alloc.free(r.stdout);
+        alloc.free(r.stderr);
+    }
 }
 
 /// Read the ELF e_machine field to pick the correct dynamic linker for the
 /// binary's actual architecture (not the architecture nb was compiled for).
-fn detectInterpreter(path: []const u8) ?[]const u8 {
-    var file = std.fs.openFileAbsolute(path, .{}) catch return null;
-    defer file.close();
+fn detectInterpreter(lib_io: std.Io, path: []const u8) ?[]const u8 {
+    const file = std.Io.Dir.openFileAbsolute(lib_io, path, .{}) catch return null;
 
     var header: [20]u8 = undefined;
-    const n = file.read(&header) catch return null;
+    const n = file.readPositionalAll(lib_io, &header, 0) catch { file.close(lib_io); return null; };
+    file.close(lib_io);
     if (n < 20) return null;
     if (!std.mem.eql(u8, header[0..4], &ELF_MAGIC)) return null;
 

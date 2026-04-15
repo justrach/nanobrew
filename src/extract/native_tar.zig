@@ -249,6 +249,7 @@ pub fn extractToDir(alloc: std.mem.Allocator, tar_data: []const u8, dest_dir: []
         files.deinit(alloc);
     }
     var rejected: usize = 0;
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
     var pos: usize = 0;
     var gnu_long_name: ?[]const u8 = null;
     var gnu_long_link: ?[]const u8 = null;
@@ -371,12 +372,20 @@ pub fn extractToDir(alloc: std.mem.Allocator, tar_data: []const u8, dest_dir: []
                 }
 
                 // Remove existing file/symlink before creating
-                std.fs.deleteFileAbsolute(abs_path) catch {};
+                std.Io.Dir.deleteFileAbsolute(lib_io, abs_path) catch {};
 
-                std.posix.symlinkat(link_target, std.fs.cwd().fd, abs_path) catch {
+                // Null-terminate both strings for the C symlink call
+                path_buf[abs_path.len] = 0;
+                const abs_path_z: [*:0]const u8 = @ptrCast(abs_path.ptr);
+                var lt_buf: [1025]u8 = undefined;
+                const lt_len = @min(link_target.len, 1024);
+                @memcpy(lt_buf[0..lt_len], link_target[0..lt_len]);
+                lt_buf[lt_len] = 0;
+                const link_target_z: [*:0]const u8 = @ptrCast(&lt_buf);
+                if (std.c.symlink(link_target_z, abs_path_z) != 0) {
                     pos += alignToBlock(file_size);
                     continue;
-                };
+                }
                 try files.append(alloc, try alloc.dupe(u8, entry_name));
             },
             TypeFlag.hardlink => {
@@ -395,11 +404,15 @@ pub fn extractToDir(alloc: std.mem.Allocator, tar_data: []const u8, dest_dir: []
                     continue;
                 };
 
-                std.fs.deleteFileAbsolute(abs_path) catch {};
-                std.posix.linkat(std.fs.cwd().fd, abs_target, std.fs.cwd().fd, abs_path, 0) catch {
+                std.Io.Dir.deleteFileAbsolute(lib_io, abs_path) catch {};
+                target_buf[abs_target.len] = 0;
+                path_buf[abs_path.len] = 0;
+                const abs_target_z: [*:0]const u8 = @ptrCast(abs_target.ptr);
+                const abs_path_z2: [*:0]const u8 = @ptrCast(abs_path.ptr);
+                if (std.c.link(abs_target_z, abs_path_z2) != 0) {
                     pos += alignToBlock(file_size);
                     continue;
-                };
+                }
                 try files.append(alloc, try alloc.dupe(u8, entry_name));
             },
             else => {
@@ -411,8 +424,10 @@ pub fn extractToDir(alloc: std.mem.Allocator, tar_data: []const u8, dest_dir: []
     }
 
     if (rejected > 0) {
-        const stderr_writer = std.fs.File.stderr().deprecatedWriter();
-        stderr_writer.print("    warning: rejected {d} unsafe paths from archive\n", .{rejected}) catch {};
+        const lib_io2 = std.Io.Threaded.global_single_threaded.io();
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "    warning: rejected {d} unsafe paths from archive\n", .{rejected}) catch msg_buf[0..0];
+        std.Io.File.stderr().writeStreamingAll(lib_io2, msg) catch {};
     }
 
     return try files.toOwnedSlice(alloc);
@@ -420,20 +435,23 @@ pub fn extractToDir(alloc: std.mem.Allocator, tar_data: []const u8, dest_dir: []
 
 /// Create a file with the given content and mode.
 fn writeFile(path: []const u8, data: []const u8, mode: std.posix.mode_t) !void {
-    const file = try std.fs.cwd().createFile(path, .{ .mode = mode });
-    defer file.close();
-    try file.writeAll(data);
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+    const perms: std.Io.File.Permissions = if (mode & 0o111 != 0) .executable_file else .default_file;
+    const file = try std.Io.Dir.createFileAbsolute(lib_io, path, .{ .permissions = perms });
+    defer file.close(lib_io);
+    try file.writeStreamingAll(lib_io, data);
 }
 
 /// Recursively create directories (like mkdir -p).
 fn makeDirRecursive(path: []const u8) !void {
-    std.fs.makeDirAbsolute(path) catch |err| switch (err) {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+    std.Io.Dir.createDirAbsolute(lib_io, path, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => return,
         error.FileNotFound => {
             // Parent doesn't exist — create it first
             if (std.fs.path.dirname(path)) |parent| {
                 try makeDirRecursive(parent);
-                std.fs.makeDirAbsolute(path) catch |e| switch (e) {
+                std.Io.Dir.createDirAbsolute(lib_io, path, .default_dir) catch |e| switch (e) {
                     error.PathAlreadyExists => return,
                     else => return e,
                 };

@@ -50,7 +50,15 @@ pub fn extractDebToPrefixWithFiles(alloc: std.mem.Allocator, deb_path: []const u
 /// Non-fatal — returns void and prints warnings on failure.
 /// If skip_postinst is true, logs a message and skips execution.
 pub fn runPostinst(alloc: std.mem.Allocator, deb_path: []const u8, pkg_name: []const u8, skip_postinst: bool) void {
-    const stderr_writer = std.fs.File.stderr().deprecatedWriter();
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+
+    const printErr = struct {
+        fn f(io: std.Io, comptime fmt: []const u8, args: anytype) void {
+            const msg = std.fmt.allocPrint(std.heap.smp_allocator, fmt, args) catch return;
+            defer std.heap.smp_allocator.free(msg);
+            std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
+        }
+    }.f;
 
     // Decompress control.tar in memory
     const ctrl_tar_data = decompressControlTar(alloc, deb_path) catch return;
@@ -59,12 +67,12 @@ pub fn runPostinst(alloc: std.mem.Allocator, deb_path: []const u8, pkg_name: []c
     // Extract control.tar to temp directory using native tar
     var ctrl_dir_buf: [1024]u8 = undefined;
     const ctrl_dir = std.fmt.bufPrint(&ctrl_dir_buf, "{s}/control_{s}", .{ paths.TMP_DIR, pkg_name }) catch {
-        stderr_writer.print("warning: path buffer overflow for control dir of {s}\n", .{pkg_name}) catch {};
+        printErr(lib_io, "warning: path buffer overflow for control dir of {s}\n", .{pkg_name});
         return;
     };
 
-    std.fs.makeDirAbsolute(ctrl_dir) catch {};
-    defer std.fs.deleteTreeAbsolute(ctrl_dir) catch {};
+    std.Io.Dir.createDirAbsolute(lib_io, ctrl_dir, .default_dir) catch {};
+    defer std.Io.Dir.cwd().deleteTree(lib_io, ctrl_dir) catch {};
 
     const files = native_tar.extractToDir(alloc, ctrl_tar_data, ctrl_dir) catch return;
     for (files) |f| alloc.free(f);
@@ -73,40 +81,41 @@ pub fn runPostinst(alloc: std.mem.Allocator, deb_path: []const u8, pkg_name: []c
     // Check for postinst script
     var postinst_buf: [1024]u8 = undefined;
     const postinst_path = std.fmt.bufPrint(&postinst_buf, "{s}/postinst", .{ctrl_dir}) catch {
-        stderr_writer.print("warning: path buffer overflow for postinst of {s}\n", .{pkg_name}) catch {};
+        printErr(lib_io, "warning: path buffer overflow for postinst of {s}\n", .{pkg_name});
         return;
     };
 
     // Make it executable and run it
-    if (std.fs.accessAbsolute(postinst_path, .{})) |_| {
+    if (std.Io.Dir.accessAbsolute(lib_io, postinst_path, .{})) |_| {
         if (skip_postinst) {
-            stderr_writer.print("    skipped: postinst for {s} (--skip-postinst)\n", .{pkg_name}) catch {};
+            printErr(lib_io, "    skipped: postinst for {s} (--skip-postinst)\n", .{pkg_name});
             return;
         }
 
-        stderr_writer.print("    running: postinst for {s}\n", .{pkg_name}) catch {};
+        printErr(lib_io, "    running: postinst for {s}\n", .{pkg_name});
 
-        _ = std.process.Child.run(.{
-            .allocator = alloc,
+        _ = std.process.run(alloc, lib_io, .{
             .argv = &.{ "chmod", "+x", postinst_path },
+            .stdout_limit = .limited(256),
+            .stderr_limit = .limited(256),
         }) catch {};
 
-        const run_result = std.process.Child.run(.{
-            .allocator = alloc,
+        const run_result = std.process.run(alloc, lib_io, .{
             .argv = &.{ postinst_path, "configure" },
-            .max_output_bytes = 1024 * 1024,
+            .stdout_limit = .limited(1024 * 1024),
+            .stderr_limit = .limited(1024 * 1024),
         }) catch {
-            stderr_writer.print("    warning: postinst failed for {s}\n", .{pkg_name}) catch {};
+            printErr(lib_io, "    warning: postinst failed for {s}\n", .{pkg_name});
             return;
         };
         alloc.free(run_result.stdout);
         alloc.free(run_result.stderr);
         const postinst_exit: u8 = switch (run_result.term) {
-            .Exited => |code| code,
+            .exited => |code| code,
             else => 1,
         };
         if (postinst_exit != 0) {
-            stderr_writer.print("    warning: postinst exited {d} for {s}\n", .{ postinst_exit, pkg_name }) catch {};
+            printErr(lib_io, "    warning: postinst exited {d} for {s}\n", .{ postinst_exit, pkg_name });
         }
     } else |_| {}
 }
@@ -136,8 +145,10 @@ pub fn listTarFiles(alloc: std.mem.Allocator, tar_data: []const u8) ![][]const u
     const result = native_tar.listFiles(alloc, tar_data) catch return error.ListFailed;
 
     if (result.rejected > 0) {
-        const stderr_writer = std.io.getStdErr().writer();
-        stderr_writer.print("    warning: rejected {d} unsafe paths from archive\n", .{result.rejected}) catch {};
+        const lib_io = std.Io.Threaded.global_single_threaded.io();
+        var msg_buf: [128]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "    warning: rejected {d} unsafe paths from archive\n", .{result.rejected}) catch msg_buf[0..0];
+        std.Io.File.stderr().writeStreamingAll(lib_io, msg) catch {};
     }
 
     return result.files;
@@ -184,17 +195,24 @@ const ArMember = struct {
 
 /// Read an ar archive member whose name starts with `prefix` into memory.
 fn readArMember(alloc: std.mem.Allocator, ar_path: []const u8, prefix: []const u8) !ArMember {
-    var file = try std.fs.openFileAbsolute(ar_path, .{});
-    defer file.close();
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+    const file = try std.Io.Dir.openFileAbsolute(lib_io, ar_path, .{});
+    defer file.close(lib_io);
 
+    var offset: u64 = 0;
+
+    // Read and verify the ar magic header (8 bytes)
     var magic: [8]u8 = undefined;
-    const magic_n = try file.read(&magic);
+    const magic_n = file.readPositional(lib_io, &.{magic[0..]}, offset) catch return error.NotArArchive;
     if (magic_n < 8 or !std.mem.eql(u8, &magic, AR_MAGIC)) return error.NotArArchive;
+    offset += magic_n;
 
     while (true) {
+        // Read ar member header (60 bytes)
         var header: [AR_HEADER_SIZE]u8 = undefined;
-        const hn = file.read(&header) catch break;
+        const hn = file.readPositional(lib_io, &.{header[0..]}, offset) catch break;
         if (hn < AR_HEADER_SIZE) break;
+        offset += AR_HEADER_SIZE;
 
         const member_name = std.mem.trim(u8, header[0..16], " /");
         const size_str = std.mem.trim(u8, header[48..58], " ");
@@ -211,17 +229,27 @@ fn readArMember(alloc: std.mem.Allocator, ar_path: []const u8, prefix: []const u
                 .none;
 
             const data = try alloc.alloc(u8, member_size);
-            const bytes_read = try file.readAll(data);
-            if (bytes_read < member_size) {
+            var read_off: u64 = offset;
+            var read_total: usize = 0;
+            while (read_total < data.len) {
+                const n = file.readPositional(lib_io, &.{data[read_total..]}, read_off) catch {
+                    alloc.free(data);
+                    return error.TruncatedMember;
+                };
+                if (n == 0) break;
+                read_total += n;
+                read_off += @intCast(n);
+            }
+            if (read_total < member_size) {
                 alloc.free(data);
                 return error.TruncatedMember;
             }
             return .{ .data = data, .compression = compression };
         }
 
+        // Skip to next member (padded to even byte boundary)
         const skip = member_size + (member_size % 2);
-        if (skip > std.math.maxInt(i64)) break;
-        file.seekBy(@intCast(skip)) catch break;
+        offset += skip;
     }
 
     return error.MemberNotFound;
@@ -257,18 +285,19 @@ pub fn decompressGzip(alloc: std.mem.Allocator, compressed: []const u8) ![]u8 {
 
 /// For xz, fall back to the system xz command since Zig's xz may need LZMA2.
 fn decompressXzFallback(alloc: std.mem.Allocator, deb_path: []const u8, member_prefix: []const u8) ![]u8 {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
     var member_buf: [128]u8 = undefined;
     const member_name = std.fmt.bufPrint(&member_buf, "{s}.xz", .{member_prefix}) catch
         return error.PathTooLong;
 
-    const ar_result = std.process.Child.run(.{
-        .allocator = alloc,
+    const ar_result = std.process.run(alloc, lib_io, .{
         .argv = &.{ "ar", "p", deb_path, member_name },
-        .max_output_bytes = 512 * 1024 * 1024,
+        .stdout_limit = .limited(512 * 1024 * 1024),
+        .stderr_limit = .limited(4096),
     }) catch return error.DecompressFailed;
     alloc.free(ar_result.stderr);
 
-    if (switch (ar_result.term) { .Exited => |c| c != 0, else => true }) {
+    if (switch (ar_result.term) { .exited => |c| c != 0, else => true }) {
         alloc.free(ar_result.stdout);
         return error.DecompressFailed;
     }
@@ -278,24 +307,24 @@ fn decompressXzFallback(alloc: std.mem.Allocator, deb_path: []const u8, member_p
         return error.PathTooLong;
 
     {
-        var tmp_file = std.fs.createFileAbsolute(xz_tmp, .{}) catch return error.DecompressFailed;
-        tmp_file.writeAll(ar_result.stdout) catch {
-            tmp_file.close();
+        const tmp_file = std.Io.Dir.createFileAbsolute(lib_io, xz_tmp, .{}) catch return error.DecompressFailed;
+        tmp_file.writeStreamingAll(lib_io, ar_result.stdout) catch {
+            tmp_file.close(lib_io);
             return error.DecompressFailed;
         };
-        tmp_file.close();
+        tmp_file.close(lib_io);
     }
     alloc.free(ar_result.stdout);
-    defer std.fs.deleteFileAbsolute(xz_tmp) catch {};
+    defer std.Io.Dir.deleteFileAbsolute(lib_io, xz_tmp) catch {};
 
-    const xz_result = std.process.Child.run(.{
-        .allocator = alloc,
+    const xz_result = std.process.run(alloc, lib_io, .{
         .argv = &.{ "xz", "-d", "--stdout", xz_tmp },
-        .max_output_bytes = 512 * 1024 * 1024,
+        .stdout_limit = .limited(512 * 1024 * 1024),
+        .stderr_limit = .limited(4096),
     }) catch return error.DecompressFailed;
     alloc.free(xz_result.stderr);
 
-    if (switch (xz_result.term) { .Exited => |c| c != 0, else => true }) {
+    if (switch (xz_result.term) { .exited => |c| c != 0, else => true }) {
         alloc.free(xz_result.stdout);
         return error.DecompressFailed;
     }

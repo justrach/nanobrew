@@ -397,7 +397,9 @@ pub const Database = struct {
     }
 
     pub fn recordDebInstall(self: *Database, name: []const u8, version: []const u8, sha256: []const u8, files: []const []const u8) !void {
-        const now = @divTrunc(std.time.nanoTimestamp(), std.time.ns_per_s);
+        var ts_now: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(.REALTIME, &ts_now);
+        const now: i64 = ts_now.sec;
 
         // Remove existing entry for this package
         var i: usize = 0;

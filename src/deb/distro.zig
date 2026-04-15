@@ -74,10 +74,11 @@ pub fn getComponents(id: []const u8) []const []const u8 {
 }
 
 fn readOsRelease(alloc: std.mem.Allocator) ?[]u8 {
-    const file = std.fs.openFileAbsolute("/etc/os-release", .{}) catch return null;
-    defer file.close();
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+    const file = std.Io.Dir.openFileAbsolute(lib_io, "/etc/os-release", .{}) catch return null;
+    defer file.close(lib_io);
     var buf: [4096]u8 = undefined;
-    const n = file.readAll(&buf) catch return null;
+    const n = file.readPositional(lib_io, &.{buf[0..]}, 0) catch return null;
     if (n == 0) return null;
     return alloc.dupe(u8, buf[0..n]) catch null;
 }

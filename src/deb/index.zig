@@ -191,11 +191,12 @@ fn binaryCachePath(buf: []u8, distro_id: []const u8, codename: []const u8, compo
 }
 
 fn ensureCacheDir() void {
-    std.fs.makeDirAbsolute(paths.APT_CACHE_DIR) catch |err| switch (err) {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+    std.Io.Dir.createDirAbsolute(lib_io, paths.APT_CACHE_DIR, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => {
-            std.fs.makeDirAbsolute(paths.CACHE_DIR) catch {};
-            std.fs.makeDirAbsolute(paths.APT_CACHE_DIR) catch {};
+            std.Io.Dir.createDirAbsolute(lib_io, paths.CACHE_DIR, .default_dir) catch {};
+            std.Io.Dir.createDirAbsolute(lib_io, paths.APT_CACHE_DIR, .default_dir) catch {};
         },
     };
 }
@@ -297,27 +298,34 @@ pub fn deserializeIndex(alloc: std.mem.Allocator, data: []const u8) !ParsedIndex
 
 /// Try to read a cached binary index. Returns ParsedIndex on hit, null on miss/stale.
 pub fn readCachedBinaryIndex(alloc: std.mem.Allocator, distro_id: []const u8, codename: []const u8, component: []const u8, arch: []const u8) ?ParsedIndex {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
     var path_buf: [512]u8 = undefined;
     const cache_file = binaryCachePath(&path_buf, distro_id, codename, component, arch) orelse return null;
 
-    const file = std.fs.openFileAbsolute(cache_file, .{}) catch return null;
-    defer file.close();
+    const file = std.Io.Dir.openFileAbsolute(lib_io, cache_file, .{}) catch return null;
+    defer file.close(lib_io);
 
-    const stat = file.stat() catch return null;
+    const stat = file.stat(lib_io) catch return null;
     const size = stat.size;
     if (size < 12 or size > 100 * 1024 * 1024) return null;
 
     const data = alloc.alloc(u8, @intCast(size)) catch return null;
     defer alloc.free(data);
 
-    const bytes_read = file.readAll(data) catch return null;
-    if (bytes_read != @as(usize, @intCast(size))) return null;
+    var offset: usize = 0;
+    while (offset < data.len) {
+        const n = file.readPositional(lib_io, &.{data[offset..]}, @intCast(offset)) catch return null;
+        if (n == 0) break;
+        offset += n;
+    }
+    if (offset != @as(usize, @intCast(size))) return null;
 
     return deserializeIndex(alloc, data) catch null;
 }
 
 /// Write a binary index cache for a given component.
 pub fn writeCachedBinaryIndex(distro_id: []const u8, codename: []const u8, component: []const u8, arch: []const u8, alloc: std.mem.Allocator, packages: []const DebPackage) void {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
     ensureCacheDir();
 
     var path_buf: [512]u8 = undefined;
@@ -326,20 +334,21 @@ pub fn writeCachedBinaryIndex(distro_id: []const u8, codename: []const u8, compo
     const serialized = serializeIndex(alloc, packages) catch return;
     defer alloc.free(serialized);
 
-    const file = std.fs.createFileAbsolute(cache_file, .{}) catch return;
-    defer file.close();
-    file.writeAll(serialized) catch {};
+    const file = std.Io.Dir.createFileAbsolute(lib_io, cache_file, .{}) catch return;
+    defer file.close(lib_io);
+    file.writeStreamingAll(lib_io, serialized) catch {};
 }
 
 /// Invalidate (delete) all cached APT index files.
 pub fn invalidateCache() void {
-    var dir = std.fs.openDirAbsolute(paths.APT_CACHE_DIR, .{ .iterate = true }) catch return;
-    defer dir.close();
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.openDirAbsolute(lib_io, paths.APT_CACHE_DIR, .{ .iterate = true }) catch return;
+    defer dir.close(lib_io);
 
     var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
+    while (iter.next(lib_io) catch null) |entry| {
         if (entry.kind == .file) {
-            dir.deleteFile(entry.name) catch {};
+            dir.deleteFile(lib_io, entry.name) catch {};
         }
     }
 }

@@ -102,6 +102,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     linux_exe_x86.root_module.strip = true;
+    linux_exe_x86.root_module.link_libc = true;
     const linux_step_x86 = b.step("linux", "Cross-compile for x86_64-linux-musl");
     linux_step_x86.dependOn(&b.addInstallArtifact(linux_exe_x86, .{}).step);
 
@@ -122,6 +123,7 @@ pub fn build(b: *std.Build) void {
         }),
     });
     linux_exe_arm.root_module.strip = true;
+    linux_exe_arm.root_module.link_libc = true;
     const linux_step_arm = b.step("linux-arm", "Cross-compile for aarch64-linux-musl");
     linux_step_arm.dependOn(&b.addInstallArtifact(linux_exe_arm, .{}).step);
 }

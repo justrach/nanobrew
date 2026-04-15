@@ -95,6 +95,14 @@ fn monoUnixSeconds() i64 {
     return ts.sec;
 }
 
+fn milliTimestamp() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.REALTIME, &ts);
+    const sec: i64 = @intCast(ts.sec);
+    const nsec: i64 = @intCast(ts.nsec);
+    return sec * 1000 + @divTrunc(nsec, 1_000_000);
+}
+
 const ROOT = paths.ROOT;
 const PREFIX = paths.PREFIX;
 const VERSION = "0.1.190";
@@ -1585,13 +1593,25 @@ fn runUpdate(alloc: std.mem.Allocator) void {
 
     // Get current executable path for replacement
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
-    var exe_buf_size: u32 = @intCast(exe_buf.len);
-    if (std.c._NSGetExecutablePath(@ptrCast(&exe_buf), &exe_buf_size) != 0) {
-        stderr.print("nb: update failed: could not determine executable path\n", .{}) catch {};
-        std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
-        std.process.exit(1);
-    }
-    const exe_path: []const u8 = std.mem.sliceTo(&exe_buf, 0);
+    const exe_path: []const u8 = exe_path_blk: {
+        if (comptime builtin.os.tag == .macos) {
+            var exe_buf_size: u32 = @intCast(exe_buf.len);
+            if (std.c._NSGetExecutablePath(@ptrCast(&exe_buf), &exe_buf_size) != 0) {
+                stderr.print("nb: update failed: could not determine executable path\n", .{}) catch {};
+                std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
+                std.process.exit(1);
+            }
+            break :exe_path_blk std.mem.sliceTo(&exe_buf, 0);
+        } else {
+            const n_signed = std.c.readlink("/proc/self/exe", &exe_buf, exe_buf.len);
+            if (n_signed < 0) {
+                stderr.print("nb: update failed: could not determine executable path\n", .{}) catch {};
+                std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
+                std.process.exit(1);
+            }
+            break :exe_path_blk exe_buf[0..@as(usize, @intCast(n_signed))];
+        }
+    };
 
     // Extract tarball using tar (to a temp directory — must not already exist)
     std.Io.Dir.createDirAbsolute(g_io, tmp_dir, .default_dir) catch |err| {
@@ -2004,7 +2024,7 @@ fn runDoctor(alloc: std.mem.Allocator) void {
         alloc.free(pe.stdout);
         alloc.free(pe.stderr);
         switch (pe.term) {
-            .Exited => |code| {
+            .exited => |code| {
                 if (code == 0) {
                     stdout.print("  ✓ patchelf installed\n", .{}) catch {};
                 } else {
@@ -2894,7 +2914,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
     var timer = MonoTimer.start();
 
     // --- Step 1: Fetch + decompress package index natively ---
-    const t_start = std.time.milliTimestamp();
+    const t_start = milliTimestamp();
     stdout.print("==> Fetching package index...\n", .{}) catch {};
 
     // Use --repo override or auto-detect distro
@@ -3016,7 +3036,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
         return;
     }
 
-    const t_index = std.time.milliTimestamp();
+    const t_index = milliTimestamp();
     stdout.print("==> Fetched index ({d} packages) in {d}ms\n", .{ all_pkgs_list.items.len, t_index - t_start }) catch {};
     // --- Step 2: Parse index + resolve deps ---
     var index_map = nb.deb_index.buildIndex(alloc, all_pkgs_list.items) catch {
@@ -3032,7 +3052,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
     };
     defer provides_map.deinit();
 
-    const t_resolve = std.time.milliTimestamp();
+    const t_resolve = milliTimestamp();
     stdout.print("==> Resolving deps for {d} package(s)... (index built in {d}ms)\n", .{ packages.len, t_resolve - t_index }) catch {};
     const resolved = nb.deb_resolver.resolveAll(alloc, packages, index_map, provides_map) catch {
         stderr.print("nb: dependency resolution failed\n", .{}) catch {};
@@ -3040,7 +3060,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
     };
     defer alloc.free(resolved);
 
-    const t_resolved = std.time.milliTimestamp();
+    const t_resolved = milliTimestamp();
     // --- Step 3: Download + extract (streaming SHA256 verification) ---
     stdout.print("==> Installing {d} package(s)... (resolved in {d}ms)\n", .{ resolved.len, t_resolved - t_resolve }) catch {};
     var installed: usize = 0;
@@ -3052,6 +3072,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
             url_storage: [1024]u8,
             url_len: usize,
             sha256: []const u8,
+            cache_path_storage: [512]u8,
             cache_path_len: usize,
         };
 
@@ -3106,7 +3127,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
             const debWorkerFn = struct {
                 fn run(ctx: DebWorkerCtx) void {
                     // One HTTP client per thread — reuses TCP+TLS connections
-                    var dl_client: std.http.Client = .{ .allocator = ctx.alloc_ };
+                    var dl_client: std.http.Client = .{ .allocator = ctx.alloc_, .io = std.Io.Threaded.global_single_threaded.io() };
                     defer dl_client.deinit();
 
                     while (true) {
@@ -3118,7 +3139,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
 
                         downloadDebWithSha256(&dl_client, url, item.sha256, dest) catch {
                             // Retry once with fresh client (connection may have been reset)
-                            var retry_client: std.http.Client = .{ .allocator = ctx.alloc_ };
+                            var retry_client: std.http.Client = .{ .allocator = ctx.alloc_, .io = std.Io.Threaded.global_single_threaded.io() };
                             defer retry_client.deinit();
                             downloadDebWithSha256(&retry_client, url, item.sha256, dest) catch {
                                 ctx.had_error.store(true, .release);
@@ -3160,7 +3181,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
         }
     }
 
-    const t_downloaded = std.time.milliTimestamp();
+    const t_downloaded = milliTimestamp();
     stdout.print("    download phase: {d}ms\n", .{t_downloaded - t_resolved}) catch {};
 
     // Open database for tracking installed debs
@@ -3258,7 +3279,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
     }
 
     installed = installed_atomic.load(.acquire);
-    const t_extracted = std.time.milliTimestamp();
+    const t_extracted = milliTimestamp();
     stdout.print("    extract phase: {d}ms ({d} packages)\n", .{ t_extracted - t_downloaded, installed }) catch {};
 
     // Run postinst scripts sequentially (must be sequential — they modify global state)
@@ -3335,9 +3356,10 @@ fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
 
     // Run ldconfig after removal
     if (comptime builtin.os.tag == .linux) {
-        const ld_result = std.process.Child.run(.{
-            .allocator = alloc,
+        const ld_result = std.process.run(alloc, g_io, .{
             .argv = &.{"ldconfig"},
+            .stdout_limit = .limited(256),
+            .stderr_limit = .limited(256),
         }) catch null;
         if (ld_result) |r| {
             alloc.free(r.stdout);
@@ -3499,7 +3521,7 @@ fn downloadDebWithSha256(
     {
         var file = std.Io.Dir.createFileAbsolute(g_io, tmp_path, .{}) catch return error.DownloadFailed;
         var file_writer_buf: [65536]u8 = undefined;
-        var file_writer = file.writer(&file_writer_buf);
+        var file_writer = file.writer(g_io, &file_writer_buf);
 
         var reader = response.reader(&.{});
         var hasher = std.crypto.hash.sha2.Sha256.init(.{});
@@ -3549,10 +3571,12 @@ fn downloadDebWithSha256(
                 defer existing.close(g_io);
                 var verify_hasher = std.crypto.hash.sha2.Sha256.init(.{});
                 var read_buf: [65536]u8 = undefined;
+                var read_offset: u64 = 0;
                 while (true) {
-                    const bytes_read = existing.read(&read_buf) catch break :blk false;
+                    const bytes_read = existing.readPositional(g_io, &.{read_buf[0..]}, read_offset) catch break :blk false;
                     if (bytes_read == 0) break;
                     verify_hasher.update(read_buf[0..bytes_read]);
+                    read_offset += bytes_read;
                 }
                 const verify_digest = verify_hasher.finalResult();
                 const charset2 = "0123456789abcdef";
