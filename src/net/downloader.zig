@@ -14,6 +14,12 @@ const std = @import("std");
 const store = @import("../store/store.zig");
 const paths = @import("../platform/paths.zig");
 
+fn milliTimestamp() i64 {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+    const ts = std.Io.Timestamp.now(lib_io, .real);
+    return @as(i64, @truncate(@divTrunc(ts.nanoseconds, std.time.ns_per_ms)));
+}
+
 const CACHE_DIR = paths.CACHE_DIR;
 const BLOBS_DIR = paths.BLOBS_DIR;
 const TMP_DIR = paths.TMP_DIR;
@@ -68,7 +74,7 @@ pub const ParallelDownloader = struct {
         // One TLS client per worker — reused across all items this worker handles.
         // std.http.Client pools connections; successive requests to the same host
         // reuse the existing TLS session instead of a full handshake each time.
-        var client: std.http.Client = .{ .allocator = ctx.gpa };
+        var client: std.http.Client = .{ .allocator = ctx.gpa, .io = std.Io.Threaded.global_single_threaded.io() };
         defer client.deinit();
 
         // Per-download arena: zero GPA mutex calls per allocation; single deinit at exit.
@@ -79,13 +85,13 @@ pub const ParallelDownloader = struct {
             const idx = ctx.next_index.fetchAdd(1, .monotonic);
             if (idx >= ctx.items.len) break;
             defer _ = arena.reset(.retain_capacity);
-            const t0 = if (ctx.bench) std.time.milliTimestamp() else @as(i64, 0);
+            const t0 = if (ctx.bench) milliTimestamp() else @as(i64, 0);
             downloadOneWithClient(arena.allocator(), &client, ctx.items[idx], ctx.preauth_token) catch {
                 ctx.had_error.store(true, .release);
             };
             if (ctx.bench) {
                 const sha = ctx.items[idx].expected_sha256;
-                std.debug.print("[nb-bench] pkg {s}…: {d}ms\n", .{ sha[0..@min(8, sha.len)], std.time.milliTimestamp() - t0 });
+                std.debug.print("[nb-bench] pkg {s}…: {d}ms\n", .{ sha[0..@min(8, sha.len)], milliTimestamp() - t0 });
             }
         }
     }
@@ -93,8 +99,8 @@ pub const ParallelDownloader = struct {
     pub fn downloadAll(self: *ParallelDownloader) !void {
         if (self.queue.items.len == 0) return;
 
-        const bench = std.posix.getenv("NB_BENCH") != null;
-        const t_start = std.time.milliTimestamp();
+        const bench = std.c.getenv("NB_BENCH") != null;
+        const t_start = milliTimestamp();
 
         // Pre-fetch the GHCR token once for the entire batch. All Homebrew core
         // bottles share the same repo ("homebrew/core") and therefore the same token.
@@ -107,7 +113,7 @@ pub const ParallelDownloader = struct {
         };
         defer if (preauth_token) |t| self.alloc.free(t);
 
-        if (bench) std.debug.print("[nb-bench] token: {d}ms\n", .{std.time.milliTimestamp() - t_start});
+        if (bench) std.debug.print("[nb-bench] token: {d}ms\n", .{milliTimestamp() - t_start});
 
         const num_threads = @min(self.queue.items.len, 8);
         var had_error = std.atomic.Value(bool).init(false);
@@ -138,7 +144,7 @@ pub const ParallelDownloader = struct {
         }
 
         if (bench) std.debug.print("[nb-bench] total: {d}ms ({d} pkgs, {d} threads)\n", .{
-            std.time.milliTimestamp() - t_start,
+            milliTimestamp() - t_start,
             self.queue.items.len,
             num_threads,
         });
@@ -167,8 +173,8 @@ pub const StreamingInstaller = struct {
 
         if (to_fetch.items.len == 0) return;
 
-        const bench = std.posix.getenv("NB_BENCH") != null;
-        const t_start = std.time.milliTimestamp();
+        const bench = std.c.getenv("NB_BENCH") != null;
+        const t_start = milliTimestamp();
 
         // Pre-fetch the GHCR token once — same rationale as ParallelDownloader.
         const preauth_token: ?[]const u8 = blk: {
@@ -178,7 +184,7 @@ pub const StreamingInstaller = struct {
         };
         defer if (preauth_token) |t| self.alloc.free(t);
 
-        if (bench) std.debug.print("[nb-bench] token: {d}ms\n", .{std.time.milliTimestamp() - t_start});
+        if (bench) std.debug.print("[nb-bench] token: {d}ms\n", .{milliTimestamp() - t_start});
 
         const num_threads = @min(to_fetch.items.len, 8);
         var had_error = std.atomic.Value(bool).init(false);
@@ -206,10 +212,10 @@ pub const StreamingInstaller = struct {
                     const idx = ctx.next.fetchAdd(1, .monotonic);
                     if (idx >= ctx.items.len) break;
                     defer _ = arena.reset(.retain_capacity);
-                    const t0 = if (ctx.bench) std.time.milliTimestamp() else @as(i64, 0);
+                    const t0 = if (ctx.bench) milliTimestamp() else @as(i64, 0);
                     downloadAndExtractOne(arena.allocator(), &client, ctx.items[idx], ctx.err, ctx.preauth_token);
                     if (ctx.bench) {
-                        std.debug.print("[nb-bench] pkg {s}: {d}ms\n", .{ ctx.items[idx].name, std.time.milliTimestamp() - t0 });
+                        std.debug.print("[nb-bench] pkg {s}: {d}ms\n", .{ ctx.items[idx].name, milliTimestamp() - t0 });
                     }
                 }
             }
@@ -236,7 +242,7 @@ pub const StreamingInstaller = struct {
         for (threads[0..spawned]) |t| t.join();
 
         if (bench) std.debug.print("[nb-bench] total: {d}ms ({d} pkgs, {d} threads)\n", .{
-            std.time.milliTimestamp() - t_start,
+            milliTimestamp() - t_start,
             to_fetch.items.len,
             num_threads,
         });
@@ -294,10 +300,11 @@ fn fetchGhcrToken(alloc: std.mem.Allocator, client: *std.http.Client, url: []con
 
     const token = try fetchGhcrTokenUncached(alloc, client, repo);
     if (token) |t| {
-        std.fs.makeDirAbsolute(TOKEN_CACHE_DIR) catch {};
-        if (std.fs.createFileAbsolute(cache_path, .{})) |file| {
-            defer file.close();
-            file.writeAll(t) catch {};
+        const _lio = std.Io.Threaded.global_single_threaded.io();
+        std.Io.Dir.createDirAbsolute(_lio, TOKEN_CACHE_DIR, .default_dir) catch {};
+        if (std.Io.Dir.createFileAbsolute(_lio, cache_path, .{})) |file| {
+            file.writeStreamingAll(_lio, t) catch {};
+            file.close(_lio);
         } else |_| {}
     }
     return token;
@@ -331,13 +338,18 @@ fn fetchGhcrTokenUncached(alloc: std.mem.Allocator, client: *std.http.Client, re
 }
 
 fn readCachedToken(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
-    defer file.close();
-    const stat = file.stat() catch return null;
-    const now = std.time.nanoTimestamp();
-    const age_ns = now - stat.mtime;
-    if (age_ns > 240 * std.time.ns_per_s) return null;
-    return file.readToEndAlloc(alloc, 64 * 1024) catch null;
+    const _lio = std.Io.Threaded.global_single_threaded.io();
+    const file = std.Io.Dir.openFileAbsolute(_lio, path, .{}) catch return null;
+    const stat = file.stat(_lio) catch { file.close(_lio); return null; };
+    const now_ns = std.Io.Timestamp.now(_lio, .real).nanoseconds;
+    const age_ns = now_ns - stat.mtime.nanoseconds;
+    if (age_ns > 240 * std.time.ns_per_s) { file.close(_lio); return null; }
+    var tmp_buf: [4096]u8 = undefined;
+    const n = file.readPositionalAll(_lio, &tmp_buf, 0) catch { file.close(_lio); return null; };
+    file.close(_lio);
+    if (n == 0) return null;
+    const result = alloc.dupe(u8, tmp_buf[0..n]) catch return null;
+    return result;
 }
 
 fn scopeToCacheName(repo: []const u8, buf: *[256]u8) ?[]const u8 {
@@ -357,18 +369,20 @@ fn downloadOneWithClient(
     req: DownloadRequest,
     preauth_token: ?[]const u8,
 ) !void {
-    const bench: bool = std.posix.getenv("NB_BENCH") != null;
-    const t_dl = if (bench) std.time.milliTimestamp() else @as(i64, 0);
+    const bench: bool = std.c.getenv("NB_BENCH") != null;
+    const t_dl = if (bench) milliTimestamp() else @as(i64, 0);
     var dest_path_buf: [512]u8 = undefined;
     const dest_path = std.fmt.bufPrint(&dest_path_buf, "{s}/{s}", .{ BLOBS_DIR, req.expected_sha256 }) catch return error.PathTooLong;
 
     // Rewrite bottle URL if NANOBREW_BOTTLE_DOMAIN or HOMEBREW_BOTTLE_DOMAIN is set (#74)
     const bottle_domain: ?[]const u8 = blk: {
-        if (std.posix.getenv("NANOBREW_BOTTLE_DOMAIN")) |d| {
-            if (std.mem.startsWith(u8, d, "https://") and d.len > "https://".len) break :blk d;
+        if (std.c.getenv("NANOBREW_BOTTLE_DOMAIN")) |d| {
+            const ds = std.mem.sliceTo(d, 0);
+            if (std.mem.startsWith(u8, ds, "https://") and ds.len > "https://".len) break :blk ds;
         }
-        if (std.posix.getenv("HOMEBREW_BOTTLE_DOMAIN")) |d| {
-            if (std.mem.startsWith(u8, d, "https://") and d.len > "https://".len) break :blk d;
+        if (std.c.getenv("HOMEBREW_BOTTLE_DOMAIN")) |d| {
+            const ds = std.mem.sliceTo(d, 0);
+            if (std.mem.startsWith(u8, ds, "https://") and ds.len > "https://".len) break :blk ds;
         }
         break :blk null;
     };
@@ -422,9 +436,10 @@ fn downloadOneWithClient(
     const tmp_path = std.fmt.bufPrint(&tmp_path_buf, "{s}/{s}.dl", .{ TMP_DIR, req.expected_sha256 }) catch return error.PathTooLong;
 
     {
-        var file = std.fs.createFileAbsolute(tmp_path, .{}) catch return error.DownloadFailed;
+        const _lio_dl = std.Io.Threaded.global_single_threaded.io();
+        var file = std.Io.Dir.createFileAbsolute(_lio_dl, tmp_path, .{}) catch return error.DownloadFailed;
         var file_writer_buf: [65536]u8 = undefined;
-        var file_writer = file.writer(&file_writer_buf);
+        var file_writer = file.writer(_lio_dl, &file_writer_buf);
 
         var reader = response.reader(&.{});
         var hash_buf: [65536]u8 = undefined;
@@ -432,16 +447,16 @@ fn downloadOneWithClient(
         var hashed = reader.hashed(&hasher, &hash_buf);
 
         _ = hashed.reader.streamRemaining(&file_writer.interface) catch {
-            file.close();
-            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            file.close(_lio_dl);
+            std.Io.Dir.deleteFileAbsolute(_lio_dl, tmp_path) catch {};
             return error.DownloadFailed;
         };
         file_writer.interface.flush() catch {
-            file.close();
-            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            file.close(_lio_dl);
+            std.Io.Dir.deleteFileAbsolute(_lio_dl, tmp_path) catch {};
             return error.DownloadFailed;
         };
-        file.close();
+        file.close(_lio_dl);
 
         // Verify SHA256
         const digest = hasher.finalResult();
@@ -452,17 +467,17 @@ fn downloadOneWithClient(
             hex[idx * 2 + 1] = charset[byte & 0x0f];
         }
         if (req.expected_sha256.len < 64 or !std.mem.eql(u8, &hex, req.expected_sha256[0..64])) {
-            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            std.Io.Dir.deleteFileAbsolute(_lio_dl, tmp_path) catch {};
             return error.ChecksumMismatch;
         }
     }
 
     // Atomic rename to final path
-    std.fs.renameAbsolute(tmp_path, dest_path) catch |err| {
+    std.Io.Dir.renameAbsolute(tmp_path, dest_path, std.Io.Threaded.global_single_threaded.io()) catch |err| {
         if (err == error.PathAlreadyExists) {
             if (bench) {
                 const sha = req.expected_sha256;
-                std.debug.print("[nb-bench] dl {s}…: {d}ms (cached blob)\n", .{ sha[0..@min(8, sha.len)], std.time.milliTimestamp() - t_dl });
+                std.debug.print("[nb-bench] dl {s}…: {d}ms (cached blob)\n", .{ sha[0..@min(8, sha.len)], milliTimestamp() - t_dl });
             }
             return;
         }
@@ -470,20 +485,22 @@ fn downloadOneWithClient(
     };
     if (bench) {
         const sha = req.expected_sha256;
-        std.debug.print("[nb-bench] dl {s}…: {d}ms\n", .{ sha[0..@min(8, sha.len)], std.time.milliTimestamp() - t_dl });
+        std.debug.print("[nb-bench] dl {s}…: {d}ms\n", .{ sha[0..@min(8, sha.len)], milliTimestamp() - t_dl });
     }
 }
 
 /// Public single-download entry point for callers without a persistent client.
 /// Workers should call downloadOneWithClient directly for connection reuse.
 pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
-    var client: std.http.Client = .{ .allocator = alloc };
+    var client: std.http.Client = .{ .allocator = alloc, .io = std.Io.Threaded.global_single_threaded.io() };
     defer client.deinit();
     return downloadOneWithClient(alloc, &client, req, null);
 }
 
 fn fileExists(path: []const u8) bool {
-    std.fs.accessAbsolute(path, .{}) catch return false;
+    const _lio_fe = std.Io.Threaded.global_single_threaded.io();
+    const f = std.Io.Dir.openFileAbsolute(_lio_fe, path, .{}) catch return false;
+    f.close(_lio_fe);
     return true;
 }
 

@@ -54,23 +54,31 @@ fn fetchCachedList(alloc: std.mem.Allocator, url: []const u8, cache_path: []cons
     const body = fetch.get(alloc, url) catch return error.FetchFailed;
 
     // Write to cache
-    std.fs.makeDirAbsolute(CACHE_DIR) catch {};
-    if (std.fs.createFileAbsolute(cache_path, .{})) |file| {
-        defer file.close();
-        file.writeAll(body) catch {};
+    std.Io.Dir.createDirAbsolute(std.Io.Threaded.global_single_threaded.io(), CACHE_DIR, .default_dir) catch {};
+    if (std.Io.Dir.createFileAbsolute(std.Io.Threaded.global_single_threaded.io(), cache_path, .{})) |file| {
+        defer file.close(std.Io.Threaded.global_single_threaded.io());
+        file.writeStreamingAll(std.Io.Threaded.global_single_threaded.io(), body) catch {};
     } else |_| {}
 
     return body;
 }
 
 fn readCachedFile(alloc: std.mem.Allocator, path: []const u8) ?[]u8 {
-    const file = std.fs.openFileAbsolute(path, .{}) catch return null;
-    defer file.close();
-    const stat = file.stat() catch return null;
-    const now = std.time.nanoTimestamp();
-    const age_ns = now - stat.mtime;
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+    const file = std.Io.Dir.openFileAbsolute(lib_io, path, .{}) catch return null;
+    defer file.close(lib_io);
+    const st = file.stat(lib_io) catch return null;
+    const now_ts = std.Io.Timestamp.now(lib_io, .real);
+    const age_ns: i96 = now_ts.nanoseconds - st.mtime.nanoseconds;
     if (age_ns > CACHE_TTL_NS) return null;
-    return file.readToEndAlloc(alloc, 64 * 1024 * 1024) catch null;
+    const sz = @min(st.size, 64 * 1024 * 1024);
+    const buf = alloc.alloc(u8, sz) catch return null;
+    const n = file.readPositionalAll(lib_io, buf, 0) catch { alloc.free(buf); return null; };
+    if (n < sz) {
+        const trimmed = alloc.realloc(buf, n) catch return buf[0..n];
+        return trimmed;
+    }
+    return buf;
 }
 
 fn searchFormulaList(alloc: std.mem.Allocator, json_data: []const u8, lower_query: []const u8, results: *std.ArrayList(SearchResult)) !void {

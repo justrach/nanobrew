@@ -12,6 +12,7 @@ const copy = @import("../platform/copy.zig");
 
 /// Materialize a keg from the store into the Cellar.
 pub fn materialize(sha256: []const u8, name: []const u8, version: []const u8) !void {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
     var name_dir_buf: [512]u8 = undefined;
     const name_dir = std.fmt.bufPrint(&name_dir_buf, "{s}/{s}/{s}", .{ paths.STORE_DIR, sha256, name }) catch return error.PathTooLong;
 
@@ -27,13 +28,10 @@ pub fn materialize(sha256: []const u8, name: []const u8, version: []const u8) !v
     // Ensure parent dir exists
     var parent_buf: [512]u8 = undefined;
     const parent_dir = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ paths.CELLAR_DIR, name }) catch return error.PathTooLong;
-    std.fs.makeDirAbsolute(parent_dir) catch |err| switch (err) {
-        error.PathAlreadyExists => {},
-        else => return err,
-    };
+    std.Io.Dir.createDirAbsolute(lib_io, parent_dir, .default_dir) catch {};
 
     // Remove existing keg if present
-    std.fs.deleteTreeAbsolute(dest_dir) catch {};
+    std.Io.Dir.cwd().deleteTree(lib_io, dest_dir) catch {};
 
     // Try COW clone first (macOS clonefile / Linux: always false -> fallback)
     var src_z: [512:0]u8 = undefined;
@@ -47,7 +45,7 @@ pub fn materialize(sha256: []const u8, name: []const u8, version: []const u8) !v
     if (copy.cloneTree(&src_z, &dst_z)) return;
 
     // Fallback: cp (--reflink=auto on Linux, plain -R on macOS)
-    try copy.cpFallback(src_dir, dest_dir);
+    try copy.cpFallback(lib_io, src_dir, dest_dir);
 }
 
 /// Find the actual installed version for a keg in the Cellar.
@@ -59,44 +57,52 @@ pub fn detectKegVersion(name: []const u8, version: []const u8, result_buf: *[256
 
 /// Remove a keg from the Cellar.
 pub fn remove(name: []const u8, version: []const u8) !void {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
     var buf: [512]u8 = undefined;
     const keg_dir = std.fmt.bufPrint(&buf, "{s}/{s}/{s}", .{ paths.CELLAR_DIR, name, version }) catch return error.PathTooLong;
-    std.fs.deleteTreeAbsolute(keg_dir) catch {};
+    std.Io.Dir.cwd().deleteTree(lib_io, keg_dir) catch {};
 
     var parent_buf: [512]u8 = undefined;
     const parent_dir = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ paths.CELLAR_DIR, name }) catch return;
-    var dir = std.fs.openDirAbsolute(parent_dir, .{ .iterate = true }) catch return;
-    defer dir.close();
-    var iter = dir.iterate();
-    if ((iter.next() catch null) == null) {
-        std.fs.deleteDirAbsolute(parent_dir) catch {};
-    }
+    if (std.Io.Dir.openDirAbsolute(lib_io, parent_dir, .{ .iterate = true })) |d| {
+        var dir = d;
+        var iter = dir.iterate();
+        const empty = (iter.next(lib_io) catch null) == null;
+        dir.close(lib_io);
+        if (empty) {
+            std.Io.Dir.deleteDirAbsolute(lib_io, parent_dir) catch {};
+        }
+    } else |_| {}
 }
 
 fn detectStoreVersion(name_dir: []const u8, version: []const u8, result_buf: *[256]u8) ?[]const u8 {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
     var exact_buf: [512]u8 = undefined;
     const exact = std.fmt.bufPrint(&exact_buf, "{s}/{s}", .{ name_dir, version }) catch return null;
-    if (std.fs.openDirAbsolute(exact, .{})) |d| {
+    if (std.Io.Dir.openDirAbsolute(lib_io, exact, .{})) |d| {
         var dir = d;
-        dir.close();
+        dir.close(lib_io);
         return version;
     } else |_| {}
 
-    var dir = std.fs.openDirAbsolute(name_dir, .{ .iterate = true }) catch return null;
-    defer dir.close();
-    var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
-        if (entry.kind != .directory) continue;
-        if (std.mem.startsWith(u8, entry.name, version)) {
-            if (entry.name.len == version.len or
-                (entry.name.len > version.len and entry.name[version.len] == '_'))
-            {
-                if (entry.name.len <= result_buf.len) {
-                    @memcpy(result_buf[0..entry.name.len], entry.name);
-                    return result_buf[0..entry.name.len];
+    if (std.Io.Dir.openDirAbsolute(lib_io, name_dir, .{ .iterate = true })) |d| {
+        var dir = d;
+        var iter = dir.iterate();
+        while (iter.next(lib_io) catch null) |entry| {
+            if (entry.kind != .directory) continue;
+            if (std.mem.startsWith(u8, entry.name, version)) {
+                if (entry.name.len == version.len or
+                    (entry.name.len > version.len and entry.name[version.len] == '_'))
+                {
+                    if (entry.name.len <= result_buf.len) {
+                        @memcpy(result_buf[0..entry.name.len], entry.name);
+                        dir.close(lib_io);
+                        return result_buf[0..entry.name.len];
+                    }
                 }
             }
         }
-    }
+        dir.close(lib_io);
+    } else |_| {}
     return null;
 }

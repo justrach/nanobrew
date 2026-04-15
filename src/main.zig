@@ -52,17 +52,60 @@ const Phase = enum(u8) {
     failed,
 };
 
+var g_io: std.Io = undefined;
+
+const StderrWriter = struct {
+    pub fn print(self: @This(), comptime fmt: []const u8, args: anytype) error{OutOfMemory}!void {
+        _ = self;
+        const msg = std.fmt.allocPrint(std.heap.smp_allocator, fmt, args) catch return;
+        defer std.heap.smp_allocator.free(msg);
+        std.Io.File.stderr().writeStreamingAll(g_io, msg) catch {};
+    }
+};
+const StdoutWriter = struct {
+    pub fn print(self: @This(), comptime fmt: []const u8, args: anytype) error{OutOfMemory}!void {
+        _ = self;
+        const msg = std.fmt.allocPrint(std.heap.smp_allocator, fmt, args) catch return;
+        defer std.heap.smp_allocator.free(msg);
+        std.Io.File.stdout().writeStreamingAll(g_io, msg) catch {};
+    }
+};
+
+const MonoTimer = struct {
+    start_ns: u64,
+
+    fn start() MonoTimer {
+        return .{ .start_ns = monoNs() };
+    }
+
+    fn read(self: *MonoTimer) u64 {
+        return monoNs() - self.start_ns;
+    }
+};
+
+fn monoNs() u64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
+}
+
+fn monoUnixSeconds() i64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.REALTIME, &ts);
+    return ts.sec;
+}
+
 const ROOT = paths.ROOT;
 const PREFIX = paths.PREFIX;
-const VERSION = "0.1.084";
+const VERSION = "0.1.190";
 
-pub fn main() !void {
-    var gpa = std.heap.GeneralPurposeAllocator(.{}){};
-    defer _ = gpa.deinit();
-    const alloc = gpa.allocator();
+pub fn main(init: std.process.Init) !void {
+    g_io = init.io;
+    const alloc = init.gpa;
 
-    const args = try std.process.argsAlloc(alloc);
-    defer std.process.argsFree(alloc, args);
+    const args_raw = try init.minimal.args.toSlice(init.arena.allocator());
+    const args = try init.arena.allocator().alloc([]const u8, args_raw.len);
+    for (args, args_raw) |*dst, src| dst.* = src;
 
     if (args.len < 2) {
         printUsage();
@@ -70,7 +113,7 @@ pub fn main() !void {
     }
 
     const cmd = parseCommand(args[1]) orelse {
-        const stderr = std.fs.File.stderr().deprecatedWriter();
+        const stderr = StderrWriter{};
         stderr.print("nb: unknown command '{s}'\n\n", .{args[1]}) catch {};
         printUsage();
         std.process.exit(1);
@@ -158,7 +201,7 @@ fn parseCommand(arg: []const u8) ?Command {
 // ── nb init ──
 
 fn runInit() void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stdout = StdoutWriter{};
 
     const dirs = [_][]const u8{
         ROOT,
@@ -178,16 +221,16 @@ fn runInit() void {
     };
 
     for (dirs) |dir| {
-        std.fs.makeDirAbsolute(dir) catch |err| switch (err) {
+        std.Io.Dir.createDirAbsolute(g_io, dir, .default_dir) catch |err| switch (err) {
             error.PathAlreadyExists => continue,
             error.AccessDenied => {
-                const stderr = std.fs.File.stderr().deprecatedWriter();
+                const stderr = StderrWriter{};
                 stderr.print("nb: permission denied creating {s}\n", .{dir}) catch {};
                 stderr.print("nb: try: sudo nb init\n", .{}) catch {};
                 std.process.exit(1);
             },
             else => {
-                const stderr = std.fs.File.stderr().deprecatedWriter();
+                const stderr = StderrWriter{};
                 stderr.print("nb: error creating {s}: {}\n", .{ dir, err }) catch {};
                 std.process.exit(1);
             },
@@ -195,25 +238,28 @@ fn runInit() void {
     }
 
     // If running as root (sudo), chown to the real user so nb install doesn't need sudo
-    if (std.posix.getenv("SUDO_USER")) |real_user| {
+    if (std.c.getenv("SUDO_USER")) |_sudo_cv| {
+        const real_user = std.mem.sliceTo(_sudo_cv, 0);
         // Validate SUDO_USER contains only valid Unix username characters
         const valid = real_user.len > 0 and real_user.len <= 256 and for (real_user) |c| {
             if (!std.ascii.isAlphanumeric(c) and c != '-' and c != '_' and c != '.') break false;
         } else true;
 
         if (valid) {
-            _ = std.process.Child.run(.{
-                .allocator = std.heap.page_allocator,
+            if (std.process.run(std.heap.smp_allocator, g_io, .{
                 .argv = &.{ "chown", "-R", real_user, ROOT },
-            }) catch {};
+            })) |r| {
+                std.heap.smp_allocator.free(r.stdout);
+                std.heap.smp_allocator.free(r.stderr);
+            } else |_| {}
         } else {
-            const stderr = std.fs.File.stderr().deprecatedWriter();
+            const stderr = StderrWriter{};
             stderr.print("nb: warning: SUDO_USER contains invalid characters, skipping chown\n", .{}) catch {};
         }
     }
 
     stdout.print("nanobrew initialized at {s}\n", .{ROOT}) catch {};
-    const shell = std.posix.getenv("SHELL") orelse "";
+    const shell: []const u8 = if (std.c.getenv("SHELL")) |cv| std.mem.sliceTo(cv, 0) else "";
     const is_fish = std.mem.endsWith(u8, shell, "/fish") or std.mem.eql(u8, shell, "fish");
     if (is_fish) {
         stdout.print("Add to your fish config: fish_add_path {s}/bin\n", .{PREFIX}) catch {};
@@ -242,7 +288,7 @@ fn isPackageNameSafe(name: []const u8) bool {
 // ── nb install ──
 
 fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stderr = StderrWriter{};
 
     // Check for --cask, --deb, --repo, --skip-postinst, and --no-verify flags
     var is_cask = false;
@@ -302,10 +348,10 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         return;
     }
 
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stdout = StdoutWriter{};
 
-    var timer = std.time.Timer.start() catch null;
-    var phase_timer = std.time.Timer.start() catch null;
+    var timer = MonoTimer.start();
+    var phase_timer = MonoTimer.start();
 
     // Phase 1: Resolve all dependencies
     stdout.print("==> Resolving dependencies...\n", .{}) catch {};
@@ -331,7 +377,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         if (any_missing) std.process.exit(1);
     }
 
-    const resolve_ms = if (phase_timer) |*pt| @as(f64, @floatFromInt(pt.read())) / 1_000_000.0 else 0;
+    const resolve_ms = @as(f64, @floatFromInt(phase_timer.read())) / 1_000_000.0;
     stdout.print("    [{d:.0}ms]\n", .{resolve_ms}) catch {};
 
     const all_formulae = resolver.topologicalSort() catch {
@@ -358,13 +404,13 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             continue;
         };
         _ = keg_path;
-        if (std.fs.openDirAbsolute(ver_dir, .{})) |d| {
+        if (std.Io.Dir.openDirAbsolute(g_io, ver_dir, .{})) |d| {
             var dir = d;
-            dir.close();
+            dir.close(g_io);
             // Already installed: rerun generic keg repair steps so stale text
             // placeholders and missing prefix links are healed too.
             platform.relocate.relocateKeg(alloc, f.name, actual_ver) catch {};
-            platform.relocate.replaceKegPlaceholders(f.name, actual_ver);
+            platform.relocate.replaceKegPlaceholders(g_io, f.name, actual_ver);
             nb.linker.linkKeg(f.name, actual_ver) catch {};
         } else |_| {
             to_install.append(alloc, f) catch {};
@@ -390,7 +436,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             };
         }
 
-        const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
+        const elapsed_ns: u64 = timer.read();
         const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
         stdout.print("==> Already installed ({d} packages up to date)\n", .{all_formulae.len}) catch {};
         stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
@@ -398,10 +444,10 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     }
 
     // Pre-flight check: verify /opt/nanobrew is writable
-    const write_ok: ?std.fs.File = std.fs.createFileAbsolute(ROOT ++ "/cache/.nb_write_test", .{}) catch null;
+    const write_ok: ?std.Io.File = std.Io.Dir.createFileAbsolute(g_io, ROOT ++ "/cache/.nb_write_test", .{}) catch null;
     if (write_ok != null) {
-        write_ok.?.close();
-        std.fs.deleteFileAbsolute(ROOT ++ "/cache/.nb_write_test") catch {};
+        write_ok.?.close(g_io);
+        std.Io.Dir.deleteFileAbsolute(g_io, ROOT ++ "/cache/.nb_write_test") catch {};
     } else {
         stderr.print("nb: /opt/nanobrew is not writable. Run: sudo nb init\n", .{}) catch {};
         std.process.exit(1);
@@ -412,7 +458,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         stdout.print("    {s} {s}\n", .{ f.name, f.version }) catch {};
     }
     // Single merged phase: Download → Extract → Materialize → Relocate → Link (all parallel)
-    phase_timer = std.time.Timer.start() catch null;
+    phase_timer = MonoTimer.start();
     const pkg_count = install_order.len;
     stdout.print("==> Downloading + installing {d} packages...\n", .{pkg_count}) catch {};
     {
@@ -455,9 +501,9 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         }
 
         // Live progress on TTY, plain wait otherwise
-        const is_tty = std.posix.isatty(std.posix.STDOUT_FILENO);
+        const is_tty = std.Io.File.stdout().isTty(g_io) catch false;
         if (is_tty) {
-            renderProgress(std.fs.File.stdout(), names, phases);
+            renderProgress(names, phases);
         }
 
         for (threads.items) |t| t.join();
@@ -488,7 +534,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             stderr.print("nb: hint: check permissions with `nb doctor`\n", .{}) catch {};
         }
     }
-    const pipeline_ms = if (phase_timer) |*pt| @as(f64, @floatFromInt(pt.read())) / 1_000_000.0 else 0;
+    const pipeline_ms = @as(f64, @floatFromInt(phase_timer.read())) / 1_000_000.0;
     stdout.print("    [{d:.0}ms]\n", .{pipeline_ms}) catch {};
 
     // Record in database (must be serial — single file)
@@ -513,7 +559,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         };
     }
 
-    const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
+    const elapsed_ns: u64 = timer.read();
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
     stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
 }
@@ -523,7 +569,6 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
 /// Render live progress UI with spinners and checkmarks.
 /// Blocks until all packages reach .done or .failed.
 fn renderProgress(
-    stdout_file: std.fs.File,
     names: []const []const u8,
     phases: []std.atomic.Value(u8),
 ) void {
@@ -540,17 +585,19 @@ fn renderProgress(
     const frame_count: usize = spinner.len / frame_bytes;
     var tick: usize = 0;
 
+    const stdout = std.Io.File.stdout();
+
     // Hide cursor
-    stdout_file.writeAll("\x1b[?25l") catch {};
+    stdout.writeStreamingAll(g_io, "\x1b[?25l") catch {};
 
     // Reserve N lines
-    for (0..n) |_| stdout_file.writeAll("\n") catch {};
+    for (0..n) |_| stdout.writeStreamingAll(g_io, "\n") catch {};
 
     while (true) {
         // Move cursor up N lines
         var esc_buf: [16]u8 = undefined;
         const esc = std.fmt.bufPrint(&esc_buf, "\x1b[{d}A", .{n}) catch "";
-        stdout_file.writeAll(esc) catch {};
+        stdout.writeStreamingAll(g_io, esc) catch {};
 
         var all_done = true;
         for (names, 0..) |name, i| {
@@ -558,30 +605,30 @@ fn renderProgress(
             const phase: Phase = @enumFromInt(raw);
 
             // Clear line
-            stdout_file.writeAll("\x1b[2K") catch {};
+            stdout.writeStreamingAll(g_io, "\x1b[2K") catch {};
 
             switch (phase) {
                 .done => {
-                    stdout_file.writeAll("    \x1b[32m✓\x1b[0m ") catch {};
-                    stdout_file.writeAll(name) catch {};
-                    stdout_file.writeAll("\n") catch {};
+                    stdout.writeStreamingAll(g_io, "    \x1b[32m✓\x1b[0m ") catch {};
+                    stdout.writeStreamingAll(g_io, name) catch {};
+                    stdout.writeStreamingAll(g_io, "\n") catch {};
                 },
                 .failed => {
-                    stdout_file.writeAll("    \x1b[31m✗\x1b[0m ") catch {};
-                    stdout_file.writeAll(name) catch {};
-                    stdout_file.writeAll("\n") catch {};
+                    stdout.writeStreamingAll(g_io, "    \x1b[31m✗\x1b[0m ") catch {};
+                    stdout.writeStreamingAll(g_io, name) catch {};
+                    stdout.writeStreamingAll(g_io, "\n") catch {};
                 },
                 else => {
                     all_done = false;
                     const fi = tick % frame_count;
                     const start = fi * frame_bytes;
-                    stdout_file.writeAll("    ") catch {};
-                    stdout_file.writeAll(spinner[start .. start + frame_bytes]) catch {};
-                    stdout_file.writeAll(" ") catch {};
-                    stdout_file.writeAll(name) catch {};
+                    stdout.writeStreamingAll(g_io, "    ") catch {};
+                    stdout.writeStreamingAll(g_io, spinner[start .. start + frame_bytes]) catch {};
+                    stdout.writeStreamingAll(g_io, " ") catch {};
+                    stdout.writeStreamingAll(g_io, name) catch {};
                     // Pad to align phase labels
                     var pad: usize = max_len - name.len + 1;
-                    while (pad > 0) : (pad -= 1) stdout_file.writeAll(" ") catch {};
+                    while (pad > 0) : (pad -= 1) stdout.writeStreamingAll(g_io, " ") catch {};
                     const label: []const u8 = switch (phase) {
                         .waiting => "waiting...",
                         .downloading => "downloading...",
@@ -591,8 +638,8 @@ fn renderProgress(
                         .linking => "linking...",
                         .done, .failed => unreachable,
                     };
-                    stdout_file.writeAll(label) catch {};
-                    stdout_file.writeAll("\n") catch {};
+                    stdout.writeStreamingAll(g_io, label) catch {};
+                    stdout.writeStreamingAll(g_io, "\n") catch {};
                 },
             }
         }
@@ -600,17 +647,18 @@ fn renderProgress(
         if (all_done) break;
 
         tick += 1;
-        std.Thread.sleep(80 * std.time.ns_per_ms);
+        const ts: std.c.timespec = .{ .sec = 0, .nsec = 80 * 1_000_000 };
+        _ = std.c.nanosleep(&ts, null);
     }
 
     // Show cursor
-    stdout_file.writeAll("\x1b[?25h") catch {};
+    stdout.writeStreamingAll(g_io, "\x1b[?25h") catch {};
 }
 
 /// Full per-package pipeline: download → extract → materialize → relocate → link
 /// Runs in its own thread — no barriers between phases.
 fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *std.atomic.Value(bool), phase: *std.atomic.Value(u8)) void {
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stderr = StderrWriter{};
 
     const is_source_build = f.bottle_url.len == 0 and f.source_url.len > 0;
 
@@ -691,7 +739,7 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
     };
 
     // 4b. Replace @@HOMEBREW_*@@ placeholders in text files (shebangs, scripts, configs)
-    platform.relocate.replaceKegPlaceholders(f.name, actual_ver);
+    platform.relocate.replaceKegPlaceholders(g_io, f.name, actual_ver);
     // Save post-relocation snapshot so future reinstalls skip steps 4/4b (~1500ms → ~10ms)
     nb.store.saveRelocatedEntry(f.bottle_sha256, f.name, actual_ver) catch {};
 
@@ -710,12 +758,12 @@ fn fullInstallOne(alloc: std.mem.Allocator, f: nb.formula.Formula, had_error: *s
 }
 
 fn fileExists(path: []const u8) bool {
-    std.fs.accessAbsolute(path, .{}) catch return false;
+    std.Io.Dir.accessAbsolute(g_io, path, .{}) catch return false;
     return true;
 }
 fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     // Check for --cask and --deb flags
     var is_cask = false;
@@ -771,8 +819,8 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
 // ── nb list ──
 
 fn runList(alloc: std.mem.Allocator) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: could not open database\n", .{}) catch {};
@@ -814,8 +862,8 @@ fn runList(alloc: std.mem.Allocator) void {
 // ── nb leaves ──
 
 fn runLeaves(alloc: std.mem.Allocator, args: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     const show_tree = for (args) |a| {
         if (std.mem.eql(u8, a, "--tree")) break true;
@@ -912,8 +960,8 @@ fn runLeaves(alloc: std.mem.Allocator, args: []const []const u8) void {
 // ── nb info ──
 
 fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     // Parse --cask flag
     var is_cask = false;
@@ -1005,8 +1053,8 @@ fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name
 // ── nb search ──
 
 fn runSearch(alloc: std.mem.Allocator, args: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     if (args.len == 0) {
         stderr.print("nb: no search query specified\nUsage: nb search <query>\n", .{}) catch {};
@@ -1071,7 +1119,7 @@ const Outdated = struct {
 };
 
 fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filter_names: []const []const u8, check_casks: bool, check_kegs: bool) std.ArrayList(Outdated) {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stdout = StdoutWriter{};
     var result: std.ArrayList(Outdated) = .empty;
 
     // Collect all packages to check
@@ -1148,9 +1196,8 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
 
     const checkWorkerFn = struct {
         fn run(ctx: CheckCtx) void {
-            var client: std.http.Client = .{ .allocator = ctx.alloc_ };
+            var client: std.http.Client = .{ .allocator = ctx.alloc_, .io = g_io };
             defer client.deinit();
-            client.initDefaultProxies(ctx.alloc_) catch {};
 
             while (true) {
                 const idx = ctx.next_idx.fetchAdd(1, .monotonic);
@@ -1216,10 +1263,10 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
 }
 
 fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
-    var timer = std.time.Timer.start() catch null;
+    var timer = MonoTimer.start();
 
     // Parse --cask and --deb flags
     var is_cask = false;
@@ -1318,7 +1365,7 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
         stdout.print("==> Upgraded {s} ({s} -> {s})\n", .{ pkg.name, pkg.old_ver, pkg.new_ver }) catch {};
     }
 
-    const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
+    const elapsed_ns: u64 = timer.read();
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
     stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
 }
@@ -1326,8 +1373,8 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
 // ── nb update ──
 
 fn runUpdate(alloc: std.mem.Allocator) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     stdout.print("==> Updating nanobrew...\n", .{}) catch {};
 
@@ -1405,7 +1452,7 @@ fn runUpdate(alloc: std.mem.Allocator) void {
     defer alloc.free(sha_body);
 
     // Parse expected SHA256 (first 64 hex chars)
-    const sha_trimmed = std.mem.trimRight(u8, sha_body, "\n \t");
+    const sha_trimmed = std.mem.trimEnd(u8, sha_body, "\n \t");
     // SHA256 file may be "hash  filename" or just "hash"
     const expected_sha: []const u8 = if (sha_trimmed.len >= 64) sha_trimmed[0..64] else {
         stderr.print("nb: update failed: invalid SHA256 file (too short)\n", .{}) catch {};
@@ -1422,7 +1469,13 @@ fn runUpdate(alloc: std.mem.Allocator) void {
 
     // Generate random suffix for temp paths to prevent symlink attacks
     var rand_buf: [8]u8 = undefined;
-    std.crypto.random.bytes(&rand_buf);
+    // Use clock for temp file uniqueness (non-cryptographic randomness is fine for temp paths)
+    {
+        var _ts: std.c.timespec = undefined;
+        _ = std.c.clock_gettime(.MONOTONIC, &_ts);
+        const _seed: u64 = @as(u64, @bitCast(_ts.sec)) ^ (@as(u64, @bitCast(_ts.nsec)) << 32);
+        @memcpy(&rand_buf, std.mem.asBytes(&_seed));
+    }
     var rand_hex: [16]u8 = undefined;
     const rand_charset = "0123456789abcdef";
     for (rand_buf, 0..) |byte, i| {
@@ -1444,13 +1497,11 @@ fn runUpdate(alloc: std.mem.Allocator) void {
     const download_ok: bool = blk: {
         nb.fetch.download(alloc, tarball_url, tmp_tar) catch {
             // Native download failed; try curl
-            const curl = std.process.Child.run(.{
-                .allocator = alloc,
+            const curl = std.process.run(alloc, g_io, .{
                 .argv = &.{ "curl", "-fsSL", "--retry", "3", "-o", tmp_tar, tarball_url },
             }) catch {
                 // curl unavailable; try wget
-                const wget = std.process.Child.run(.{
-                    .allocator = alloc,
+                const wget = std.process.run(alloc, g_io, .{
                     .argv = &.{ "wget", "-q", "--tries=3", "-O", tmp_tar, tarball_url },
                 }) catch {
                     break :blk false;
@@ -1458,7 +1509,7 @@ fn runUpdate(alloc: std.mem.Allocator) void {
                 defer alloc.free(wget.stdout);
                 defer alloc.free(wget.stderr);
                 const wget_ok = switch (wget.term) {
-                    .Exited => |code| code == 0,
+                    .exited => |code| code == 0,
                     else => false,
                 };
                 break :blk wget_ok;
@@ -1466,13 +1517,12 @@ fn runUpdate(alloc: std.mem.Allocator) void {
             defer alloc.free(curl.stdout);
             defer alloc.free(curl.stderr);
             const curl_ok = switch (curl.term) {
-                .Exited => |code| code == 0,
+                .exited => |code| code == 0,
                 else => false,
             };
             if (!curl_ok) {
                 // curl failed; try wget
-                const wget = std.process.Child.run(.{
-                    .allocator = alloc,
+                const wget = std.process.run(alloc, g_io, .{
                     .argv = &.{ "wget", "-q", "--tries=3", "-O", tmp_tar, tarball_url },
                 }) catch {
                     break :blk false;
@@ -1480,7 +1530,7 @@ fn runUpdate(alloc: std.mem.Allocator) void {
                 defer alloc.free(wget.stdout);
                 defer alloc.free(wget.stderr);
                 const wget_ok = switch (wget.term) {
-                    .Exited => |code| code == 0,
+                    .exited => |code| code == 0,
                     else => false,
                 };
                 break :blk wget_ok;
@@ -1497,20 +1547,22 @@ fn runUpdate(alloc: std.mem.Allocator) void {
     // Compute SHA256 of downloaded tarball
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     {
-        var file = std.fs.openFileAbsolute(tmp_tar, .{}) catch {
+        var file = std.Io.Dir.openFileAbsolute(g_io, tmp_tar, .{}) catch {
             stderr.print("nb: update failed: could not open downloaded tarball\n", .{}) catch {};
             std.process.exit(1);
         };
-        defer file.close();
+        defer file.close(g_io);
         var read_buf: [65536]u8 = undefined;
+        var read_offset: u64 = 0;
         while (true) {
-            const bytes_read = file.read(&read_buf) catch {
+            const bytes_read = file.readPositional(g_io, &.{read_buf[0..]}, read_offset) catch {
                 stderr.print("nb: update failed: could not read tarball\n", .{}) catch {};
-                std.fs.deleteFileAbsolute(tmp_tar) catch {};
+                std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
                 std.process.exit(1);
             };
             if (bytes_read == 0) break;
             hasher.update(read_buf[0..bytes_read]);
+            read_offset += @intCast(bytes_read);
         }
     }
     const digest = hasher.finalResult();
@@ -1525,57 +1577,51 @@ fn runUpdate(alloc: std.mem.Allocator) void {
         stderr.print("nb: update ABORTED: SHA256 verification failed!\n", .{}) catch {};
         stderr.print("  expected: {s}\n", .{expected_sha}) catch {};
         stderr.print("  actual:   {s}\n", .{&actual_hex}) catch {};
-        std.fs.deleteFileAbsolute(tmp_tar) catch {};
+        std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
         std.process.exit(1);
     }
 
     stdout.print("==> Checksum verified, extracting...\n", .{}) catch {};
 
     // Get current executable path for replacement
-    var exe_buf: [std.fs.max_path_bytes]u8 = undefined;
-    const exe_path = std.fs.selfExePath(&exe_buf) catch {
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    var exe_buf_size: u32 = @intCast(exe_buf.len);
+    if (std.c._NSGetExecutablePath(@ptrCast(&exe_buf), &exe_buf_size) != 0) {
         stderr.print("nb: update failed: could not determine executable path\n", .{}) catch {};
-        std.fs.deleteFileAbsolute(tmp_tar) catch {};
+        std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
         std.process.exit(1);
-    };
+    }
+    const exe_path: []const u8 = std.mem.sliceTo(&exe_buf, 0);
 
     // Extract tarball using tar (to a temp directory — must not already exist)
-    std.fs.makeDirAbsolute(tmp_dir) catch |err| {
+    std.Io.Dir.createDirAbsolute(g_io, tmp_dir, .default_dir) catch |err| {
         stderr.print("nb: update failed: could not create temp dir: {}\n", .{err}) catch {};
-        std.fs.deleteFileAbsolute(tmp_tar) catch {};
+        std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
         std.process.exit(1);
     };
 
-    var extract = std.process.Child.init(
-        &.{ "tar", "xzf", tmp_tar, "-C", tmp_dir },
-        std.heap.page_allocator,
-    );
-    extract.stdout_behavior = .Ignore;
-    extract.stderr_behavior = .Inherit;
-
-    extract.spawn() catch {
+    const extract_result = std.process.run(std.heap.page_allocator, g_io, .{
+        .argv = &.{ "tar", "xzf", tmp_tar, "-C", tmp_dir },
+        .stdout_limit = .unlimited,
+        .stderr_limit = .unlimited,
+    }) catch {
         stderr.print("nb: update failed: could not extract tarball\n", .{}) catch {};
-        std.fs.deleteFileAbsolute(tmp_tar) catch {};
+        std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
         std.process.exit(1);
     };
-
-    const extract_term = extract.wait() catch {
-        stderr.print("nb: update failed: tar extraction error\n", .{}) catch {};
-        std.fs.deleteFileAbsolute(tmp_tar) catch {};
-        std.process.exit(1);
-    };
-
-    switch (extract_term) {
-        .Exited => |code| {
+    defer std.heap.page_allocator.free(extract_result.stdout);
+    defer std.heap.page_allocator.free(extract_result.stderr);
+    switch (extract_result.term) {
+        .exited => |code| {
             if (code != 0) {
                 stderr.print("nb: update failed: tar exited with code {d}\n", .{code}) catch {};
-                std.fs.deleteFileAbsolute(tmp_tar) catch {};
+                std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
                 std.process.exit(1);
             }
         },
         else => {
             stderr.print("nb: update failed: tar terminated abnormally\n", .{}) catch {};
-            std.fs.deleteFileAbsolute(tmp_tar) catch {};
+            std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
             std.process.exit(1);
         },
     }
@@ -1592,62 +1638,64 @@ fn runUpdate(alloc: std.mem.Allocator) void {
         std.process.exit(1);
     };
 
-    // Preserve the existing binary's permission mode; fall back to 0o755
-    const existing_mode: std.posix.mode_t = blk: {
-        const exe_file = std.fs.openFileAbsolute(exe_path, .{}) catch break :blk 0o755;
-        defer exe_file.close();
-        const st = exe_file.stat() catch break :blk 0o755;
-        break :blk st.mode & 0o7777;
+    // Preserve the existing binary's permission mode; fall back to executable_file
+    const existing_perms: std.Io.File.Permissions = blk: {
+        const exe_file = std.Io.Dir.openFileAbsolute(g_io, exe_path, .{}) catch break :blk .executable_file;
+        defer exe_file.close(g_io);
+        const st = exe_file.stat(g_io) catch break :blk .executable_file;
+        break :blk st.permissions;
     };
 
     // Copy extracted binary to staged path
     {
-        const src = std.fs.openFileAbsolute(extracted_bin, .{}) catch {
+        const src = std.Io.Dir.openFileAbsolute(g_io, extracted_bin, .{}) catch {
             stderr.print("nb: update failed: extracted binary not found\n", .{}) catch {};
-            std.fs.deleteFileAbsolute(tmp_tar) catch {};
-            std.fs.deleteTreeAbsolute(tmp_dir) catch {};
+            std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
+            std.Io.Dir.cwd().deleteTree(g_io, tmp_dir) catch {};
             std.process.exit(1);
         };
-        defer src.close();
-        const dst = std.fs.createFileAbsolute(staged_path, .{ .mode = existing_mode }) catch {
+        defer src.close(g_io);
+        const dst = std.Io.Dir.createFileAbsolute(g_io, staged_path, .{ .permissions = existing_perms }) catch {
             stderr.print("nb: update failed: could not create staged binary\n", .{}) catch {};
-            std.fs.deleteFileAbsolute(tmp_tar) catch {};
-            std.fs.deleteTreeAbsolute(tmp_dir) catch {};
+            std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
+            std.Io.Dir.cwd().deleteTree(g_io, tmp_dir) catch {};
             std.process.exit(1);
         };
-        defer dst.close();
+        defer dst.close(g_io);
         var copy_buf: [65536]u8 = undefined;
+        var copy_offset: u64 = 0;
         while (true) {
-            const n = src.read(&copy_buf) catch {
+            const n = src.readPositional(g_io, &.{copy_buf[0..]}, copy_offset) catch {
                 stderr.print("nb: update failed: could not read extracted binary\n", .{}) catch {};
-                std.fs.deleteFileAbsolute(tmp_tar) catch {};
-                std.fs.deleteTreeAbsolute(tmp_dir) catch {};
-                std.fs.deleteFileAbsolute(staged_path) catch {};
+                std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
+                std.Io.Dir.cwd().deleteTree(g_io, tmp_dir) catch {};
+                std.Io.Dir.deleteFileAbsolute(g_io, staged_path) catch {};
                 std.process.exit(1);
             };
             if (n == 0) break;
-            dst.writeAll(copy_buf[0..n]) catch {
+            dst.writeStreamingAll(g_io, copy_buf[0..n]) catch {
                 stderr.print("nb: update failed: could not write staged binary\n", .{}) catch {};
-                std.fs.deleteFileAbsolute(tmp_tar) catch {};
-                std.fs.deleteTreeAbsolute(tmp_dir) catch {};
-                std.fs.deleteFileAbsolute(staged_path) catch {};
+                std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
+                std.Io.Dir.cwd().deleteTree(g_io, tmp_dir) catch {};
+                std.Io.Dir.deleteFileAbsolute(g_io, staged_path) catch {};
                 std.process.exit(1);
             };
+            copy_offset += @intCast(n);
         }
     }
 
     // Atomic rename: replaces the executable in one syscall
-    std.fs.renameAbsolute(staged_path, exe_path) catch |err| {
+    std.Io.Dir.renameAbsolute(staged_path, exe_path, g_io) catch |err| {
         stderr.print("nb: update failed: could not rename binary: {}\n", .{err}) catch {};
-        std.fs.deleteFileAbsolute(staged_path) catch {};
-        std.fs.deleteFileAbsolute(tmp_tar) catch {};
-        std.fs.deleteTreeAbsolute(tmp_dir) catch {};
+        std.Io.Dir.deleteFileAbsolute(g_io, staged_path) catch {};
+        std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
+        std.Io.Dir.cwd().deleteTree(g_io, tmp_dir) catch {};
         std.process.exit(1);
     };
 
     // Cleanup temp files
-    std.fs.deleteFileAbsolute(tmp_tar) catch {};
-    std.fs.deleteTreeAbsolute(tmp_dir) catch {};
+    std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
+    std.Io.Dir.cwd().deleteTree(g_io, tmp_dir) catch {};
 
     stdout.print("==> Updated nanobrew to v{s} (was v{s})\n", .{ latest_ver, VERSION }) catch {};
 }
@@ -1655,15 +1703,15 @@ fn runUpdate(alloc: std.mem.Allocator) void {
 // ── nb install --cask ──
 
 fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     if (comptime builtin.os.tag == .linux) {
         stderr.print("nb: casks are not supported on Linux yet\n", .{}) catch {};
         return;
     }
 
-    var timer = std.time.Timer.start() catch null;
+    var timer = MonoTimer.start();
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: warning: could not open database\n", .{}) catch {};
@@ -1714,7 +1762,7 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
         stdout.print("==> Installed {s} {s}\n", .{ cask_meta.name, cask_meta.version }) catch {};
     }
 
-    const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
+    const elapsed_ns: u64 = timer.read();
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
     stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
 }
@@ -1722,8 +1770,8 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
 // ── nb remove --cask ──
 
 fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: could not open database\n", .{}) catch {};
@@ -1757,7 +1805,7 @@ fn getDisplayVersion() []const u8 {
 
 
 fn printUsage() void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stdout = StdoutWriter{};
     stdout.print("\x1b[1mnanobrew\x1b[0m \x1b[90mv{s}\x1b[0m — The fastest package manager\n", .{getDisplayVersion()}) catch {};
     stdout.print(
         \\
@@ -1833,13 +1881,13 @@ fn printUsage() void {
 // ── nb doctor ──
 
 fn runDoctor(alloc: std.mem.Allocator) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stdout = StdoutWriter{};
     var issues: usize = 0;
 
     stdout.print("==> Checking nanobrew installation...\n", .{}) catch {};
 
     // 1. Check /opt/nanobrew is writable
-    if (std.fs.accessAbsolute(ROOT, .{ .mode = .read_write })) {
+    if (std.Io.Dir.accessAbsolute(g_io, ROOT, .{ .write = true })) {
         stdout.print("  ✓ {s} is writable\n", .{ROOT}) catch {};
     } else |_| {
         stdout.print("  ✗ {s} is not writable\n", .{ROOT}) catch {};
@@ -1856,9 +1904,9 @@ fn runDoctor(alloc: std.mem.Allocator) void {
         ROOT ++ "/db",
     };
     for (key_dirs) |dir| {
-        if (std.fs.openDirAbsolute(dir, .{})) |d| {
+        if (std.Io.Dir.openDirAbsolute(g_io, dir, .{})) |d| {
             var dd = d;
-            dd.close();
+            dd.close(g_io);
         } else |_| {
             stdout.print("  ✗ Missing directory: {s}\n", .{dir}) catch {};
             issues += 1;
@@ -1868,17 +1916,18 @@ fn runDoctor(alloc: std.mem.Allocator) void {
     // 3. Check for broken symlinks in prefix/bin/
     {
         var broken_links: usize = 0;
-        if (std.fs.openDirAbsolute(PREFIX ++ "/bin", .{ .iterate = true })) |d| {
+        if (std.Io.Dir.openDirAbsolute(g_io, PREFIX ++ "/bin", .{ .iterate = true })) |d| {
             var dir = d;
-            defer dir.close();
+            defer dir.close(g_io);
             var iter = dir.iterate();
-            while (iter.next() catch null) |entry| {
+            while (iter.next(g_io) catch null) |entry| {
                 if (entry.kind != .sym_link) continue;
                 var link_buf: [1024]u8 = undefined;
                 const link_path = std.fmt.bufPrint(&link_buf, "{s}/bin/{s}", .{ PREFIX, entry.name }) catch continue;
-                var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-                const target = std.fs.readLinkAbsolute(link_path, &target_buf) catch continue;
-                std.fs.accessAbsolute(target, .{}) catch {
+                var target_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                const target_n = std.Io.Dir.readLinkAbsolute(g_io, link_path, &target_buf) catch continue;
+                const target = target_buf[0..target_n];
+                std.Io.Dir.accessAbsolute(g_io, target, .{}) catch {
                     if (broken_links < 5) {
                         stdout.print("  ✗ Broken symlink: {s} -> {s}\n", .{ entry.name, target }) catch {};
                     }
@@ -1907,17 +1956,17 @@ fn runDoctor(alloc: std.mem.Allocator) void {
         for (kegs) |keg| {
             var buf: [512]u8 = undefined;
             const cellar_path = std.fmt.bufPrint(&buf, "{s}/Cellar/{s}/{s}", .{ PREFIX, keg.name, keg.version }) catch continue;
-            std.fs.accessAbsolute(cellar_path, .{}) catch {
+            std.Io.Dir.accessAbsolute(g_io, cellar_path, .{}) catch {
                 stdout.print("  ✗ DB entry '{s}' has no Cellar dir\n", .{keg.name}) catch {};
                 issues += 1;
             };
         }
 
-        if (std.fs.openDirAbsolute(ROOT ++ "/store", .{ .iterate = true })) |d| {
+        if (std.Io.Dir.openDirAbsolute(g_io, ROOT ++ "/store", .{ .iterate = true })) |d| {
             var dir = d;
-            defer dir.close();
+            defer dir.close(g_io);
             var iter = dir.iterate();
-            while (iter.next() catch null) |entry| {
+            while (iter.next(g_io) catch null) |entry| {
                 if (entry.kind != .directory) continue;
                 var found = false;
                 for (kegs) |keg| {
@@ -1943,8 +1992,7 @@ fn runDoctor(alloc: std.mem.Allocator) void {
     // 6. Platform-specific checks
     if (comptime builtin.os.tag == .linux) {
         // Check for patchelf (needed for ELF relocation)
-        const pe = std.process.Child.run(.{
-            .allocator = alloc,
+        const pe = std.process.run(alloc, g_io, .{
             .argv = &.{ "patchelf", "--version" },
         }) catch {
             stdout.print("  ✗ patchelf not found (needed for binary relocation)\n", .{}) catch {};
@@ -1984,7 +2032,7 @@ fn printDoctorSummary(stdout: anytype, issues: usize) void {
 // ── nb cleanup ──
 
 fn runCleanup(alloc: std.mem.Allocator, args: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
+    const stdout = StdoutWriter{};
     var dry_run = false;
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--dry-run") or std.mem.eql(u8, arg, "-n")) dry_run = true;
@@ -2020,8 +2068,8 @@ fn runCleanup(alloc: std.mem.Allocator, args: []const []const u8) void {
 }
 
 fn runNuke(args: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     var force = false;
     for (args) |arg| {
@@ -2039,12 +2087,13 @@ fn runNuke(args: []const []const u8) void {
         stdout.print("  Type \x1b[1myes\x1b[0m to confirm: ", .{}) catch {};
 
         var buf: [16]u8 = undefined;
-        const stdin = std.fs.File.stdin();
-        const n = stdin.read(&buf) catch {
+        const n_signed = std.c.read(std.posix.STDIN_FILENO, &buf, buf.len);
+        if (n_signed < 0) {
             stderr.print("nb: failed to read input\n", .{}) catch {};
             std.process.exit(1);
-        };
-        const input = std.mem.trimRight(u8, buf[0..n], "\n\r \t");
+        }
+        const n: usize = @intCast(n_signed);
+        const input = std.mem.trimEnd(u8, buf[0..n], "\n\r \t");
         if (!std.mem.eql(u8, input, "yes")) {
             stdout.print("\n  Aborted.\n", .{}) catch {};
             return;
@@ -2055,7 +2104,7 @@ fn runNuke(args: []const []const u8) void {
 
     // 1. Remove /opt/nanobrew
     stdout.print("  Removing /opt/nanobrew...\n", .{}) catch {};
-    std.fs.deleteTreeAbsolute("/opt/nanobrew") catch |err| {
+    std.Io.Dir.cwd().deleteTree(g_io, "/opt/nanobrew") catch |err| {
         stderr.print("nb: failed to remove /opt/nanobrew: {}\n", .{err}) catch {};
         stderr.print("nb: try: sudo nb nuke\n", .{}) catch {};
         std.process.exit(1);
@@ -2063,7 +2112,8 @@ fn runNuke(args: []const []const u8) void {
 
     // 2. Remove nb binary from ~/.local/bin
     stdout.print("  Removing ~/.local/bin/nb...\n", .{}) catch {};
-    if (std.posix.getenv("HOME")) |home| {
+    if (std.c.getenv("HOME")) |_home_cv| {
+        const home = std.mem.sliceTo(_home_cv, 0);
         // Validate HOME to prevent path injection
         const home_valid = home.len > 0 and
             home[0] == '/' and
@@ -2074,7 +2124,7 @@ fn runNuke(args: []const []const u8) void {
         } else {
             // Verify HOME is an actual directory
             const home_is_dir = blk: {
-                const stat = std.fs.cwd().statFile(home) catch break :blk false;
+                const stat = std.Io.Dir.cwd().statFile(g_io, home, .{}) catch break :blk false;
                 break :blk stat.kind == .directory;
             };
             if (!home_is_dir) {
@@ -2083,7 +2133,7 @@ fn runNuke(args: []const []const u8) void {
                 var path_buf: [512]u8 = undefined;
                 const nb_path = std.fmt.bufPrint(&path_buf, "{s}/.local/bin/nb", .{home}) catch "";
                 if (nb_path.len > 0) {
-                    std.fs.deleteFileAbsolute(nb_path) catch {};
+                    std.Io.Dir.deleteFileAbsolute(g_io, nb_path) catch {};
                 }
             }
         }
@@ -2097,10 +2147,10 @@ fn runNuke(args: []const []const u8) void {
 }
 
 fn cleanupCacheDir(dir_path: []const u8, dry_run: bool, reclaimed: *u64, stdout: anytype) void {
-    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return;
-    defer dir.close();
+    var dir = std.Io.Dir.openDirAbsolute(g_io, dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(g_io);
     var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
+    while (iter.next(g_io) catch null) |entry| {
         if (entry.kind == .directory) continue;
         var path_buf: [1024]u8 = undefined;
         const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
@@ -2108,7 +2158,7 @@ fn cleanupCacheDir(dir_path: []const u8, dry_run: bool, reclaimed: *u64, stdout:
         if (dry_run) {
             stdout.print("  Would remove: {s}\n", .{entry.name}) catch {};
         } else {
-            std.fs.deleteFileAbsolute(path) catch {};
+            std.Io.Dir.deleteFileAbsolute(g_io, path) catch {};
         }
     }
 }
@@ -2130,53 +2180,53 @@ fn cleanupOrphans(alloc: std.mem.Allocator, dry_run: bool, reclaimed: *u64, stdo
         }
     }
 
-    if (std.fs.openDirAbsolute(ROOT ++ "/cache/blobs", .{ .iterate = true })) |d| {
+    if (std.Io.Dir.openDirAbsolute(g_io, ROOT ++ "/cache/blobs", .{ .iterate = true })) |d| {
         var dir = d;
-        defer dir.close();
+        defer dir.close(g_io);
         var iter = dir.iterate();
-        while (iter.next() catch null) |entry| {
+        while (iter.next(g_io) catch null) |entry| {
             if (!valid_shas.contains(entry.name)) {
                 var path_buf: [1024]u8 = undefined;
                 const path = std.fmt.bufPrint(&path_buf, "{s}/cache/blobs/{s}", .{ ROOT, entry.name }) catch continue;
                 // Get actual file size instead of using a hardcoded estimate
                 const file_size: u64 = blk: {
-                    const f = std.fs.openFileAbsolute(path, .{}) catch break :blk 0;
-                    defer f.close();
-                    const stat = f.stat() catch break :blk 0;
+                    const f = std.Io.Dir.openFileAbsolute(g_io, path, .{}) catch break :blk 0;
+                    defer f.close(g_io);
+                    const stat = f.stat(g_io) catch break :blk 0;
                     break :blk stat.size;
                 };
                 reclaimed.* += file_size;
                 if (dry_run) {
                     stdout.print("  Would remove orphaned blob: {s}\n", .{entry.name}) catch {};
                 } else {
-                    std.fs.deleteFileAbsolute(path) catch {};
+                    std.Io.Dir.deleteFileAbsolute(g_io, path) catch {};
                 }
             }
         }
     } else |_| {}
 
-    if (std.fs.openDirAbsolute(ROOT ++ "/store", .{ .iterate = true })) |d| {
+    if (std.Io.Dir.openDirAbsolute(g_io, ROOT ++ "/store", .{ .iterate = true })) |d| {
         var dir = d;
-        defer dir.close();
+        defer dir.close(g_io);
         var iter = dir.iterate();
-        while (iter.next() catch null) |entry| {
+        while (iter.next(g_io) catch null) |entry| {
             if (entry.kind != .directory) continue;
             if (!valid_shas.contains(entry.name)) {
                 var path_buf: [1024]u8 = undefined;
                 const path = std.fmt.bufPrint(&path_buf, "{s}/store/{s}", .{ ROOT, entry.name }) catch continue;
                 // Estimate store entry size by summing file sizes one level deep
                 const store_size: u64 = blk: {
-                    var sub = std.fs.openDirAbsolute(path, .{ .iterate = true }) catch break :blk 0;
-                    defer sub.close();
+                    var sub = std.Io.Dir.openDirAbsolute(g_io, path, .{ .iterate = true }) catch break :blk 0;
+                    defer sub.close(g_io);
                     var sub_iter = sub.iterate();
                     var total: u64 = 0;
-                    while (sub_iter.next() catch null) |sub_entry| {
+                    while (sub_iter.next(g_io) catch null) |sub_entry| {
                         if (sub_entry.kind != .file and sub_entry.kind != .sym_link) continue;
                         var fbuf: [1024]u8 = undefined;
                         const fpath = std.fmt.bufPrint(&fbuf, "{s}/{s}", .{ path, sub_entry.name }) catch continue;
-                        const f = std.fs.openFileAbsolute(fpath, .{}) catch continue;
-                        defer f.close();
-                        const stat = f.stat() catch continue;
+                        const f = std.Io.Dir.openFileAbsolute(g_io, fpath, .{}) catch continue;
+                        defer f.close(g_io);
+                        const stat = f.stat(g_io) catch continue;
                         total += stat.size;
                     }
                     break :blk total;
@@ -2185,7 +2235,7 @@ fn cleanupOrphans(alloc: std.mem.Allocator, dry_run: bool, reclaimed: *u64, stdo
                 if (dry_run) {
                     stdout.print("  Would remove orphaned store entry: {s}\n", .{entry.name}) catch {};
                 } else {
-                    std.fs.deleteTreeAbsolute(path) catch {};
+                    std.Io.Dir.cwd().deleteTree(g_io, path) catch {};
                 }
             }
         }
@@ -2194,8 +2244,8 @@ fn cleanupOrphans(alloc: std.mem.Allocator, dry_run: bool, reclaimed: *u64, stdo
 // ── nb rollback ──
 
 fn runRollback(alloc: std.mem.Allocator, args: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     if (args.len == 0) {
         stderr.print("nb: no package specified\nUsage: nb rollback <package>\n", .{}) catch {};
@@ -2242,7 +2292,7 @@ fn runRollback(alloc: std.mem.Allocator, args: []const []const u8) void {
         var ver_buf: [256]u8 = undefined;
         const actual_ver = nb.cellar.detectKegVersion(name, prev.version, &ver_buf) orelse prev.version;
         platform.relocate.relocateKeg(alloc, name, actual_ver) catch {};
-        platform.relocate.replaceKegPlaceholders(name, actual_ver);
+        platform.relocate.replaceKegPlaceholders(g_io, name, actual_ver);
         nb.linker.linkKeg(name, actual_ver) catch {};
         db.recordInstall(name, prev.version, prev.sha256) catch {};
 
@@ -2252,8 +2302,8 @@ fn runRollback(alloc: std.mem.Allocator, args: []const []const u8) void {
 // ── nb bundle ──
 
 fn runBundle(alloc: std.mem.Allocator, args: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     const subcmd = if (args.len > 0) args[0] else "dump";
 
@@ -2291,7 +2341,7 @@ fn runBundleDump(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype) voi
 }
 
 fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: anytype, stderr: anytype) void {
-    const file_content = std.fs.cwd().readFileAlloc(alloc, file_path, 1024 * 1024) catch {
+    const file_content = std.Io.Dir.cwd().readFileAlloc(g_io, file_path, alloc, .limited(1024 * 1024)) catch {
         stderr.print("nb: could not read '{s}'\n", .{file_path}) catch {};
         return;
     };
@@ -2367,7 +2417,7 @@ fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: any
     // Fast path: check if all packages are already installed before calling
     // the full install pipeline (which does API fetches and dep resolution).
     // This makes no-op bundle installs instant (<100ms).
-    var timer = std.time.Timer.start() catch null;
+    var timer = MonoTimer.start();
 
     var needs_formula: std.ArrayList([]const u8) = .empty;
     defer needs_formula.deinit(alloc);
@@ -2381,9 +2431,9 @@ fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: any
             needs_formula.append(alloc, name) catch {};
             continue;
         };
-        if (std.fs.openDirAbsolute(cellar_path, .{})) |d| {
+        if (std.Io.Dir.openDirAbsolute(g_io, cellar_path, .{})) |d| {
             var dir = d;
-            dir.close();
+            dir.close(g_io);
             // Already installed in Cellar, skip
         } else |_| {
             needs_formula.append(alloc, name) catch {};
@@ -2412,7 +2462,7 @@ fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: any
     const total_needed = needs_formula.items.len + needs_cask.items.len;
 
     if (total_needed == 0) {
-        const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
+        const elapsed_ns: u64 = timer.read();
         const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
         stdout.print("Already up to date ({d} packages)\n", .{total_parsed}) catch {};
         stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
@@ -2428,7 +2478,7 @@ fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: any
         runCaskInstall(alloc, needs_cask.items);
     }
 
-    const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
+    const elapsed_ns: u64 = timer.read();
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
     stdout.print("Installed {d} formulae, {d} casks. Skipped {d} unsupported entries.\n", .{ needs_formula.items.len, needs_cask.items.len, skipped }) catch {};
     stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
@@ -2437,8 +2487,8 @@ fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: any
 // ── nb outdated ──
 
 fn runOutdated(alloc: std.mem.Allocator) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: could not open database\n", .{}) catch {};
@@ -2460,9 +2510,8 @@ fn runOutdated(alloc: std.mem.Allocator) void {
         const distro_info = nb.deb_distro.detect(alloc);
         const deb_arch = platform.deb_arch;
 
-        var client: std.http.Client = .{ .allocator = alloc };
+        var client: std.http.Client = .{ .allocator = alloc, .io = g_io };
         defer client.deinit();
-        client.initDefaultProxies(alloc) catch {};
 
         var url_buf: [512]u8 = undefined;
         const index_url = std.fmt.bufPrint(&url_buf, "{s}/dists/{s}/main/binary-{s}/Packages.gz", .{
@@ -2509,8 +2558,8 @@ fn runOutdated(alloc: std.mem.Allocator) void {
 // ── nb pin / nb unpin ──
 
 fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     if (args.len == 0) {
         const verb = if (pin) "pin" else "unpin";
@@ -2544,8 +2593,8 @@ fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) void {
 // ── nb deps ──
 
 fn runDeps(alloc: std.mem.Allocator, args: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     var tree_mode = false;
     var formula_name: ?[]const u8 = null;
@@ -2616,8 +2665,8 @@ fn renderDepTree(stdout: anytype, resolver: *nb.deps.DepResolver, name: []const 
 // ── nb services ──
 
 fn runServices(alloc: std.mem.Allocator, args: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     const subcmd = if (args.len > 0) args[0] else "list";
     const svc_name = if (args.len > 1) args[1] else null;
@@ -2683,8 +2732,8 @@ fn runServices(alloc: std.mem.Allocator, args: []const []const u8) void {
 // ── nb completions ──
 
 fn runCompletions(args: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     const shell = if (args.len > 0) args[0] else "zsh";
 
@@ -2834,15 +2883,15 @@ const DebInstallOptions = struct {
 
 /// Install .deb packages from Ubuntu/Debian repositories (Linux only).
 fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_spec: ?[]const u8, opts: DebInstallOptions) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     if (comptime builtin.os.tag != .linux) {
         stderr.print("nb: --deb is only supported on Linux\n", .{}) catch {};
         return;
     }
 
-    var timer = std.time.Timer.start() catch null;
+    var timer = MonoTimer.start();
 
     // --- Step 1: Fetch + decompress package index natively ---
     const t_start = std.time.milliTimestamp();
@@ -2900,9 +2949,8 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
 
     // Native HTTP client — shared across all .deb downloads (connection reuse)
     // (Index fetch uses per-thread clients since std.http.Client is not thread-safe)
-    var client: std.http.Client = .{ .allocator = alloc };
+    var client: std.http.Client = .{ .allocator = alloc, .io = g_io };
     defer client.deinit();
-    client.initDefaultProxies(alloc) catch {};
 
     // Fetch and merge package indices from all components
     var all_pkgs_list: std.ArrayList(nb.deb_index.DebPackage) = .empty;
@@ -3028,7 +3076,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
             const cache_path = std.fmt.bufPrint(&cache_buf, "{s}/{s}.deb", .{ paths.BLOBS_DIR, pkg.sha256 }) catch continue;
 
             // Skip if already cached
-            if (std.fs.accessAbsolute(cache_path, .{})) |_| {
+            if (std.Io.Dir.accessAbsolute(g_io, cache_path, .{})) |_| {
                 continue;
             } else |_| {}
 
@@ -3060,7 +3108,6 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
                     // One HTTP client per thread — reuses TCP+TLS connections
                     var dl_client: std.http.Client = .{ .allocator = ctx.alloc_ };
                     defer dl_client.deinit();
-                    dl_client.initDefaultProxies(ctx.alloc_) catch {};
 
                     while (true) {
                         const idx = ctx.next_idx.fetchAdd(1, .monotonic);
@@ -3073,7 +3120,6 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
                             // Retry once with fresh client (connection may have been reset)
                             var retry_client: std.http.Client = .{ .allocator = ctx.alloc_ };
                             defer retry_client.deinit();
-                            retry_client.initDefaultProxies(ctx.alloc_) catch {};
                             downloadDebWithSha256(&retry_client, url, item.sha256, dest) catch {
                                 ctx.had_error.store(true, .release);
                             };
@@ -3151,7 +3197,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
         const cache_path = std.fmt.bufPrint(&cache_buf, "{s}/{s}.deb", .{ paths.BLOBS_DIR, pkg.sha256 }) catch continue;
         @memcpy(item.cache_path_storage[0..cache_path.len], cache_path);
         item.cache_path_len = cache_path.len;
-        item.needs_download = if (std.fs.accessAbsolute(cache_path, .{})) |_| false else |_| true;
+        item.needs_download = if (std.Io.Dir.accessAbsolute(g_io, cache_path, .{})) |_| false else |_| true;
 
         extract_items.append(alloc, item) catch continue;
     }
@@ -3234,14 +3280,14 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
     // Run ldconfig after all packages are installed (makes shared libs discoverable)
     if (installed > 0) {
         if (comptime builtin.os.tag == .linux) {
-            const ld_result = std.process.Child.run(.{
-                .allocator = alloc,
+            const ld_result = std.process.run(alloc, g_io, .{
                 .argv = &.{"ldconfig"},
             }) catch null;
             if (ld_result) |r| {
                 switch (r.term) {
-                    .Exited => |code| if (code != 0) {
-                        std.fs.File.stderr().deprecatedWriter().print("warning: ldconfig exited with code {d}\n", .{code}) catch {};
+                    .exited => |code| if (code != 0) {
+                        const _sw = StderrWriter{};
+                        _sw.print("warning: ldconfig exited with code {d}\n", .{code}) catch {};
                     },
                     else => {},
                 }
@@ -3251,7 +3297,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
         }
     }
 
-    const elapsed_ns: u64 = if (timer) |*t| t.read() else 0;
+    const elapsed_ns: u64 = timer.read();
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
     if (cached > 0) {
         stdout.print("==> Installed {d}/{d} packages ({d} cached) in {d:.1}ms\n", .{ installed, resolved.len, cached, elapsed_ms }) catch {};
@@ -3261,8 +3307,8 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
 }
 
 fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: could not open database\n", .{}) catch {};
@@ -3279,7 +3325,7 @@ fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
         // Delete each installed file
         var removed_files: usize = 0;
         for (record.files) |file_path| {
-            std.fs.deleteFileAbsolute(file_path) catch continue;
+            std.Io.Dir.deleteFileAbsolute(g_io, file_path) catch continue;
             removed_files += 1;
         }
 
@@ -3301,8 +3347,8 @@ fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
 }
 
 fn runDebUpgrade(alloc: std.mem.Allocator) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: could not open database\n", .{}) catch {};
@@ -3328,9 +3374,8 @@ fn runDebUpgrade(alloc: std.mem.Allocator) void {
     const arch = platform.deb_arch;
     const components = nb.deb_distro.getComponents(distro.id);
 
-    var client: std.http.Client = .{ .allocator = alloc };
+    var client: std.http.Client = .{ .allocator = alloc, .io = g_io };
     defer client.deinit();
-    client.initDefaultProxies(alloc) catch {};
 
     var all_pkgs_list: std.ArrayList(nb.deb_index.DebPackage) = .empty;
     defer all_pkgs_list.deinit(alloc);
@@ -3452,7 +3497,7 @@ fn downloadDebWithSha256(
     const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}.dl", .{dest_path}) catch return error.DownloadFailed;
 
     {
-        var file = std.fs.createFileAbsolute(tmp_path, .{}) catch return error.DownloadFailed;
+        var file = std.Io.Dir.createFileAbsolute(g_io, tmp_path, .{}) catch return error.DownloadFailed;
         var file_writer_buf: [65536]u8 = undefined;
         var file_writer = file.writer(&file_writer_buf);
 
@@ -3462,20 +3507,20 @@ fn downloadDebWithSha256(
         var hashed = reader.hashed(&hasher, &hash_buf);
 
         _ = hashed.reader.streamRemaining(&file_writer.interface) catch {
-            file.close();
-            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            file.close(g_io);
+            std.Io.Dir.deleteFileAbsolute(g_io, tmp_path) catch {};
             return error.DownloadFailed;
         };
         file_writer.interface.flush() catch {
-            file.close();
-            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            file.close(g_io);
+            std.Io.Dir.deleteFileAbsolute(g_io, tmp_path) catch {};
             return error.DownloadFailed;
         };
-        file.close();
+        file.close(g_io);
 
         // Verify SHA256 — always required
         if (expected_sha256.len < 64) {
-            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            std.Io.Dir.deleteFileAbsolute(g_io, tmp_path) catch {};
             return error.ChecksumMissing;
         }
         const digest = hasher.finalResult();
@@ -3486,22 +3531,22 @@ fn downloadDebWithSha256(
             hex[idx * 2 + 1] = charset[byte & 0x0f];
         }
         if (expected_sha256.len < 64) {
-            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            std.Io.Dir.deleteFileAbsolute(g_io, tmp_path) catch {};
             return error.ChecksumMissing;
         }
         if (!std.mem.eql(u8, &hex, expected_sha256[0..64])) {
-            std.fs.deleteFileAbsolute(tmp_path) catch {};
+            std.Io.Dir.deleteFileAbsolute(g_io, tmp_path) catch {};
             return error.ChecksumMismatch;
         }
     }
 
     // Atomic rename to blob cache
-    std.fs.renameAbsolute(tmp_path, dest_path) catch |err| {
+    std.Io.Dir.renameAbsolute(tmp_path, dest_path, g_io) catch |err| {
         if (err == error.PathAlreadyExists) {
             // Race condition fix (#15): verify existing file's SHA256 before trusting it
             const existing_ok = blk: {
-                var existing = std.fs.openFileAbsolute(dest_path, .{}) catch break :blk false;
-                defer existing.close();
+                var existing = std.Io.Dir.openFileAbsolute(g_io, dest_path, .{}) catch break :blk false;
+                defer existing.close(g_io);
                 var verify_hasher = std.crypto.hash.sha2.Sha256.init(.{});
                 var read_buf: [65536]u8 = undefined;
                 while (true) {
@@ -3520,18 +3565,18 @@ fn downloadDebWithSha256(
             };
             if (existing_ok) {
                 // Existing file matches — clean up tmp and return success
-                std.fs.deleteFileAbsolute(tmp_path) catch {};
+                std.Io.Dir.deleteFileAbsolute(g_io, tmp_path) catch {};
                 return;
             }
             // Existing file is corrupt — delete it and retry the rename
-            std.fs.deleteFileAbsolute(dest_path) catch {};
-            std.fs.renameAbsolute(tmp_path, dest_path) catch {
-                std.fs.deleteFileAbsolute(tmp_path) catch {};
+            std.Io.Dir.deleteFileAbsolute(g_io, dest_path) catch {};
+            std.Io.Dir.renameAbsolute(tmp_path, dest_path, g_io) catch {
+                std.Io.Dir.deleteFileAbsolute(g_io, tmp_path) catch {};
                 return error.DownloadFailed;
             };
             return;
         }
-        std.fs.deleteFileAbsolute(tmp_path) catch {};
+        std.Io.Dir.deleteFileAbsolute(g_io, tmp_path) catch {};
         return error.DownloadFailed;
     };
 }
@@ -3554,45 +3599,45 @@ fn downloadDebToFile(
     var response = req.receiveHead(&redirect_buf) catch return error.DownloadFailed;
     if (response.head.status != .ok) return error.DownloadFailed;
 
-    var file = std.fs.createFileAbsolute(dest_path, .{}) catch return error.DownloadFailed;
+    var file = std.Io.Dir.createFileAbsolute(g_io, dest_path, .{}) catch return error.DownloadFailed;
     var file_writer_buf: [65536]u8 = undefined;
     var file_writer = file.writer(&file_writer_buf);
 
     var reader = response.reader(&.{});
     _ = reader.streamRemaining(&file_writer.interface) catch {
-        file.close();
-        std.fs.deleteFileAbsolute(dest_path) catch {};
+        file.close(g_io);
+        std.Io.Dir.deleteFileAbsolute(g_io, dest_path) catch {};
         return error.DownloadFailed;
     };
     file_writer.interface.flush() catch {
-        file.close();
-        std.fs.deleteFileAbsolute(dest_path) catch {};
+        file.close(g_io);
+        std.Io.Dir.deleteFileAbsolute(g_io, dest_path) catch {};
         return error.DownloadFailed;
     };
-    file.close();
+    file.close(g_io);
 }
 
 fn checkForUpdate(alloc: std.mem.Allocator) void {
     const cache_path = ROOT ++ "/cache/last_update_check";
-    const now = std.time.timestamp();
+    const now = monoUnixSeconds();
 
     // Only check once per day (86400 seconds)
-    if (std.fs.openFileAbsolute(cache_path, .{})) |f| {
-        defer f.close();
+    if (std.Io.Dir.openFileAbsolute(g_io, cache_path, .{})) |f| {
+        defer f.close(g_io);
         var buf: [32]u8 = undefined;
-        const n = f.readAll(&buf) catch 0;
+        const n = f.readPositionalAll(g_io, &buf, 0) catch 0;
         if (n > 0) {
-            const last_check = std.fmt.parseInt(i64, std.mem.trimRight(u8, buf[0..n], "\n \t"), 10) catch 0;
+            const last_check = std.fmt.parseInt(i64, std.mem.trimEnd(u8, buf[0..n], "\n \t"), 10) catch 0;
             if (now - last_check < 86400) return;
         }
     } else |_| {}
 
     // Write current timestamp (best-effort)
-    if (std.fs.createFileAbsolute(cache_path, .{})) |f| {
-        defer f.close();
+    if (std.Io.Dir.createFileAbsolute(g_io, cache_path, .{})) |f| {
+        defer f.close(g_io);
         var ts_buf: [20]u8 = undefined;
         const ts_str = std.fmt.bufPrint(&ts_buf, "{d}", .{now}) catch return;
-        f.writeAll(ts_str) catch {};
+        f.writeStreamingAll(g_io, ts_str) catch {};
     } else |_| {}
 
     // Fetch latest version from Cloudflare worker (native HTTP, no curl)
@@ -3600,13 +3645,13 @@ fn checkForUpdate(alloc: std.mem.Allocator) void {
     defer alloc.free(body);
 
 
-    const latest_ver = std.mem.trimRight(u8, body, "\n \t");
+    const latest_ver = std.mem.trimEnd(u8, body, "\n \t");
     if (latest_ver.len == 0 or std.mem.eql(u8, latest_ver, "error")) return;
 
     // Cache latest remote version (for future use / diagnostics; banner uses VERSION vs this)
-    if (std.fs.createFileAbsolute(ROOT ++ "/cache/latest_version", .{})) |vf| {
-        defer vf.close();
-        vf.writeAll(latest_ver) catch {};
+    if (std.Io.Dir.createFileAbsolute(g_io, ROOT ++ "/cache/latest_version", .{})) |vf| {
+        defer vf.close(g_io);
+        vf.writeStreamingAll(g_io, latest_ver) catch {};
     } else |_| {}
 
     // Compare with current version
@@ -3614,7 +3659,7 @@ fn checkForUpdate(alloc: std.mem.Allocator) void {
 
     // New version available — print colored banner to stderr (not stdout,
     // so shell completion scripts that parse `nb list` output aren't polluted)
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stderr = StderrWriter{};
     stderr.print(
         "\n\x1b[33m╭─────────────────────────────────────────╮\x1b[0m\n" ++
         "\x1b[33m│\x1b[0m  \x1b[1mUpdate available!\x1b[0m " ++
@@ -3639,8 +3684,8 @@ fn padSpaces(used: usize) []const u8 {
 }
 
 fn runMigrate(alloc: std.mem.Allocator) void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: could not open database\n", .{}) catch {};
@@ -3655,20 +3700,20 @@ fn runMigrate(alloc: std.mem.Allocator) void {
     // Includes macOS paths and Linux Linuxbrew path (#72)
     const cellar_paths = [_][]const u8{ "/opt/homebrew/Cellar", "/usr/local/Cellar", "/home/linuxbrew/.linuxbrew/Cellar" };
     for (cellar_paths) |cellar_path| {
-        var cellar_dir = std.fs.openDirAbsolute(cellar_path, .{ .iterate = true }) catch continue;
-        defer cellar_dir.close();
+        var cellar_dir = std.Io.Dir.openDirAbsolute(g_io, cellar_path, .{ .iterate = true }) catch continue;
+        defer cellar_dir.close(g_io);
 
         var formula_iter = cellar_dir.iterate();
-        while (formula_iter.next() catch null) |entry| {
+        while (formula_iter.next(g_io) catch null) |entry| {
             if (entry.kind != .directory) continue;
             const name = entry.name;
 
             // Open the formula directory to find version subdirectories
-            var formula_dir = cellar_dir.openDir(name, .{ .iterate = true }) catch continue;
-            defer formula_dir.close();
+            var formula_dir = cellar_dir.openDir(g_io, name, .{ .iterate = true }) catch continue;
+            defer formula_dir.close(g_io);
 
             var ver_iter = formula_dir.iterate();
-            while (ver_iter.next() catch null) |ver_entry| {
+            while (ver_iter.next(g_io) catch null) |ver_entry| {
                 if (ver_entry.kind != .directory) continue;
                 const version = ver_entry.name;
 
@@ -3685,19 +3730,19 @@ fn runMigrate(alloc: std.mem.Allocator) void {
     // Scan Homebrew Caskroom directories for casks
     const caskroom_paths = [_][]const u8{ "/opt/homebrew/Caskroom", "/usr/local/Caskroom", "/home/linuxbrew/.linuxbrew/Caskroom" };
     for (caskroom_paths) |caskroom_path| {
-        var caskroom_dir = std.fs.openDirAbsolute(caskroom_path, .{ .iterate = true }) catch continue;
-        defer caskroom_dir.close();
+        var caskroom_dir = std.Io.Dir.openDirAbsolute(g_io, caskroom_path, .{ .iterate = true }) catch continue;
+        defer caskroom_dir.close(g_io);
 
         var cask_iter = caskroom_dir.iterate();
-        while (cask_iter.next() catch null) |entry| {
+        while (cask_iter.next(g_io) catch null) |entry| {
             if (entry.kind != .directory) continue;
             const token = entry.name;
 
-            var cask_dir = caskroom_dir.openDir(token, .{ .iterate = true }) catch continue;
-            defer cask_dir.close();
+            var cask_dir = caskroom_dir.openDir(g_io, token, .{ .iterate = true }) catch continue;
+            defer cask_dir.close(g_io);
 
             var ver_iter = cask_dir.iterate();
-            while (ver_iter.next() catch null) |ver_entry| {
+            while (ver_iter.next(g_io) catch null) |ver_entry| {
                 if (ver_entry.kind != .directory) continue;
                 const version = ver_entry.name;
 

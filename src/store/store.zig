@@ -33,7 +33,7 @@ pub fn ensureEntry(alloc: std.mem.Allocator, blob_path: []const u8, sha256: []co
     const store_path = std.fmt.bufPrint(&dir_buf, "{s}/{s}", .{ STORE_DIR, sha256 }) catch return error.PathTooLong;
 
     // Already extracted?
-    std.fs.accessAbsolute(store_path, .{}) catch {
+    std.Io.Dir.accessAbsolute(std.Io.Threaded.global_single_threaded.io(), store_path, .{}) catch {
         // Need to extract
         try tar.extractToStore(alloc, blob_path, sha256);
         return;
@@ -46,7 +46,7 @@ pub fn hasEntry(sha256: []const u8) bool {
 
     var buf: [512]u8 = undefined;
     const p = std.fmt.bufPrint(&buf, "{s}/{s}", .{ STORE_DIR, sha256 }) catch return false;
-    std.fs.accessAbsolute(p, .{}) catch return false;
+    std.Io.Dir.accessAbsolute(std.Io.Threaded.global_single_threaded.io(), p, .{}) catch return false;
     return true;
 }
 
@@ -62,7 +62,7 @@ pub fn removeEntry(sha256: []const u8) void {
 
     var buf: [512]u8 = undefined;
     const p = std.fmt.bufPrint(&buf, "{s}/{s}", .{ STORE_DIR, sha256 }) catch return;
-    std.fs.deleteTreeAbsolute(p) catch {};
+    std.Io.Dir.cwd().deleteTree(std.Io.Threaded.global_single_threaded.io(), p) catch {};
 }
 
 // ── Relocated store ───────────────────────────────────────────────────────────
@@ -77,7 +77,7 @@ pub fn hasRelocatedEntry(sha256: []const u8) bool {
 
     var buf: [512]u8 = undefined;
     const p = std.fmt.bufPrint(&buf, "{s}/{s}", .{ STORE_RELOCATED_DIR, sha256 }) catch return false;
-    std.fs.accessAbsolute(p, .{}) catch return false;
+    std.Io.Dir.accessAbsolute(std.Io.Threaded.global_single_threaded.io(), p, .{}) catch return false;
     return true;
 }
 
@@ -99,14 +99,14 @@ pub fn saveRelocatedEntry(sha256: []const u8, name: []const u8, version: []const
     dest_buf[dest_dir.len] = 0;
 
     // Already saved (concurrent installs, or we're upgrading)
-    if (std.fs.accessAbsolute(dest_dir, .{})) {
+    if (std.Io.Dir.accessAbsolute(std.Io.Threaded.global_single_threaded.io(), dest_dir, .{})) {
         return; // already exists, nothing to do
     } else |err| switch (err) {
         error.FileNotFound => {},
         else => return err,
     }
 
-    std.fs.makeDirAbsolute(STORE_RELOCATED_DIR) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(std.Io.Threaded.global_single_threaded.io(), STORE_RELOCATED_DIR, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
@@ -115,7 +115,7 @@ pub fn saveRelocatedEntry(sha256: []const u8, name: []const u8, version: []const
     const copy = @import("../platform/copy.zig");
     if (!copy.cloneTree(&src_buf, &dest_buf)) {
         // Fallback: regular recursive copy (Linux or APFS failure)
-        try copy.cpFallback(src_dir, dest_dir);
+        try copy.cpFallback(std.Io.Threaded.global_single_threaded.io(), src_dir, dest_dir);
     }
 }
 
@@ -137,17 +137,17 @@ pub fn materializeFromRelocated(sha256: []const u8, name: []const u8, version: [
     // Ensure parent dir exists
     var parent_buf: [512]u8 = undefined;
     const parent = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ CELLAR_DIR, name }) catch return error.PathTooLong;
-    std.fs.makeDirAbsolute(parent) catch |err| switch (err) {
+    std.Io.Dir.createDirAbsolute(std.Io.Threaded.global_single_threaded.io(), parent, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
 
     // Remove existing keg if present (fresh reinstall)
-    std.fs.deleteTreeAbsolute(dest_dir) catch {};
+    std.Io.Dir.cwd().deleteTree(std.Io.Threaded.global_single_threaded.io(), dest_dir) catch {};
 
     const copy = @import("../platform/copy.zig");
     if (!copy.cloneTree(&src_buf, &dest_buf)) {
-        try copy.cpFallback(src_dir, dest_dir);
+        try copy.cpFallback(std.Io.Threaded.global_single_threaded.io(), src_dir, dest_dir);
     }
 }
 
@@ -163,7 +163,7 @@ pub fn removeRelocatedEntry(sha256: []const u8) void {
 
     var buf: [512]u8 = undefined;
     const p = std.fmt.bufPrint(&buf, "{s}/{s}", .{ STORE_RELOCATED_DIR, sha256 }) catch return;
-    std.fs.deleteTreeAbsolute(p) catch {};
+    std.Io.Dir.cwd().deleteTree(std.Io.Threaded.global_single_threaded.io(), p) catch {};
 }
 
 const testing = std.testing;

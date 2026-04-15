@@ -10,11 +10,8 @@ const flate = std.compress.flate;
 /// Caller must free the returned slice with `alloc.free()`.
 /// Follows up to 5 redirects. Auto-decompresses gzip. Returns error on non-200 status.
 pub fn get(alloc: std.mem.Allocator, url: []const u8) ![]u8 {
-    var client: std.http.Client = .{ .allocator = alloc };
+    var client: std.http.Client = .{ .allocator = alloc, .io = std.Io.Threaded.global_single_threaded.io() };
     defer client.deinit();
-    var proxy_arena = std.heap.ArenaAllocator.init(alloc);
-    defer proxy_arena.deinit();
-    client.initDefaultProxies(proxy_arena.allocator()) catch {};
     return getWithClient(alloc, &client, url);
 }
 
@@ -78,11 +75,8 @@ fn decompressGzip(alloc: std.mem.Allocator, data: []const u8) ![]u8 {
 
 /// Fetch a URL and write the response body directly to a file.
 pub fn download(alloc: std.mem.Allocator, url: []const u8, dest_path: []const u8) !void {
-    var client: std.http.Client = .{ .allocator = alloc };
+    var client: std.http.Client = .{ .allocator = alloc, .io = std.Io.Threaded.global_single_threaded.io() };
     defer client.deinit();
-    var proxy_arena = std.heap.ArenaAllocator.init(alloc);
-    defer proxy_arena.deinit();
-    client.initDefaultProxies(proxy_arena.allocator()) catch {};
     return downloadWithClient(&client, url, dest_path);
 }
 
@@ -109,26 +103,27 @@ pub fn downloadWithClient(client: *std.http.Client, url: []const u8, dest_path: 
         return error.FetchFailed;
     }
 
-    var file = std.fs.createFileAbsolute(dest_path, .{}) catch {
+    const _dl_io = std.Io.Threaded.global_single_threaded.io();
+    var file = std.Io.Dir.createFileAbsolute(_dl_io, dest_path, .{}) catch {
         req.deinit();
         return error.FetchFailed;
     };
     var file_writer_buf: [65536]u8 = undefined;
-    var file_writer = file.writer(&file_writer_buf);
+    var file_writer = file.writer(_dl_io, &file_writer_buf);
     var reader = response.reader(&.{});
 
     _ = reader.streamRemaining(&file_writer.interface) catch {
-        file.close();
+        file.close(_dl_io);
         req.deinit();
-        std.fs.deleteFileAbsolute(dest_path) catch {};
+        std.Io.Dir.deleteFileAbsolute(_dl_io, dest_path) catch {};
         return error.FetchFailed;
     };
     file_writer.interface.flush() catch {
-        file.close();
+        file.close(_dl_io);
         req.deinit();
-        std.fs.deleteFileAbsolute(dest_path) catch {};
+        std.Io.Dir.deleteFileAbsolute(_dl_io, dest_path) catch {};
         return error.FetchFailed;
     };
-    file.close();
+    file.close(_dl_io);
     req.deinit();
 }

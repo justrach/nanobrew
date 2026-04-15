@@ -64,20 +64,20 @@ pub fn relocateKeg(alloc: std.mem.Allocator, name: []const u8, version: []const 
         argv.append(alloc, "-") catch return;
         for (modified.items) |p| argv.append(alloc, p) catch continue;
 
-        var child = std.process.Child.init(argv.items, alloc);
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        child.spawn() catch return;
-        _ = child.wait() catch {};
+        const _io_k = std.Io.Threaded.global_single_threaded.io();
+        if (std.process.run(alloc, _io_k, .{ .argv = argv.items, .stdout_limit = .limited(4096) })) |r| {
+            alloc.free(r.stdout);
+            alloc.free(r.stderr);
+        } else |_| {}
     }
 }
 
 fn walkAndRelocate(alloc: std.mem.Allocator, dir_path: []const u8, modified: *std.ArrayList([]const u8)) !void {
-    var dir = std.fs.openDirAbsolute(dir_path, .{ .iterate = true }) catch return;
-    defer dir.close();
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+    var dir = std.Io.Dir.openDirAbsolute(lib_io, dir_path, .{ .iterate = true }) catch return;
 
     var iter = dir.iterate();
-    while (iter.next() catch null) |entry| {
+    while (iter.next(lib_io) catch null) |entry| {
         var child_buf: [2048]u8 = undefined;
         const child_path = std.fmt.bufPrint(&child_buf, "{s}/{s}", .{ dir_path, entry.name }) catch continue;
 
@@ -86,7 +86,8 @@ fn walkAndRelocate(alloc: std.mem.Allocator, dir_path: []const u8, modified: *st
             .sym_link => {
                 // Resolve symlink and process target if it's a Mach-O file
                 var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-                const target = std.fs.readLinkAbsolute(child_path, &target_buf) catch continue;
+                const target_n = std.Io.Dir.readLinkAbsolute(lib_io, child_path, &target_buf) catch continue;
+                const target = target_buf[0..target_n];
                 const abs_target = if (target.len > 0 and target[0] == '/')
                     target
                 else blk: {
@@ -116,17 +117,22 @@ fn walkAndRelocate(alloc: std.mem.Allocator, dir_path: []const u8, modified: *st
             else => {},
         }
     }
+    dir.close(lib_io);
 }
 
 /// Parse Mach-O headers natively and build install_name_tool args.
 /// Returns true if the file was modified.
 fn relocateFile(alloc: std.mem.Allocator, path: []const u8) bool {
-    var file = std.fs.openFileAbsolute(path, .{}) catch return false;
-    defer file.close();
+    const lib_io_rf = std.Io.Threaded.global_single_threaded.io();
+    var file = std.Io.Dir.openFileAbsolute(lib_io_rf, path, .{}) catch return false;
 
     // Read just the header region (load commands are in first ~32KB typically)
     var header_buf: [65536]u8 = undefined;
-    const n = file.read(&header_buf) catch return false;
+    const n = file.readPositional(lib_io_rf, &.{header_buf[0..]}, 0) catch {
+        file.close(lib_io_rf);
+        return false;
+    };
+    file.close(lib_io_rf);
     if (n < 32) return false;
     const data = header_buf[0..n];
 
@@ -228,12 +234,11 @@ fn relocateMachO64(alloc: std.mem.Allocator, path: []const u8, data: []const u8)
 
     if (argv.items.len > 1) {
         argv.append(alloc, path) catch return false;
-        var child = std.process.Child.init(argv.items, alloc);
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        child.spawn() catch return false;
-        const term = child.wait() catch return false;
-        return term.Exited == 0;
+        const _io_m = std.Io.Threaded.global_single_threaded.io();
+        const r = std.process.run(alloc, _io_m, .{ .argv = argv.items, .stdout_limit = .limited(4096) }) catch return false;
+        defer alloc.free(r.stdout);
+        defer alloc.free(r.stderr);
+        return switch (r.term) { .exited => |c| c == 0, else => false };
     }
     return false;
 }
@@ -313,12 +318,11 @@ fn relocateWithOtool(alloc: std.mem.Allocator, path: []const u8, otool_output: [
 
     if (argv.items.len > 1) {
         argv.append(alloc, path) catch return false;
-        var child = std.process.Child.init(argv.items, alloc);
-        child.stdout_behavior = .Ignore;
-        child.stderr_behavior = .Ignore;
-        child.spawn() catch return false;
-        const term = child.wait() catch return false;
-        return term.Exited == 0;
+        const _io_o = std.Io.Threaded.global_single_threaded.io();
+        const r = std.process.run(alloc, _io_o, .{ .argv = argv.items, .stdout_limit = .limited(4096) }) catch return false;
+        defer alloc.free(r.stdout);
+        defer alloc.free(r.stderr);
+        return switch (r.term) { .exited => |c| c == 0, else => false };
     }
     return false;
 }
@@ -336,15 +340,17 @@ fn fileContainsPlaceholder(path: []const u8) bool {
 }
 
 fn runProcess(alloc: std.mem.Allocator, argv: []const []const u8) ![]u8 {
-    var child = std.process.Child.init(argv, alloc);
-    child.stdout_behavior = .Pipe;
-    child.stderr_behavior = .Ignore;
-    try child.spawn();
-    const stdout = child.stdout.?;
-    const output = stdout.readToEndAlloc(alloc, 1024 * 1024) catch return error.ReadFailed;
-    const term = child.wait() catch return error.WaitFailed;
-    if (term.Exited != 0) { alloc.free(output); return error.ProcessFailed; }
-    return output;
+    const _io_r = std.Io.Threaded.global_single_threaded.io();
+    const result = std.process.run(alloc, _io_r, .{
+        .argv = argv,
+        .stdout_limit = .limited(1024 * 1024),
+    }) catch return error.ReadFailed;
+    defer alloc.free(result.stderr);
+    if (switch (result.term) { .exited => |c| c != 0, else => true }) {
+        alloc.free(result.stdout);
+        return error.ProcessFailed;
+    }
+    return result.stdout;
 }
 
 const testing = std.testing;

@@ -8,30 +8,40 @@ const std = @import("std");
 const Formula = @import("../api/formula.zig").Formula;
 const fetch = @import("../net/fetch.zig");
 
+fn printOut(lib_io: std.Io, comptime fmt: []const u8, args: anytype) void {
+    var buf: [1024]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch fmt;
+    std.Io.File.stdout().writeStreamingAll(lib_io, msg) catch {};
+}
+
+fn printErr(lib_io: std.Io, comptime fmt: []const u8, args: anytype) void {
+    var buf: [1024]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, fmt, args) catch fmt;
+    std.Io.File.stderr().writeStreamingAll(lib_io, msg) catch {};
+}
+
 pub fn runPostInstall(alloc: std.mem.Allocator, formula: Formula) !void {
-    const stdout = std.fs.File.stdout().deprecatedWriter();
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
 
     // Execute post_install if defined
     if (formula.post_install_defined) {
-        stdout.print("==> Running post-install for {s}...\n", .{formula.name}) catch {};
-        runPostInstallScript(alloc, formula) catch |err| {
-            stderr.print("nb: {s}: post-install script failed: {}\n", .{ formula.name, err }) catch {};
+        printOut(lib_io, "==> Running post-install for {s}...\n", .{formula.name});
+        runPostInstallScript(alloc, lib_io, formula) catch |err| {
+            printErr(lib_io, "nb: {s}: post-install script failed: {}\n", .{ formula.name, err });
         };
     }
 
     // Display caveats
     if (formula.caveats.len > 0) {
-        stdout.print("==> Caveats\n{s}", .{formula.caveats}) catch {};
+        printOut(lib_io, "==> Caveats\n{s}", .{formula.caveats});
         // Ensure trailing newline
         if (formula.caveats[formula.caveats.len - 1] != '\n') {
-            stdout.print("\n", .{}) catch {};
+            printOut(lib_io, "\n", .{});
         }
     }
 }
 
-fn runPostInstallScript(alloc: std.mem.Allocator, formula: Formula) !void {
-    const stderr = std.fs.File.stderr().deprecatedWriter();
+fn runPostInstallScript(alloc: std.mem.Allocator, lib_io: std.Io, formula: Formula) !void {
 
     // Fetch Ruby formula source
     const first_letter = if (formula.name.len > 0) formula.name[0..1] else return;
@@ -63,18 +73,19 @@ fn runPostInstallScript(alloc: std.mem.Allocator, formula: Formula) !void {
 
         if (parseRubyCommand(alloc, trimmed, formula.name, keg_path)) |cmd| {
             defer alloc.free(cmd);
-            const result = std.process.Child.run(.{
-                .allocator = alloc,
+            const result = std.process.run(alloc, lib_io, .{
                 .argv = &.{ "/bin/sh", "-c", cmd },
+                .stdout_limit = .limited(64 * 1024),
+                .stderr_limit = .limited(64 * 1024),
             }) catch continue;
-            alloc.free(result.stdout);
-            alloc.free(result.stderr);
+            defer alloc.free(result.stdout);
+            defer alloc.free(result.stderr);
             const failed = switch (result.term) {
-                .Exited => |code| code != 0,
+                .exited => |code| code != 0,
                 else => true,
             };
             if (failed) {
-                stderr.print("nb: {s}: post-install command failed: {s}\n", .{ formula.name, cmd }) catch {};
+                printErr(lib_io, "nb: {s}: post-install command failed: {s}\n", .{ formula.name, cmd });
             }
         }
     }

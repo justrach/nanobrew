@@ -20,7 +20,7 @@ pub const DepResolver = struct {
             .alloc = alloc,
             .formulae = std.StringHashMap(Formula).init(alloc),
             .edges = std.StringHashMap([]const []const u8).init(alloc),
-            .client = std.http.Client{ .allocator = alloc },
+            .client = std.http.Client{ .allocator = alloc, .io = std.Io.Threaded.global_single_threaded.io() },
         };
     }
 
@@ -44,8 +44,6 @@ pub const DepResolver = struct {
         try frontier.append(self.alloc, name);
 
         const client_ptr: ?*std.http.Client = if (self.client != null) &self.client.? else null;
-        if (client_ptr) |cp| cp.initDefaultProxies(self.alloc) catch {};
-
         // BFS: each iteration fetches all frontier names in parallel
         while (frontier.items.len > 0) {
             const batch_size = frontier.items.len;

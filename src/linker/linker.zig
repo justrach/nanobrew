@@ -15,6 +15,7 @@ const OPT_DIR = paths.OPT_DIR;
 
 /// Link a keg's binaries and create opt/ symlink.
 pub fn linkKeg(name: []const u8, version: []const u8) !void {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
     var keg_buf: [512]u8 = undefined;
     const keg_dir = std.fmt.bufPrint(&keg_buf, "{s}/{s}/{s}", .{ CELLAR_DIR, name, version }) catch return error.PathTooLong;
 
@@ -28,11 +29,10 @@ pub fn linkKeg(name: []const u8, version: []const u8) !void {
     var bin_buf: [512]u8 = undefined;
     const bin_dir = std.fmt.bufPrint(&bin_buf, "{s}/bin", .{keg_dir}) catch return error.PathTooLong;
 
-    if (std.fs.openDirAbsolute(bin_dir, .{ .iterate = true })) |d| {
+    if (std.Io.Dir.openDirAbsolute(lib_io, bin_dir, .{ .iterate = true })) |d| {
         var dir = d;
-        defer dir.close();
         var iter = dir.iterate();
-        while (iter.next() catch null) |entry| {
+        while (iter.next(lib_io) catch null) |entry| {
             if (entry.kind != .file and entry.kind != .sym_link) continue;
 
             var src_buf: [1024]u8 = undefined;
@@ -41,23 +41,25 @@ pub fn linkKeg(name: []const u8, version: []const u8) !void {
             var dest_buf: [1024]u8 = undefined;
             const dest = std.fmt.bufPrint(&dest_buf, "{s}/{s}", .{ BIN_DIR, entry.name }) catch continue;
 
-            std.fs.deleteFileAbsolute(dest) catch {};
+            std.Io.Dir.deleteFileAbsolute(lib_io, dest) catch {};
 
-            std.fs.symLinkAbsolute(src, dest, .{}) catch |err| {
-                std.fs.File.stderr().deprecatedWriter().print("warning: failed to link {s}: {}\n", .{ entry.name, err }) catch {};
+            std.Io.Dir.symLinkAbsolute(lib_io, src, dest, .{}) catch |err| {
+                var _b: [512]u8 = undefined;
+                const _m = std.fmt.bufPrint(&_b, "warning: failed to link {s}: {}\n", .{ entry.name, err }) catch "warning: failed to link\n";
+                std.Io.File.stderr().writeStreamingAll(lib_io, _m) catch {};
             };
         }
+        dir.close(lib_io);
     } else |_| {}
 
     // Also check sbin/
     var sbin_buf: [512]u8 = undefined;
     const sbin_dir = std.fmt.bufPrint(&sbin_buf, "{s}/sbin", .{keg_dir}) catch return error.PathTooLong;
 
-    if (std.fs.openDirAbsolute(sbin_dir, .{ .iterate = true })) |d2| {
+    if (std.Io.Dir.openDirAbsolute(lib_io, sbin_dir, .{ .iterate = true })) |d2| {
         var dir = d2;
-        defer dir.close();
         var iter = dir.iterate();
-        while (iter.next() catch null) |entry| {
+        while (iter.next(lib_io) catch null) |entry| {
             if (entry.kind != .file and entry.kind != .sym_link) continue;
 
             var src_buf: [1024]u8 = undefined;
@@ -66,25 +68,31 @@ pub fn linkKeg(name: []const u8, version: []const u8) !void {
             var dest_buf: [1024]u8 = undefined;
             const dest = std.fmt.bufPrint(&dest_buf, "{s}/{s}", .{ BIN_DIR, entry.name }) catch continue;
 
-            std.fs.deleteFileAbsolute(dest) catch {};
-            std.fs.symLinkAbsolute(src, dest, .{}) catch |err| {
-                std.fs.File.stderr().deprecatedWriter().print("warning: failed to link {s}: {}\n", .{ entry.name, err }) catch {};
+            std.Io.Dir.deleteFileAbsolute(lib_io, dest) catch {};
+            std.Io.Dir.symLinkAbsolute(lib_io, src, dest, .{}) catch |err| {
+                var _b: [512]u8 = undefined;
+                const _m = std.fmt.bufPrint(&_b, "warning: failed to link {s}: {}\n", .{ entry.name, err }) catch "warning: failed to link\n";
+                std.Io.File.stderr().writeStreamingAll(lib_io, _m) catch {};
             };
         }
+        dir.close(lib_io);
     } else |_| {}
 
     // Create opt/ symlink: prefix/opt/<name> -> Cellar/<name>/<version>
-    std.fs.makeDirAbsolute(OPT_DIR) catch {};
+    std.Io.Dir.createDirAbsolute(lib_io, OPT_DIR, .default_dir) catch {};
     var opt_buf: [512]u8 = undefined;
     const opt_link = std.fmt.bufPrint(&opt_buf, "{s}/{s}", .{ OPT_DIR, name }) catch return error.PathTooLong;
-    std.fs.deleteFileAbsolute(opt_link) catch {};
-    std.fs.symLinkAbsolute(keg_dir, opt_link, .{}) catch |err| {
-        std.fs.File.stderr().deprecatedWriter().print("warning: failed to link {s}: {}\n", .{ name, err }) catch {};
+    std.Io.Dir.deleteFileAbsolute(lib_io, opt_link) catch {};
+    std.Io.Dir.symLinkAbsolute(lib_io, keg_dir, opt_link, .{}) catch |err| {
+        var _b: [512]u8 = undefined;
+        const _m = std.fmt.bufPrint(&_b, "warning: failed to link {s}: {}\n", .{ name, err }) catch "warning: failed to link\n";
+        std.Io.File.stderr().writeStreamingAll(lib_io, _m) catch {};
     };
 }
 
 /// Unlink a keg's binaries and remove opt/ symlink.
 pub fn unlinkKeg(name: []const u8, version: []const u8) !void {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
     var keg_buf: [512]u8 = undefined;
     const keg_dir = std.fmt.bufPrint(&keg_buf, "{s}/{s}/{s}", .{ CELLAR_DIR, name, version }) catch return error.PathTooLong;
 
@@ -92,25 +100,26 @@ pub fn unlinkKeg(name: []const u8, version: []const u8) !void {
     var bin_buf: [512]u8 = undefined;
     const bin_dir = std.fmt.bufPrint(&bin_buf, "{s}/bin", .{keg_dir}) catch return error.PathTooLong;
 
-    if (std.fs.openDirAbsolute(bin_dir, .{ .iterate = true })) |d| {
+    if (std.Io.Dir.openDirAbsolute(lib_io, bin_dir, .{ .iterate = true })) |d| {
         var dir = d;
-        defer dir.close();
         var iter = dir.iterate();
-        while (iter.next() catch null) |entry| {
+        while (iter.next(lib_io) catch null) |entry| {
             var link_buf: [1024]u8 = undefined;
             const link_path = std.fmt.bufPrint(&link_buf, "{s}/{s}", .{ BIN_DIR, entry.name }) catch continue;
             var target_buf: [std.fs.max_path_bytes]u8 = undefined;
-            const target = std.fs.readLinkAbsolute(link_path, &target_buf) catch continue;
+            const target_n = std.Io.Dir.readLinkAbsolute(lib_io, link_path, &target_buf) catch continue;
+            const target = target_buf[0..target_n];
             var expected_buf: [1024]u8 = undefined;
             const expected = std.fmt.bufPrint(&expected_buf, "{s}/{s}", .{ bin_dir, entry.name }) catch continue;
             if (std.mem.eql(u8, target, expected)) {
-                std.fs.deleteFileAbsolute(link_path) catch {};
+                std.Io.Dir.deleteFileAbsolute(lib_io, link_path) catch {};
             }
         }
+        dir.close(lib_io);
     } else |_| {}
 
     // Remove opt/ symlink
     var opt_buf: [512]u8 = undefined;
     const opt_link = std.fmt.bufPrint(&opt_buf, "{s}/{s}", .{ OPT_DIR, name }) catch return;
-    std.fs.deleteFileAbsolute(opt_link) catch {};
+    std.Io.Dir.deleteFileAbsolute(lib_io, opt_link) catch {};
 }

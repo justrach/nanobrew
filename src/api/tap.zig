@@ -221,7 +221,7 @@ fn allocDupe(alloc: std.mem.Allocator, s: []const u8) ![]const u8 {
 
 fn extractSymbolAfter(line: []const u8, prefix: []const u8) ?[]const u8 {
     const start = std.mem.indexOf(u8, line, prefix) orelse return null;
-    var rest = std.mem.trimLeft(u8, line[start + prefix.len ..], " \t");
+    var rest = std.mem.trimStart(u8, line[start + prefix.len ..], " \t");
     if (rest.len == 0 or rest[0] != ':') return null;
     rest = rest[1..];
 
@@ -519,7 +519,7 @@ fn extractQuotedAfter(line: []const u8, keyword: []const u8) ?[]const u8 {
 /// Format: `sha256 cellar: :any_skip_relocation, arm64_sonoma: "abc123"`
 /// or: `sha256 arm64_sonoma: "abc123"`
 fn findBottleSha256(line: []const u8) ?[]const u8 {
-    const trimmed = std.mem.trimLeft(u8, line, " \t");
+    const trimmed = std.mem.trimStart(u8, line, " \t");
     if (!startsWith(trimmed, "sha256")) return null;
 
     // Try primary tag first, then fallbacks

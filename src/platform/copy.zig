@@ -25,24 +25,21 @@ pub fn cpFallbackArgs(src: []const u8, dst: []const u8) [4][]const u8 {
 }
 
 /// Run the cp fallback for the current platform.
-/// Run the cp fallback for the current platform.
-pub fn cpFallback(src: []const u8, dst: []const u8) !void {
+pub fn cpFallback(io: std.Io, src: []const u8, dst: []const u8) !void {
     if (comptime builtin.os.tag == .linux) {
-        const result = std.process.Child.run(.{
-            .allocator = std.heap.page_allocator,
+        const result = std.process.run(std.heap.page_allocator, io, .{
             .argv = &.{ "cp", "--reflink=auto", "-R", src, dst },
         }) catch return error.CopyFailed;
         std.heap.page_allocator.free(result.stdout);
         std.heap.page_allocator.free(result.stderr);
-        if (switch (result.term) { .Exited => |c| c != 0, else => true }) return error.CopyFailed;
+        if (switch (result.term) { .exited => |c| c != 0, else => true }) return error.CopyFailed;
     } else {
-        const result = std.process.Child.run(.{
-            .allocator = std.heap.page_allocator,
+        const result = std.process.run(std.heap.page_allocator, io, .{
             .argv = &.{ "cp", "-R", src, dst },
         }) catch return error.CopyFailed;
         std.heap.page_allocator.free(result.stdout);
         std.heap.page_allocator.free(result.stderr);
-        if (switch (result.term) { .Exited => |c| c != 0, else => true }) return error.CopyFailed;
+        if (switch (result.term) { .exited => |c| c != 0, else => true }) return error.CopyFailed;
     }
 }
 
@@ -56,7 +53,7 @@ const testing = std.testing;
 
 test "cpFallback returns error on bad source path" {
     // cp with a non-existent source should fail and we should get CopyFailed
-    const err = cpFallback("/nonexistent/source/path", "/tmp/dst");
+    const err = cpFallback(testing.io, "/nonexistent/source/path", "/tmp/dst");
     try testing.expectError(error.CopyFailed, err);
 }
 
