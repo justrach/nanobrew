@@ -377,8 +377,8 @@ pub fn extractToDir(alloc: std.mem.Allocator, tar_data: []const u8, dest_dir: []
                 // Null-terminate both strings for the C symlink call
                 path_buf[abs_path.len] = 0;
                 const abs_path_z: [*:0]const u8 = @ptrCast(abs_path.ptr);
-                var lt_buf: [1025]u8 = undefined;
-                const lt_len = @min(link_target.len, 1024);
+                var lt_buf: [std.fs.max_path_bytes + 1]u8 = undefined;
+                const lt_len = @min(link_target.len, std.fs.max_path_bytes);
                 @memcpy(lt_buf[0..lt_len], link_target[0..lt_len]);
                 lt_buf[lt_len] = 0;
                 const link_target_z: [*:0]const u8 = @ptrCast(&lt_buf);
@@ -436,7 +436,7 @@ pub fn extractToDir(alloc: std.mem.Allocator, tar_data: []const u8, dest_dir: []
 /// Create a file with the given content and mode.
 fn writeFile(path: []const u8, data: []const u8, mode: std.posix.mode_t) !void {
     const lib_io = std.Io.Threaded.global_single_threaded.io();
-    const perms: std.Io.File.Permissions = if (mode & 0o111 != 0) .executable_file else .default_file;
+    const perms: std.Io.File.Permissions = std.Io.File.Permissions.fromMode(mode);
     const file = try std.Io.Dir.createFileAbsolute(lib_io, path, .{ .permissions = perms });
     defer file.close(lib_io);
     try file.writeStreamingAll(lib_io, data);
