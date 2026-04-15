@@ -189,15 +189,13 @@ fn walkAndReplaceText(io: std.Io, dir_path: []const u8) void {
         switch (entry.kind) {
             .directory => {
                 // Skip directories that never contain executable path placeholders.
-                // doc/man/info/locale/html contain only docs and binary locale data.
-                if (std.mem.eql(u8, entry.name, "doc") or
-                    std.mem.eql(u8, entry.name, "docs") or
-                    std.mem.eql(u8, entry.name, "man") or
-                    std.mem.eql(u8, entry.name, "html") or
-                    std.mem.eql(u8, entry.name, "info") or
-                    std.mem.eql(u8, entry.name, "locale") or
+                // locale/charset contain binary data. doc/html/info are safe to
+                // process but rarely have Homebrew paths; man pages CAN have them
+                // (e.g. ncurses embeds @@HOMEBREW_CELLAR@@ in .5/.3x pages).
+                if (std.mem.eql(u8, entry.name, "locale") or
                     std.mem.eql(u8, entry.name, "charset"))
                     continue;
+                walkAndReplaceText(io, child_path);
                 walkAndReplaceText(io, child_path);
             },
             .sym_link => {
