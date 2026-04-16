@@ -11,7 +11,7 @@ A fast package manager for macOS and Linux. Written in Zig. Uses Homebrew's bott
 - **Fast warm installs** — packages already in the local store reinstall in ~3.5ms
 - **Parallel downloads** — all dependencies download and extract at the same time
 - **No Ruby runtime** — single static binary, instant startup
-- **No auto-update** — `nb install` just installs; self-update is explicit via `nb update`
+- **No implicit auto-update** — `nb install` just installs; self-update is explicit via `nb update`, or opt into a daily scheduler
 - **No quarantine** — cask installs skip `com.apple.quarantine`, so apps open without Gatekeeper prompts
 - **Third-party taps** — `nb install user/tap/formula` just works. The only fast Homebrew client with tap support
 - **Drop-in Homebrew replacement** — same formulas, same bottles, same casks
@@ -23,7 +23,7 @@ Homebrew is great software and powers millions of dev machines. nanobrew makes d
 
 | | Homebrew | nanobrew |
 |---|---------|----------|
-| **Auto-update** | `brew install` runs `brew update` first (can take minutes) | `nb install` just installs. Self-update is explicit via `nb update`. |
+| **Auto-update** | `brew install` runs `brew update` first (can take minutes) | `nb install` just installs. Self-update is explicit via `nb update`; scheduled updates are opt-in via `nb autoupdate enable`. |
 | **Gatekeeper quarantine** | Casks get `com.apple.quarantine` — triggers "Are you sure?" dialog | No quarantine flag — apps open immediately |
 | **Parallel downloads** | Sequential by default; set `HOMEBREW_DOWNLOAD_CONCURRENCY` to change | All dependencies download simultaneously out of the box |
 | **Runtime** | Ruby (~57 MB) | Single 1.2 MB static binary. Instant startup, no bootstrapping. |
@@ -140,6 +140,17 @@ nb upgrade tree               # upgrade one package
 nb pin tree                   # prevent a package from upgrading
 nb unpin tree                 # allow upgrades again
 ```
+
+### Auto-update
+
+```bash
+nb autoupdate enable           # run nb update daily at 03:00
+nb autoupdate enable --upgrade # run nb update, then nb upgrade daily
+nb autoupdate status           # show scheduler state
+nb autoupdate disable          # remove the scheduler
+```
+
+On macOS, nanobrew installs a user launchd agent. On Linux, it installs a user systemd timer.
 
 ### Undo and backup
 
@@ -344,6 +355,7 @@ License: [Apache 2.0](./LICENSE)
 | `nb services` | | Manage services (launchctl/systemd) |
 | `nb completions <shell>` | | Print shell completions |
 | `nb update` | | Self-update nanobrew |
+| `nb autoupdate` | | Manage opt-in scheduled updates |
 | `nb init` | | Create directory structure |
 | `nb help` | | Show help |
 
