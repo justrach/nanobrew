@@ -10,6 +10,7 @@
 //   nb search <query>          # Search for formulas and casks
 //   nb upgrade [formula]       # Upgrade packages
 //   nb update                  # Self-update nanobrew
+//   nb autoupdate enable       # Schedule daily opt-in self-updates
 const std = @import("std");
 const nb = @import("nanobrew");
 const builtin = @import("builtin");
@@ -26,6 +27,7 @@ const Command = enum {
     search,
     upgrade,
     update,
+    autoupdate,
     help,
     doctor,
     cleanup,
@@ -141,6 +143,7 @@ pub fn main(init: std.process.Init) !void {
         .search => runSearch(alloc, args[2..]),
         .upgrade => runUpgrade(alloc, args[2..]),
         .update => runUpdate(alloc),
+        .autoupdate => runAutoUpdate(alloc, args[2..]),
         .help => printUsage(),
         .doctor => runDoctor(alloc),
         .cleanup => runCleanup(alloc, args[2..]),
@@ -156,8 +159,9 @@ pub fn main(init: std.process.Init) !void {
         .migrate => runMigrate(alloc),
     }
 
-    // Check for updates (once per day, non-blocking)
-    checkForUpdate(alloc);
+    // Check for updates (once per day, non-blocking). Update commands already
+    // talk to the release endpoint and may replace this running binary.
+    if (cmd != .update and cmd != .autoupdate) checkForUpdate(alloc);
 }
 
 fn parseCommand(arg: []const u8) ?Command {
@@ -178,6 +182,8 @@ fn parseCommand(arg: []const u8) ?Command {
         .{ "upgrade", Command.upgrade },
         .{ "update", Command.update },
         .{ "self-update", Command.update },
+        .{ "autoupdate", Command.autoupdate },
+        .{ "auto-update", Command.autoupdate },
         .{ "help", Command.help },
         .{ "--help", Command.help },
         .{ "-h", Command.help },
@@ -226,6 +232,7 @@ fn runInit() void {
         ROOT ++ "/cache/tokens",
         ROOT ++ "/db",
         ROOT ++ "/locks",
+        ROOT ++ "/logs",
     };
 
     for (dirs) |dir| {
@@ -1720,6 +1727,105 @@ fn runUpdate(alloc: std.mem.Allocator) void {
     stdout.print("==> Updated nanobrew to v{s} (was v{s})\n", .{ latest_ver, VERSION }) catch {};
 }
 
+// ── nb autoupdate ──
+
+fn runAutoUpdate(alloc: std.mem.Allocator, args: []const []const u8) void {
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
+
+    var subcmd: ?[]const u8 = null;
+    var mode: nb.autoupdate.Mode = .self;
+
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--upgrade")) {
+            mode = .upgrade;
+        } else if (std.mem.eql(u8, arg, "--self-only")) {
+            mode = .self;
+        } else if (arg.len > 0 and arg[0] == '-') {
+            stderr.print("nb: unknown autoupdate option '{s}'\n", .{arg}) catch {};
+            stderr.print("Usage: nb autoupdate [enable|disable|status|run] [--upgrade]\n", .{}) catch {};
+            std.process.exit(1);
+        } else if (subcmd == null) {
+            subcmd = arg;
+        } else {
+            stderr.print("nb: unexpected autoupdate argument '{s}'\n", .{arg}) catch {};
+            stderr.print("Usage: nb autoupdate [enable|disable|status|run] [--upgrade]\n", .{}) catch {};
+            std.process.exit(1);
+        }
+    }
+
+    const action = subcmd orelse "status";
+
+    if (std.mem.eql(u8, action, "enable")) {
+        const exe_path = currentExecutablePath(alloc) catch |err| {
+            stderr.print("nb: autoupdate enable failed: could not determine executable path: {}\n", .{err}) catch {};
+            std.process.exit(1);
+        };
+        defer alloc.free(exe_path);
+
+        nb.autoupdate.enable(alloc, exe_path, mode) catch |err| {
+            stderr.print("nb: autoupdate enable failed: {}\n", .{err}) catch {};
+            if (comptime builtin.os.tag == .linux) {
+                stderr.print("nb: systemd user timers require a running user session; try: systemctl --user status\n", .{}) catch {};
+            }
+            std.process.exit(1);
+        };
+
+        const path: ?[]const u8 = nb.autoupdate.schedulePath(alloc) catch null;
+        defer if (path) |p| alloc.free(p);
+        stdout.print("==> Enabled daily nanobrew auto-update at 03:00\n", .{}) catch {};
+        if (mode == .upgrade) {
+            stdout.print("    Action: nb update, then nb upgrade\n", .{}) catch {};
+        } else {
+            stdout.print("    Action: nb update\n", .{}) catch {};
+        }
+        if (path) |p| stdout.print("    Schedule: {s}\n", .{p}) catch {};
+    } else if (std.mem.eql(u8, action, "disable")) {
+        nb.autoupdate.disable(alloc) catch |err| {
+            stderr.print("nb: autoupdate disable failed: {}\n", .{err}) catch {};
+            std.process.exit(1);
+        };
+        stdout.print("==> Disabled nanobrew auto-update\n", .{}) catch {};
+    } else if (std.mem.eql(u8, action, "status")) {
+        const status_result = nb.autoupdate.status(alloc) catch |err| {
+            stderr.print("nb: autoupdate status failed: {}\n", .{err}) catch {};
+            std.process.exit(1);
+        };
+        const path: ?[]const u8 = nb.autoupdate.schedulePath(alloc) catch null;
+        defer if (path) |p| alloc.free(p);
+
+        const installed = if (status_result.installed) "installed" else "not installed";
+        const loaded = if (status_result.loaded) "enabled" else "not enabled";
+        stdout.print("==> Auto-update is {s}, {s}\n", .{ installed, loaded }) catch {};
+        if (path) |p| stdout.print("    Schedule: {s}\n", .{p}) catch {};
+    } else if (std.mem.eql(u8, action, "run")) {
+        runUpdate(alloc);
+        if (mode == .upgrade) {
+            const no_args: []const []const u8 = &.{};
+            runUpgrade(alloc, no_args);
+        }
+    } else {
+        stderr.print("nb: unknown autoupdate subcommand '{s}'\n", .{action}) catch {};
+        stderr.print("Usage: nb autoupdate [enable|disable|status|run] [--upgrade]\n", .{}) catch {};
+        std.process.exit(1);
+    }
+}
+
+fn currentExecutablePath(alloc: std.mem.Allocator) ![]const u8 {
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    if (comptime builtin.os.tag == .macos) {
+        var exe_buf_size: u32 = @intCast(exe_buf.len);
+        if (std.c._NSGetExecutablePath(@ptrCast(&exe_buf), &exe_buf_size) != 0) {
+            return error.PathTooLong;
+        }
+        return try alloc.dupe(u8, std.mem.sliceTo(&exe_buf, 0));
+    } else {
+        const n_signed = std.c.readlink("/proc/self/exe", &exe_buf, exe_buf.len);
+        if (n_signed < 0) return error.ReadLinkFailed;
+        return try alloc.dupe(u8, exe_buf[0..@as(usize, @intCast(n_signed))]);
+    }
+}
+
 // ── nb install --cask ──
 
 fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
@@ -1853,6 +1959,8 @@ fn printUsage() void {
         \\  upgrade --cask [app]     Upgrade casks (or all if none specified)
         \\  upgrade --deb            Upgrade all installed .deb packages
         \\  update                   Self-update nanobrew to the latest version
+        \\  autoupdate [enable|disable|status|run] [--upgrade]
+        \\                           Manage opt-in daily self-updates
         \\  doctor                   Check installation health
         \\  cleanup [--dry-run]      Remove stale caches and orphaned files
         \\  outdated                 List packages with newer versions available
@@ -1880,6 +1988,8 @@ fn printUsage() void {
         \\  nb upgrade tree
         \\  nb upgrade --cask
         \\  nb upgrade --deb
+        \\  nb autoupdate enable
+        \\  nb autoupdate enable --upgrade
         \\  nb list
         \\  nb remove ripgrep
         \\  nb remove --cask firefox

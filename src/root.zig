@@ -35,6 +35,7 @@ pub const postinstall = @import("build/postinstall.zig");
 pub const search_api = @import("api/search.zig");
 pub const tap = @import("api/tap.zig");
 pub const services = @import("services/services.zig");
+pub const autoupdate = @import("autoupdate.zig");
 pub const version = @import("version.zig");
 
 // Platform abstraction layer
@@ -66,6 +67,7 @@ comptime {
     _ = deb_extract;
     _ = deb_distro;
     _ = version;
+    _ = autoupdate;
     _ = tar;
     _ = native_tar;
     _ = @import("platform/copy.zig");

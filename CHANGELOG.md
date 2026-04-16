@@ -2,6 +2,11 @@
 
 All notable changes to nanobrew are documented here.
 
+## Unreleased
+
+### Added
+- **Opt-in auto-update scheduler** — `nb autoupdate enable` installs a daily launchd agent on macOS or user systemd timer on Linux. `--upgrade` also runs package upgrades after self-update.
+
 ## [0.1.082] - 2026-04-01
 
 ### Fixed
