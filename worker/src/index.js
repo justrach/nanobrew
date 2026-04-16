@@ -1061,7 +1061,7 @@ const RELEASE_190_HTML = `<!DOCTYPE html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>nanobrew v0.1.190 — Zig 0.16 + faster everything</title>
-<meta name="description" content="nanobrew v0.1.190: Zig 0.16.0 compiler, native tar extraction, persistent HTTP, O(1) dep resolution, and 15+ correctness fixes. 11.8x faster than Homebrew on warm installs.">
+<meta name="description" content="nanobrew v0.1.190: Zig 0.16.0 compiler, native tar extraction, persistent HTTP, O(1) resolver queue, and 15+ correctness fixes. 11.8x faster than Homebrew on warm installs.">
 <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -1199,7 +1199,7 @@ const RELEASE_190_HTML = `<!DOCTYPE html>
 
   <section class="hero">
     <h1>nanobrew v0.1.190<br><em>Zig 0.16 + faster everything</em></h1>
-    <p>Zig 0.16.0 compiler, native tar extraction, persistent HTTP, O(1) dep resolution, and 15+ correctness fixes.</p>
+    <p>Zig 0.16.0 compiler, native tar extraction, persistent HTTP, O(1) resolver queue, and 15+ correctness fixes.</p>
     <code>nb update  # to v0.1.190</code>
   </section>
 
@@ -1268,7 +1268,7 @@ const RELEASE_190_HTML = `<!DOCTYPE html>
       </div>
       <div class="how-card">
         <div class="num">O(1)</div>
-        <h3>Dep resolution queue</h3>
+        <h3>Resolver queue pop</h3>
         <p>Topological sort called orderedRemove(0) on every step — O(n²). Replaced with an index cursor: O(V+E) total. Noticeable on packages with 10+ transitive deps.</p>
       </div>
       <div class="how-card">

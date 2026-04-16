@@ -2,6 +2,11 @@
 
 All notable changes to nanobrew are documented here.
 
+## Unreleased
+
+### Changed
+- **Dependency resolver wording** — release copy now says `O(1) resolver queue` instead of implying whole-graph dependency resolution is constant time.
+
 ## [0.1.082] - 2026-04-01
 
 ### Fixed

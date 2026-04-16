@@ -217,6 +217,8 @@ nb install steipete/tap/sag              # Third-party taps
   └─ 5. Install via bottle or source path (same pipeline as above)
 ```
 
+Dependency ordering walks the explicit formula graph and topologically sorts it in `O(V+E)`. The `O(1)` resolver improvement in v0.1.190 refers to queue dequeue during that sort, not solving arbitrary version constraints.
+
 Key design choices:
 - **Content-addressable store** — deduplicates bottles by SHA256. Reinstalls are instant because the data is already there.
 - **APFS clonefile** — copy-on-write on macOS means no extra disk space when materializing from the store.

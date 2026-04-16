@@ -5,7 +5,7 @@
 **1/**
 nanobrew v0.1.190 is out.
 
-Zig 0.16.0 compiler, native tar extraction, persistent HTTP, O(1) dep resolution, and 15+ bug fixes.
+Zig 0.16.0 compiler, native tar extraction, persistent HTTP, O(1) resolver queue, and 15+ bug fixes.
 
 140x faster than Homebrew on warm installs. 1.4x faster than v0.1.083.
 Both macOS binaries signed and notarized by Apple.
@@ -40,7 +40,7 @@ File permissions now preserved exactly from the mode bits in the archive header.
 **4/**
 Two algorithmic wins:
 
-Dep resolution was O(n2). Topological sort called `orderedRemove(0)` on every dequeue, shifting the whole array. Replaced with an index cursor. O(V+E) total, same ordering.
+Resolver queue pops were O(n). Topological sort called `orderedRemove(0)` on every dequeue, shifting the whole array. Replaced with an index cursor. O(V+E) total, same ordering.
 
 HTTP client now reused across all downloads in a batch. GHCR auth token prefetched once before workers start. Head buffer bumped from 8 KiB to 32 KiB.
 
