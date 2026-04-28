@@ -54,6 +54,31 @@ const Phase = enum(u8) {
     failed,
 };
 
+/// Per-package failure message captured during the parallel install pipeline.
+/// Workers write into `buf` and publish the length atomically *before* they
+/// flip the phase to `.failed`, so the main thread can replay the messages
+/// after the spinner stops without losing them to terminal escape sequences.
+const ErrorSlot = struct {
+    buf: [512]u8 = undefined,
+    len: std.atomic.Value(u16) = std.atomic.Value(u16).init(0),
+
+    fn set(self: *ErrorSlot, msg: []const u8) void {
+        const n = @min(msg.len, self.buf.len);
+        @memcpy(self.buf[0..n], msg[0..n]);
+        self.len.store(@intCast(n), .release);
+    }
+
+    fn setFmt(self: *ErrorSlot, comptime fmt: []const u8, args: anytype) void {
+        const printed = std.fmt.bufPrint(&self.buf, fmt, args) catch self.buf[0..self.buf.len];
+        self.len.store(@intCast(printed.len), .release);
+    }
+
+    fn message(self: *const ErrorSlot) []const u8 {
+        const n: usize = self.len.load(.acquire);
+        return self.buf[0..n];
+    }
+};
+
 var g_io: std.Io = undefined;
 
 const StderrWriter = struct {
@@ -402,12 +427,18 @@ fn runLocalRbInstall(alloc: std.mem.Allocator, path: []const u8) void {
 
     var had_error = std.atomic.Value(bool).init(false);
     var phase = std.atomic.Value(u8).init(@intFromEnum(Phase.waiting));
+    var err_slot: ErrorSlot = .{};
     const local_formulae = [_]nb.formula.Formula{f};
     const local_requested = [_][]const u8{f.name};
-    fullInstallOne(alloc, f, &had_error, &phase, false, &local_requested, &local_formulae);
+    fullInstallOne(alloc, f, &had_error, &phase, &err_slot, false, &local_requested, &local_formulae);
 
     if (had_error.load(.acquire)) {
-        stderr.print("nb: failed to install '{s}'\n", .{f.name}) catch {};
+        const msg = err_slot.message();
+        if (msg.len > 0) {
+            stderr.print("nb: failed to install '{s}': {s}\n", .{ f.name, msg }) catch {};
+        } else {
+            stderr.print("nb: failed to install '{s}'\n", .{f.name}) catch {};
+        }
         std.process.exit(1);
     }
 
@@ -517,6 +548,24 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     }
 
     const stdout = StdoutWriter{};
+
+    // Linux only: fail fast if patchelf is missing. Without it, every bottle
+    // ELF relocation step downstream fails with a bare `✗ relocate failed:
+    // PatchelfNotFound`, *after* the user has already paid the download +
+    // extract cost. Surfacing it up front keeps the error visible and saves
+    // bandwidth.
+    if (comptime builtin.os.tag == .linux) {
+        if (!platform.relocate.hasPatchelf(alloc, g_io)) {
+            stderr.print("nb: patchelf is required to relocate ELF binaries on Linux but was not found on PATH.\n", .{}) catch {};
+            stderr.print("    Install it with one of:\n", .{}) catch {};
+            stderr.print("        sudo apt-get install -y patchelf\n", .{}) catch {};
+            stderr.print("        sudo dnf install -y patchelf\n", .{}) catch {};
+            stderr.print("        sudo apk add --no-cache patchelf\n", .{}) catch {};
+            stderr.print("        sudo pacman -S --noconfirm patchelf\n", .{}) catch {};
+            stderr.print("    Then re-run: nb install ...\n", .{}) catch {};
+            std.process.exit(1);
+        }
+    }
 
     var timer = MonoTimer.start();
     var phase_timer = MonoTimer.start();
@@ -641,6 +690,15 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         defer alloc.free(phases);
         for (phases) |*p| p.* = std.atomic.Value(u8).init(@intFromEnum(Phase.waiting));
 
+        // Per-package error capture so worker failure messages survive the
+        // spinner refresh that would otherwise overwrite them with `\x1b[2K`.
+        const error_slots = alloc.alloc(ErrorSlot, pkg_count) catch {
+            stderr.print("nb: out of memory\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        defer alloc.free(error_slots);
+        for (error_slots) |*s| s.* = .{};
+
         // Collect package names for display
         const names = alloc.alloc([]const u8, pkg_count) catch {
             stderr.print("nb: out of memory\n", .{}) catch {};
@@ -663,7 +721,8 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
                 threads.items[0].join();
                 _ = threads.orderedRemove(0);
             }
-            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error, &phases[pi], use_shims, formulae.items, all_formulae }) catch {
+            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error, &phases[pi], &error_slots[pi], use_shims, formulae.items, all_formulae }) catch {
+                error_slots[pi].set("nb: failed to spawn worker thread");
                 had_error.store(true, .release);
                 phases[pi].store(@intFromEnum(Phase.failed), .release);
                 continue;
@@ -694,11 +753,17 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
 
         if (had_error.load(.acquire)) {
             stderr.print("nb: some packages failed to install\n", .{}) catch {};
-            // Re-print which packages failed so the user sees them after progress display
+            // Replay each failed worker's captured message after the spinner
+            // is gone — printing them earlier would be clobbered by the
+            // spinner's `\x1b[2K` line clears.
             for (names, 0..) |name, i| {
                 const raw: u8 = phases[i].load(.acquire);
                 const phase: Phase = @enumFromInt(raw);
-                if (phase == .failed) {
+                if (phase != .failed) continue;
+                const msg = error_slots[i].message();
+                if (msg.len > 0) {
+                    stderr.print("    {s}: {s}\n", .{ name, msg }) catch {};
+                } else {
                     stderr.print("    failed: {s}\n", .{name}) catch {};
                 }
             }
@@ -944,12 +1009,11 @@ fn fullInstallOne(
     f: nb.formula.Formula,
     had_error: *std.atomic.Value(bool),
     phase: *std.atomic.Value(u8),
+    err_slot: *ErrorSlot,
     use_shims: bool,
     requested: []const []const u8,
     all_formulae: []const nb.formula.Formula,
 ) void {
-    const stderr = StderrWriter{};
-
     const is_source_build = f.bottle_url.len == 0 and f.source_url.len > 0;
 
     if (is_source_build) {
@@ -963,13 +1027,14 @@ fn fullInstallOne(
             nb.store.materializeFromRelocated(source_cache_key, f.name, fv) catch break :fast;
             phase.store(@intFromEnum(Phase.linking), .release);
             linkFormulaKeg(alloc, f.name, fv, use_shims, requested, all_formulae) catch |err| {
-                stderr.print("nb: {s}: link failed: {}\n", .{ f.name, err }) catch {};
+                err_slot.setFmt("link failed: {t}", .{err});
                 had_error.store(true, .release);
                 phase.store(@intFromEnum(Phase.failed), .release);
                 return;
             };
             nb.postinstall.runPostInstall(alloc, f) catch |err| {
-                stderr.print("nb: {s}: post-install warning: {}\n", .{ f.name, err }) catch {};
+                const stderr = StderrWriter{};
+                stderr.print("nb: {s}: post-install warning: {t}\n", .{ f.name, err }) catch {};
             };
             phase.store(@intFromEnum(Phase.done), .release);
             return;
@@ -978,7 +1043,7 @@ fn fullInstallOne(
         // Source build path: download + compile from source
         phase.store(@intFromEnum(Phase.downloading), .release);
         nb.source_builder.buildFromSource(alloc, g_io, f) catch |err| {
-            stderr.print("nb: {s}: source build failed: {}\n", .{ f.name, err }) catch {};
+            err_slot.setFmt("source build failed: {t}", .{err});
             had_error.store(true, .release);
             phase.store(@intFromEnum(Phase.failed), .release);
             return;
@@ -990,7 +1055,7 @@ fn fullInstallOne(
         const blob_dir = "/opt/nanobrew/cache/blobs";
         var blob_buf: [512]u8 = undefined;
         const blob_path = std.fmt.bufPrint(&blob_buf, "{s}/{s}", .{ blob_dir, f.bottle_sha256 }) catch {
-            stderr.print("nb: {s}: path too long for blob\n", .{f.name}) catch {};
+            err_slot.set("path too long for blob");
             had_error.store(true, .release);
             phase.store(@intFromEnum(Phase.failed), .release);
             return;
@@ -1003,7 +1068,7 @@ fn fullInstallOne(
                 .target_kind = .formula,
                 .target_name = f.name,
             }) catch |err| {
-                stderr.print("nb: {s}: download failed: {}\n", .{ f.name, err }) catch {};
+                err_slot.setFmt("download failed: {t}", .{err});
                 had_error.store(true, .release);
                 phase.store(@intFromEnum(Phase.failed), .release);
                 return;
@@ -1014,7 +1079,7 @@ fn fullInstallOne(
         phase.store(@intFromEnum(Phase.extracting), .release);
         if (!nb.store.hasEntry(f.bottle_sha256)) {
             nb.store.ensureEntry(alloc, blob_path, f.bottle_sha256) catch |err| {
-                stderr.print("nb: {s}: extract failed: {}\n", .{ f.name, err }) catch {};
+                err_slot.setFmt("extract failed: {t}", .{err});
                 had_error.store(true, .release);
                 phase.store(@intFromEnum(Phase.failed), .release);
                 return;
@@ -1033,16 +1098,20 @@ fn fullInstallOne(
             // Relocated snapshot found — skip steps 4/4b, go straight to link+post-install
             phase.store(@intFromEnum(Phase.linking), .release);
             linkFormulaKeg(alloc, f.name, fv, use_shims, requested, all_formulae) catch |err| {
-                stderr.print("nb: {s}: link failed: {}\n", .{ f.name, err }) catch {};
+                err_slot.setFmt("link failed: {t}", .{err});
+                had_error.store(true, .release);
+                phase.store(@intFromEnum(Phase.failed), .release);
+                return;
             };
             nb.postinstall.runPostInstall(alloc, f) catch |err| {
-                stderr.print("nb: {s}: post-install warning: {}\n", .{ f.name, err }) catch {};
+                const stderr = StderrWriter{};
+                stderr.print("nb: {s}: post-install warning: {t}\n", .{ f.name, err }) catch {};
             };
             phase.store(@intFromEnum(Phase.done), .release);
             return;
         }
         nb.cellar.materialize(f.bottle_sha256, f.name, f.version) catch |err| {
-            stderr.print("nb: {s}: materialize failed: {}\n", .{ f.name, err }) catch {};
+            err_slot.setFmt("materialize failed: {t}", .{err});
             had_error.store(true, .release);
             phase.store(@intFromEnum(Phase.failed), .release);
             return;
@@ -1054,7 +1123,11 @@ fn fullInstallOne(
     var ver_buf: [256]u8 = undefined;
     const actual_ver = nb.cellar.detectKegVersion(f.name, f.version, &ver_buf) orelse f.version;
     platform.relocate.relocateKeg(alloc, g_io, f.name, actual_ver) catch |err| {
-        stderr.print("nb: {s}: relocate failed: {}\n", .{ f.name, err }) catch {};
+        if (err == error.PatchelfNotFound) {
+            err_slot.set("relocate failed: patchelf not installed (apt install patchelf)");
+        } else {
+            err_slot.setFmt("relocate failed: {t}", .{err});
+        }
         had_error.store(true, .release);
         phase.store(@intFromEnum(Phase.failed), .release);
         return;
@@ -1074,7 +1147,7 @@ fn fullInstallOne(
     // 5. Link binaries
     phase.store(@intFromEnum(Phase.linking), .release);
     linkFormulaKeg(alloc, f.name, actual_ver, use_shims, requested, all_formulae) catch |err| {
-        stderr.print("nb: {s}: link failed: {}\n", .{ f.name, err }) catch {};
+        err_slot.setFmt("link failed: {t}", .{err});
         had_error.store(true, .release);
         phase.store(@intFromEnum(Phase.failed), .release);
         return;
@@ -1082,7 +1155,8 @@ fn fullInstallOne(
 
     // 6. Post-install (non-fatal)
     nb.postinstall.runPostInstall(alloc, f) catch |err| {
-        stderr.print("nb: {s}: post-install warning: {}\n", .{ f.name, err }) catch {};
+        const stderr = StderrWriter{};
+        stderr.print("nb: {s}: post-install warning: {t}\n", .{ f.name, err }) catch {};
     };
 
     phase.store(@intFromEnum(Phase.done), .release);

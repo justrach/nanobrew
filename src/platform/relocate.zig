@@ -16,6 +16,15 @@ else if (builtin.os.tag == .linux)
 else
     @compileError("unsupported OS");
 
+/// On Linux, returns whether `patchelf --version` succeeds. On other
+/// platforms it always returns true since no patchelf-equivalent is needed.
+/// Used by the install pipeline to fail fast before downloading anything
+/// when the prerequisite is missing.
+pub fn hasPatchelf(alloc: std.mem.Allocator, io: std.Io) bool {
+    if (builtin.os.tag != .linux) return true;
+    return elf.hasPatchelf(alloc, io);
+}
+
 /// Replace @@HOMEBREW_*@@ placeholders in all text files within a keg.
 /// Handles shebangs, scripts, config files, etc.
 pub const replaceKegPlaceholders = placeholder.replaceKegPlaceholders;
