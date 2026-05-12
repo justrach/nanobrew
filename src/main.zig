@@ -167,7 +167,7 @@ pub fn main(init: std.process.Init) !void {
     }
 
     // Check for updates (once per day, non-blocking)
-    checkForUpdate(alloc);
+    if (cmd != .update) checkForUpdate(alloc);
 }
 fn parseCommand(arg: []const u8) ?Command {
     const cmds = .{
