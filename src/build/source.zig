@@ -177,13 +177,6 @@ pub fn buildFromSource(alloc: std.mem.Allocator, io: std.Io, formula: Formula) !
             try runBuildCmd(alloc, lib_io, src_root, &.{ "make", std.fmt.allocPrint(alloc, "PREFIX={s}", .{keg_path}) catch return error.OutOfMemory, "install" });
         },
         .unknown => {
-            if (formula.install_binaries.len > 0) {
-                try installDeclaredBinaries(alloc, lib_io, src_root, keg_path, formula);
-                printOut(lib_io, "==> Installed declared upstream binaries for {s}\n", .{formula.name});
-                std.Io.Dir.cwd().deleteTree(lib_io, build_dir) catch {};
-                return;
-            }
-
             // No build system — assume pre-built package (common in tap formulas).
             // Copy entire contents into keg (equivalent to Homebrew's `prefix.install Dir["*"]`).
             var found_anything = false;
@@ -231,6 +224,12 @@ pub fn buildFromSource(alloc: std.mem.Allocator, io: std.Io, formula: Formula) !
             if (!found_anything) {
                 printErr(lib_io, "nb: {s}: no recognized build system or installable files found\n", .{formula.name});
                 return error.UnknownBuildSystem;
+            }
+
+
+            if (formula.install_binaries.len > 0) {
+                try installDeclaredBinaries(alloc, lib_io, src_root, keg_path, formula);
+                printOut(lib_io, "==> Installed declared upstream binaries for {s}\n", .{formula.name});
             }
         },
     }

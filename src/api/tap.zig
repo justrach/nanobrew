@@ -295,6 +295,12 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
     var build_deps: std.ArrayList([]const u8) = .empty;
     defer build_deps.deinit(alloc);
 
+    var install_binaries: std.ArrayList([]const u8) = .empty;
+    defer install_binaries.deinit(alloc);
+    errdefer {
+        for (install_binaries.items) |bin| alloc.free(bin);
+    }
+
     // Track block nesting for on_macos/on_linux/bottle/test
     var in_bottle: bool = false;
     var platform_skip: bool = false;
@@ -439,6 +445,16 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
                 }
             }
         }
+
+
+        // bin.install / sbin.install
+        if (std.mem.indexOf(u8, line, "bin.install") != null or std.mem.indexOf(u8, line, "sbin.install") != null) {
+            var clean_line = if (std.mem.indexOfScalar(u8, line, '#')) |hash_idx| line[0..hash_idx] else line;
+            if (std.mem.indexOf(u8, clean_line, "=>")) |rocket_idx| {
+                clean_line = clean_line[0..rocket_idx];
+            }
+            try extractQuotedStringsAfter(alloc, clean_line, "install", &install_binaries);
+        }
     }
 
     // Extract version from URL if not found explicitly
@@ -482,6 +498,7 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
         .bottle_sha256 = b_sha,
         .dependencies = try deps.toOwnedSlice(alloc),
         .build_deps = try build_deps.toOwnedSlice(alloc),
+        .install_binaries = try install_binaries.toOwnedSlice(alloc),
     };
 }
 
@@ -537,6 +554,35 @@ fn extractQuotedAfter(line: []const u8, keyword: []const u8) ?[]const u8 {
     // Find closing quote
     const q2 = std.mem.indexOfScalar(u8, rest, '"') orelse return null;
     return rest[0..q2];
+}
+
+
+fn extractQuotedStringsAfter(alloc: std.mem.Allocator, line: []const u8, keyword: []const u8, list: *std.ArrayList([]const u8)) !void {
+    const idx = std.mem.indexOf(u8, line, keyword) orelse return;
+    const after = line[idx + keyword.len ..];
+    var i: usize = 0;
+    while (i < after.len) {
+        const char = after[i];
+        if (char == '"' or char == '\'') {
+            const quote = char;
+            const start = i + 1;
+            i += 1;
+            while (i < after.len and after[i] != quote) {
+                if (after[i] == '\\') {
+                    i += 2;
+                } else {
+                    i += 1;
+                }
+            }
+            if (i < after.len) {
+                const quoted_str = after[start..i];
+                if (std.mem.indexOfScalar(u8, quoted_str, '*') == null) {
+                    try list.append(alloc, try alloc.dupe(u8, quoted_str));
+                }
+            }
+        }
+        i += 1;
+    }
 }
 
 /// Find bottle sha256 matching our platform tag.
@@ -960,4 +1006,68 @@ test "findBottleSha256 - matching tag" {
     if (is_macos and builtin.cpu.arch == .aarch64) {
         try testing.expectEqualStrings("abcdef", sha.?);
     }
+}
+
+
+test "extractQuotedStringsAfter - basic and multiple" {
+    var list = std.ArrayList([]const u8).empty;
+    defer {
+        for (list.items) |item| testing.allocator.free(item);
+        list.deinit(testing.allocator);
+    }
+
+    try extractQuotedStringsAfter(testing.allocator, "  bin.install \"crush\"", "install", &list);
+    try testing.expectEqual(@as(usize, 1), list.items.len);
+    try testing.expectEqualStrings("crush", list.items[0]);
+
+    for (list.items) |item| testing.allocator.free(item);
+    list.deinit(testing.allocator);
+    list = .empty;
+
+    try extractQuotedStringsAfter(testing.allocator, "  bin.install 'foo', \"bar\"", "install", &list);
+    try testing.expectEqual(@as(usize, 2), list.items.len);
+    try testing.expectEqualStrings("foo", list.items[0]);
+    try testing.expectEqualStrings("bar", list.items[1]);
+}
+
+test "parseRubyFormula - extracts install_binaries" {
+    const src =
+        \\class Crush < Formula
+        \\  url "https://example.com/crush.tar.gz"
+        \\  version "1.0"
+        \\  sha256 "deadbeef"
+        \\
+        \\  def install
+        \\    bin.install "crush"
+        \\    sbin.install 'scrush', "scrush2"
+        \\  end
+        \\end
+    ;
+    const f = try parseRubyFormula(testing.allocator, "crush", src);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqualStrings("1.0", f.version);
+    try testing.expectEqual(@as(usize, 3), f.install_binaries.len);
+    try testing.expectEqualStrings("crush", f.install_binaries[0]);
+    try testing.expectEqualStrings("scrush", f.install_binaries[1]);
+    try testing.expectEqualStrings("scrush2", f.install_binaries[2]);
+}
+
+
+test "parseRubyFormula - extracts install_binaries with rename mappings" {
+    const src =
+        \\class Crush < Formula
+        \\  url "https://example.com/crush.tar.gz"
+        \\  version "1.0"
+        \\  sha256 "deadbeef"
+        \\
+        \\  def install
+        \\    bin.install "crush" => "crush-cli"
+        \\  end
+        \\end
+    ;
+    const f = try parseRubyFormula(testing.allocator, "crush", src);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqualStrings("1.0", f.version);
+    try testing.expectEqual(@as(usize, 1), f.install_binaries.len);
+    try testing.expectEqualStrings("crush", f.install_binaries[0]);
 }
