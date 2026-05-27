@@ -133,7 +133,10 @@ if ! grep -q "nanobrew" <<<"$SMOKE_OUT"; then
 fi
 
 echo "==> package $TARBALL"
-tar -czf "$TARBALL" -C "$(dirname "$BIN")" "$(basename "$BIN")"
+STAGE_DIR="$(mktemp -d)"
+cp "$BIN" "$STAGE_DIR/nb"
+tar -czf "$TARBALL" -C "$STAGE_DIR" nb
+rm -rf "$STAGE_DIR"
 (cd "$OUT_DIR" && shasum -a 256 "$(basename "$TARBALL")" > "$(basename "$SHAFILE")")
 shasum -a 256 "$TARBALL" > "$SHAFILE"
 

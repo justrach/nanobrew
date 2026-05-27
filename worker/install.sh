@@ -111,8 +111,16 @@ mkdir -p "$BIN_DIR" \
     "$INSTALL_DIR/store" \
     "$INSTALL_DIR/db"
 
-# Install binary
-cp "$TMPDIR_DL/nb" "$BIN_DIR/nb"
+# Install binary — tarball may contain "nb" or "nb-<arch>"
+NB_BIN="$TMPDIR_DL/nb"
+if [ ! -f "$NB_BIN" ]; then
+    NB_BIN="$(find "$TMPDIR_DL" -maxdepth 1 -name 'nb*' -type f ! -name '*.tar.gz' ! -name '*.sha256' | head -1)"
+    if [ -z "$NB_BIN" ]; then
+        echo "  Error: extracted binary not found in tarball"
+        exit 1
+    fi
+fi
+cp "$NB_BIN" "$BIN_DIR/nb"
 chmod +x "$BIN_DIR/nb"
 echo "  Installed nb to $BIN_DIR/nb"
 

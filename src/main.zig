@@ -2338,6 +2338,33 @@ fn runUpdate(alloc: std.mem.Allocator) void {
         std.process.exit(1);
     };
 
+    // Fallback: if tarball contains "nb-<arch>" instead of "nb", find it
+    const bin_exists = blk: {
+        const f = std.Io.Dir.openFileAbsolute(g_io, extracted_bin, .{}) catch break :blk false;
+        f.close(g_io);
+        break :blk true;
+    };
+    var fallback_bin_buf: [512]u8 = undefined;
+    const final_extracted_bin = if (bin_exists) extracted_bin else fb: {
+        var dir = std.Io.Dir.openDirAbsolute(g_io, tmp_dir, .{ .iterate = true }) catch {
+            stderr.print("nb: update failed: could not open extract dir\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        defer dir.close(g_io);
+        var iter = dir.iterate();
+        while (iter.next(g_io) catch null) |entry| {
+            if (std.mem.startsWith(u8, entry.name, "nb") and entry.kind == .file) {
+                break :fb std.fmt.bufPrint(&fallback_bin_buf, "{s}/{s}", .{ tmp_dir, entry.name }) catch {
+                    std.process.exit(1);
+                };
+            }
+        }
+        stderr.print("nb: update failed: extracted binary not found\n", .{}) catch {};
+        std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
+        std.Io.Dir.cwd().deleteTree(g_io, tmp_dir) catch {};
+        std.process.exit(1);
+    };
+
     // Stage: write to a temp location on the same filesystem as the executable
     var staged_buf: [512]u8 = undefined;
     const staged_path = std.fmt.bufPrint(&staged_buf, "{s}.new-{s}", .{ exe_path, &rand_hex }) catch {
@@ -2354,7 +2381,7 @@ fn runUpdate(alloc: std.mem.Allocator) void {
 
     // Copy extracted binary to staged path
     {
-        const src = std.Io.Dir.openFileAbsolute(g_io, extracted_bin, .{}) catch {
+        const src = std.Io.Dir.openFileAbsolute(g_io, final_extracted_bin, .{}) catch {
             stderr.print("nb: update failed: extracted binary not found\n", .{}) catch {};
             std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
             std.Io.Dir.cwd().deleteTree(g_io, tmp_dir) catch {};
