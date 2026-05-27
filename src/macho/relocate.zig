@@ -443,16 +443,90 @@ fn relocateWithOtool(alloc: std.mem.Allocator, io: std.Io, path: []const u8, oto
     return false;
 }
 
+fn needsRelocation(s: []const u8) bool {
+    return ph.hasPlaceholder(s) or hasLiteralHomebrewPath(s);
+}
+
+fn hasLiteralHomebrewPath(s: []const u8) bool {
+    return std.mem.indexOf(u8, s, "/opt/homebrew/") != null or
+        std.mem.indexOf(u8, s, "/usr/local/Cellar/") != null or
+        std.mem.indexOf(u8, s, "/usr/local/opt/") != null or
+        std.mem.indexOf(u8, s, "/home/linuxbrew/.linuxbrew/") != null;
+}
+
 fn hasPlaceholder(s: []const u8) bool {
-    return ph.hasPlaceholder(s);
+    return needsRelocation(s);
 }
 
 fn replacePlaceholders(alloc: std.mem.Allocator, input: []const u8) ![]u8 {
-    return ph.replacePlaceholders(alloc, input);
+    const pass1 = try ph.replacePlaceholders(alloc, input);
+    if (!hasLiteralHomebrewPath(pass1)) return pass1;
+    defer alloc.free(pass1);
+    var result: std.ArrayList(u8) = .empty;
+    errdefer result.deinit(alloc);
+    const replace = paths.REAL_PREFIX ++ "/";
+    const prefixes = [_][]const u8{
+        "/opt/homebrew/",
+        "/home/linuxbrew/.linuxbrew/",
+        "/usr/local/Cellar/",
+        "/usr/local/opt/",
+    };
+    var i: usize = 0;
+    while (i < pass1.len) {
+        var matched = false;
+        inline for (prefixes) |needle| {
+            if (!matched and i + needle.len <= pass1.len and
+                std.mem.eql(u8, pass1[i..][0..needle.len], needle))
+            {
+                if (comptime std.mem.eql(u8, needle, "/usr/local/Cellar/")) {
+                    try result.appendSlice(alloc, paths.REAL_CELLAR ++ "/");
+                } else if (comptime std.mem.eql(u8, needle, "/usr/local/opt/")) {
+                    try result.appendSlice(alloc, paths.REAL_PREFIX ++ "/opt/");
+                } else {
+                    try result.appendSlice(alloc, replace);
+                }
+                i += needle.len;
+                matched = true;
+            }
+        }
+        if (!matched) {
+            try result.append(alloc, pass1[i]);
+            i += 1;
+        }
+    }
+    return result.toOwnedSlice(alloc);
 }
 
 fn fileContainsPlaceholder(path: []const u8) bool {
-    return ph.fileContainsPlaceholder(path);
+    if (ph.fileContainsPlaceholder(path)) return true;
+    return fileContainsLiteral(path, "/opt/homebrew/") or
+        fileContainsLiteral(path, "/usr/local/Cellar/") or
+        fileContainsLiteral(path, "/home/linuxbrew/.linuxbrew/");
+}
+
+fn fileContainsLiteral(path: []const u8, needle: []const u8) bool {
+    const lib_io = paths.safe_io;
+    var file = std.Io.Dir.openFileAbsolute(lib_io, path, .{}) catch return false;
+    var buf: [65536]u8 = undefined;
+    var overlap: usize = 0;
+    var file_offset: u64 = 0;
+    const result: bool = blk: {
+        while (true) {
+            if (overlap > 0) {
+                const src = buf[buf.len - overlap ..];
+                std.mem.copyForwards(u8, buf[0..overlap], src);
+            }
+            const n = file.readPositional(lib_io, &.{buf[overlap..]}, file_offset) catch break :blk false;
+            if (n == 0) break;
+            const total = overlap + n;
+            if (std.mem.indexOf(u8, buf[0..total], needle) != null) break :blk true;
+            overlap = @min(needle.len - 1, total);
+            file_offset += @intCast(n);
+        }
+        break :blk false;
+    };
+    file.close(lib_io);
+    return result;
 }
 
 fn runProcess(alloc: std.mem.Allocator, io: std.Io, argv: []const []const u8) ![]u8 {
@@ -482,6 +556,11 @@ test "hasPlaceholder - rejects normal paths" {
     try testing.expect(!hasPlaceholder(""));
 }
 
+test "hasPlaceholder - detects literal /opt/homebrew/ paths" {
+    try testing.expect(hasPlaceholder("/opt/homebrew/lib/libheif.19.dylib"));
+    try testing.expect(hasPlaceholder("/opt/homebrew/Cellar/imagemagick/7.1.2-21/lib/libMagickCore.dylib"));
+}
+
 test "replacePlaceholders - PREFIX" {
     const result = try replacePlaceholders(testing.allocator, "@@HOMEBREW_PREFIX@@/lib/libz.dylib");
     defer testing.allocator.free(result);
@@ -504,4 +583,16 @@ test "replacePlaceholders - no placeholders returns copy" {
     const result = try replacePlaceholders(testing.allocator, "/usr/lib/libSystem.B.dylib");
     defer testing.allocator.free(result);
     try testing.expectEqualStrings("/usr/lib/libSystem.B.dylib", result);
+}
+
+test "replacePlaceholders - rewrites literal /opt/homebrew/ paths" {
+    const result = try replacePlaceholders(testing.allocator, "/opt/homebrew/lib/libheif.19.dylib");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("/opt/nanobrew/prefix/lib/libheif.19.dylib", result);
+}
+
+test "replacePlaceholders - rewrites literal /opt/homebrew/Cellar/ paths" {
+    const result = try replacePlaceholders(testing.allocator, "/opt/homebrew/Cellar/imagemagick/7.1.2-21/lib/libMagickCore.dylib");
+    defer testing.allocator.free(result);
+    try testing.expectEqualStrings("/opt/nanobrew/prefix/Cellar/imagemagick/7.1.2-21/lib/libMagickCore.dylib", result);
 }

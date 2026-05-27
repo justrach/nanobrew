@@ -8,7 +8,12 @@ const paths = @import("paths.zig");
 
 /// Literal /opt/homebrew/ paths hardcoded in some Homebrew bottles (not using @@HOMEBREW_*@@ placeholders).
 const HOMEBREW_PREFIX_LITERAL = "/opt/homebrew/";
+const HOMEBREW_USRLOCAL_CELLAR = "/usr/local/Cellar/";
+const HOMEBREW_USRLOCAL_OPT = "/usr/local/opt/";
+const HOMEBREW_LINUXBREW = "/home/linuxbrew/.linuxbrew/";
 const REAL_PREFIX_SLASH = paths.REAL_PREFIX ++ "/";
+const REAL_CELLAR_SLASH = paths.REAL_CELLAR ++ "/";
+const REAL_OPT_SLASH = paths.REAL_PREFIX ++ "/opt/";
 
 pub fn hasPlaceholder(s: []const u8) bool {
     return std.mem.indexOf(u8, s, "@@HOMEBREW") != null;
@@ -147,7 +152,10 @@ pub fn relocateTextFile(io: std.Io, path: []const u8) bool {
     }
     if (std.mem.indexOf(u8, content[0..@min(n, 512)], &[_]u8{0}) != null) return false;
     const has_placeholder = std.mem.indexOf(u8, content, "@@HOMEBREW") != null;
-    const has_homebrew_path = std.mem.indexOf(u8, content, "/opt/homebrew/") != null;
+    const has_homebrew_path = std.mem.indexOf(u8, content, "/opt/homebrew/") != null or
+        std.mem.indexOf(u8, content, "/usr/local/Cellar/") != null or
+        std.mem.indexOf(u8, content, "/usr/local/opt/") != null or
+        std.mem.indexOf(u8, content, "/home/linuxbrew/.linuxbrew/") != null;
     if (!has_placeholder and !has_homebrew_path) return false;
 
     // Worst-case growth is `@@HOMEBREW_CELLAR@@` (19 bytes) →
@@ -189,6 +197,27 @@ pub fn relocateTextFile(io: std.Io, path: []const u8) bool {
             @memcpy(result[out_len..][0..paths.REAL_LIBRARY.len], paths.REAL_LIBRARY);
             out_len += paths.REAL_LIBRARY.len;
             i += paths.PLACEHOLDER_LIBRARY.len;
+        } else if (i + HOMEBREW_USRLOCAL_CELLAR.len <= n and
+            std.mem.eql(u8, content[i..][0..HOMEBREW_USRLOCAL_CELLAR.len], HOMEBREW_USRLOCAL_CELLAR))
+        {
+            if (out_len + REAL_CELLAR_SLASH.len > result_cap) return false;
+            @memcpy(result[out_len..][0..REAL_CELLAR_SLASH.len], REAL_CELLAR_SLASH);
+            out_len += REAL_CELLAR_SLASH.len;
+            i += HOMEBREW_USRLOCAL_CELLAR.len;
+        } else if (i + HOMEBREW_USRLOCAL_OPT.len <= n and
+            std.mem.eql(u8, content[i..][0..HOMEBREW_USRLOCAL_OPT.len], HOMEBREW_USRLOCAL_OPT))
+        {
+            if (out_len + REAL_OPT_SLASH.len > result_cap) return false;
+            @memcpy(result[out_len..][0..REAL_OPT_SLASH.len], REAL_OPT_SLASH);
+            out_len += REAL_OPT_SLASH.len;
+            i += HOMEBREW_USRLOCAL_OPT.len;
+        } else if (i + HOMEBREW_LINUXBREW.len <= n and
+            std.mem.eql(u8, content[i..][0..HOMEBREW_LINUXBREW.len], HOMEBREW_LINUXBREW))
+        {
+            if (out_len + REAL_PREFIX_SLASH.len > result_cap) return false;
+            @memcpy(result[out_len..][0..REAL_PREFIX_SLASH.len], REAL_PREFIX_SLASH);
+            out_len += REAL_PREFIX_SLASH.len;
+            i += HOMEBREW_LINUXBREW.len;
         } else if (i + HOMEBREW_PREFIX_LITERAL.len <= n and
             std.mem.eql(u8, content[i..][0..HOMEBREW_PREFIX_LITERAL.len], HOMEBREW_PREFIX_LITERAL))
         {
@@ -319,7 +348,10 @@ fn walkAndReplaceText(io: std.Io, dir_path: []const u8) void {
                 // Only skip if we read the entire file and found no placeholder or literal path
                 if (file_stat.size <= probe_n and
                     std.mem.indexOf(u8, probe[0..probe_n], "@@HOMEBREW") == null and
-                    std.mem.indexOf(u8, probe[0..probe_n], "/opt/homebrew/") == null) continue;
+                    std.mem.indexOf(u8, probe[0..probe_n], "/opt/homebrew/") == null and
+                    std.mem.indexOf(u8, probe[0..probe_n], "/usr/local/Cellar/") == null and
+                    std.mem.indexOf(u8, probe[0..probe_n], "/usr/local/opt/") == null and
+                    std.mem.indexOf(u8, probe[0..probe_n], "/home/linuxbrew/.linuxbrew/") == null) continue;
 
                 _ = relocateTextFile(io, child_path);
             },
