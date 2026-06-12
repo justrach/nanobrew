@@ -1,0 +1,101 @@
+name: bottles
+
+# Publishes nanobrew's bottle registry at ghcr.io/<owner>/nb-bottles/<name>.
+# CRITICAL: all publishing must happen HERE, not from a laptop — packages
+# created by GITHUB_TOKEN inside a workflow are linked to this public repo
+# and inherit its visibility (public from birth). Locally-pushed packages
+# land private and visibility can only be flipped in the browser, one by
+# one. See manage.md for the operating guide.
+#
+# Triggers:
+#   push to bottles-ci  — full bootstrap: mirror every pinned bottle,
+#                         pin+mirror extras, repackage Tier-2 binaries
+#   weekly cron         — incremental mirror (new pins only; idempotent)
+#   workflow_dispatch   — manual mirror/repackage once this lands on main
+
+on:
+  push:
+    branches: [bottles-ci]
+  schedule:
+    - cron: "23 4 * * 1" # Mondays 04:23 UTC, after Homebrew's weekend churn
+  workflow_dispatch:
+    inputs:
+      command:
+        description: "mirror | repackage"
+        required: true
+        default: "mirror"
+        type: choice
+        options: [mirror, repackage]
+      packages:
+        description: "comma-separated names (mirror --only / repackage targets); empty = all pinned bottles (mirror only)"
+        required: false
+        default: ""
+      dry_run:
+        description: "dry run (mirror only)"
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  bootstrap:
+    if: ${{ github.event_name == 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GHCR_USER: ${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: mirror every pinned homebrew bottle
+        # Partial failures must not skip the pin/repackage steps; the mirror
+        # is idempotent and the weekly cron (or a re-push) converges the rest.
+        run: python3 scripts/bottles/nb_bottles.py mirror || echo "::warning::mirror finished with failures — re-run to converge"
+      - name: pin + mirror extras (not yet in the embedded registry)
+        run: python3 scripts/bottles/nb_bottles.py pin hexyl --mirror
+      - name: repackage every eligible Tier-2 upstream binary
+        run: |
+          for p in $(python3 scripts/bottles/nb_bottles.py tier2); do
+            python3 scripts/bottles/nb_bottles.py repackage "$p" || echo "::warning::repackage $p failed, continuing"
+          done
+      - name: visibility report
+        run: |
+          echo "Packages created this run should be PUBLIC (inherited from repo)."
+          echo "Spot-check: https://github.com/${{ github.repository_owner }}?tab=packages"
+
+  scheduled:
+    if: ${{ github.event_name != 'push' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GHCR_USER: ${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: mirror
+        if: ${{ github.event_name == 'schedule' || inputs.command == 'mirror' }}
+        run: |
+          ARGS=""
+          [ -n "${{ inputs.packages }}" ] && ARGS="--only ${{ inputs.packages }}"
+          [ "${{ inputs.dry_run }}" = "true" ] && ARGS="$ARGS --dry-run"
+          python3 scripts/bottles/nb_bottles.py mirror $ARGS
+
+      - name: repackage
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.command == 'repackage' }}
+        run: |
+          IFS=',' read -ra PKGS <<< "${{ inputs.packages }}"
+          for p in "${PKGS[@]}"; do
+            python3 scripts/bottles/nb_bottles.py repackage "$p"
+          done
+
+      - name: upload repackaged tarballs as artifact
+        if: ${{ github.event_name == 'workflow_dispatch' && inputs.command == 'repackage' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: bottles
+          path: dist/*.tar.gz
+          if-no-files-found: ignore
