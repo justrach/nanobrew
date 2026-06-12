@@ -227,15 +227,75 @@ def find_record(name):
     die(f"'{name}' not in {REGISTRY_JSON.name}")
 
 
+def ghcr_repo_name(token):
+    """OCI repository paths forbid '@'; Homebrew maps versioned formulae the
+    same way (node@22 -> .../node/22/...), which also keeps the
+    NANOBREW_BOTTLE_DOMAIN URL rewrite path-compatible."""
+    return token.replace("@", "/")
+
+
 def mirror_repo(name):
-    return f"{OWNER}/{PREFIX}/{name}"
+    return f"{OWNER}/{PREFIX}/{ghcr_repo_name(name)}"
 
 
 def mirror_url(name, sha256):
     return f"{GHCR}/v2/{mirror_repo(name)}/blobs/sha256:{sha256}"
 
 
+def upstream_repo_from_url(url):
+    """ghcr blob URL -> its repository path (handles versioned formulae)."""
+    rest = url.split("/v2/", 1)
+    if len(rest) != 2 or "/blobs/" not in rest[1]:
+        return None
+    return rest[1].split("/blobs/", 1)[0]
+
+
 # ── subcommands ──────────────────────────────────────────────────────────────
+
+
+def mirror_one(rec, args, src_token_cache):
+    name, ver = rec["token"], rec["resolved"]["version"]
+    repo = mirror_repo(name)
+    dst_token = None
+    for platform, asset in sorted(rec["resolved"]["assets"].items()):
+        digest = "sha256:" + asset["sha256"]
+        src_repo = upstream_repo_from_url(asset["url"]) or f"{UPSTREAM_REPO}/{ghcr_repo_name(name)}"
+        if args.dry_run:
+            src = src_token_cache.setdefault(
+                src_repo,
+                bearer_for(src_repo, pull_only=True, anonymous=True),
+            )
+            present = blob_exists(src_repo, digest, src)
+            log(f"  [dry-run] {name} {ver} {platform}: source blob "
+                f"{'OK' if present else 'MISSING'} ({digest[:19]}…)")
+            continue
+        dst_token = dst_token or bearer_for(repo)
+        # Try cross-repo mount first (instant, no transfer); GHCR only
+        # mounts across repos it can read with our token, so public
+        # homebrew/core usually works. Fall back to pull+push.
+        if blob_exists(repo, digest, dst_token):
+            how, size = "exists", None
+        else:
+            _, how = push_blob(repo, b"", dst_token, mount_from=src_repo, digest=digest)
+            if how != "mounted":
+                src = src_token_cache.setdefault(
+                    src_repo,
+                    bearer_for(src_repo, pull_only=True, anonymous=True),
+                )
+                data = pull_blob(src_repo, digest, src)
+                _, how = push_blob(repo, data, dst_token)
+                size = len(data)
+            else:
+                size = None
+        # tag a manifest so GHCR never garbage-collects the blob
+        blob_size = size
+        if blob_size is None:
+            _, h, _ = http("HEAD", f"{GHCR}/v2/{repo}/blobs/{digest}",
+                           {"Authorization": f"Bearer {dst_token}"})
+            blob_size = int(h.get("Content-Length", "0"))
+        push_manifest(repo, f"{ver}.{platform}", digest, blob_size, platform,
+                      dst_token, {"sh.brew.bottle.upstream": src_repo})
+        log(f"  {name} {ver} {platform}: {how}")
 
 
 def cmd_mirror(args):
@@ -256,53 +316,20 @@ def cmd_mirror(args):
     log(f"mirroring {len(records)} package(s) -> ghcr.io/{OWNER}/{PREFIX}/<name>")
 
     src_token_cache = {}
+    failures = []
     for rec in records:
-        name, ver = rec["token"], rec["resolved"]["version"]
-        repo = mirror_repo(name)
-        dst_token = None
-        for platform, asset in sorted(rec["resolved"]["assets"].items()):
-            digest = "sha256:" + asset["sha256"]
-            if args.dry_run:
-                src = src_token_cache.setdefault(
-                    UPSTREAM_REPO + name,
-                    bearer_for(f"{UPSTREAM_REPO}/{name}", pull_only=True, anonymous=True),
-                )
-                present = blob_exists(f"{UPSTREAM_REPO}/{name}", digest, src)
-                log(f"  [dry-run] {name} {ver} {platform}: source blob "
-                    f"{'OK' if present else 'MISSING'} ({digest[:19]}…)")
-                continue
-            dst_token = dst_token or bearer_for(repo)
-            # Try cross-repo mount first (instant, no transfer); GHCR only
-            # mounts across repos it can read with our token, so public
-            # homebrew/core usually works. Fall back to pull+push.
-            if blob_exists(repo, digest, dst_token):
-                how, size = "exists", None
-            else:
-                d, how = push_blob(repo, b"", dst_token,
-                                   mount_from=f"{UPSTREAM_REPO}/{name}", digest=digest)
-                if how != "mounted":
-                    src = src_token_cache.setdefault(
-                        UPSTREAM_REPO + name,
-                        bearer_for(f"{UPSTREAM_REPO}/{name}", pull_only=True, anonymous=True),
-                    )
-                    data = pull_blob(f"{UPSTREAM_REPO}/{name}", digest, src)
-                    _, how = push_blob(repo, data, dst_token)
-                    size = len(data)
-                else:
-                    size = None
-            # tag a manifest so GHCR never garbage-collects the blob
-            blob_size = size
-            if blob_size is None:
-                _, h, _ = http("HEAD", f"{GHCR}/v2/{repo}/blobs/{digest}",
-                               {"Authorization": f"Bearer {dst_token}"})
-                blob_size = int(h.get("Content-Length", "0"))
-            push_manifest(repo, f"{ver}.{platform}", digest, blob_size, platform,
-                          dst_token, {"sh.brew.bottle.upstream": f"{UPSTREAM_REPO}/{name}"})
-            log(f"  {name} {ver} {platform}: {how}")
+        # One bad package (renamed upstream repo, GC'd blob, naming edge
+        # case) must not abort a fleet-wide run — collect and report.
+        try:
+            mirror_one(rec, args, src_token_cache)
+        except SystemExit:
+            failures.append(rec["token"])
+            log(f"  {rec['token']}: FAILED — continuing")
     if args.dry_run:
         log("dry-run complete (no writes)")
-
-
+    if failures:
+        log(f"{len(failures)} package(s) failed: {', '.join(failures)}")
+        sys.exit(1)
 def cmd_repackage(args):
     rec = find_record(args.name)
     if rec["upstream"]["type"] != "github_release":
@@ -474,14 +501,15 @@ def cmd_pin(args):
         token = bearer_for(repo)
         for platform, asset in sorted(assets.items()):
             digest = "sha256:" + asset["sha256"]
+            src_repo = upstream_repo_from_url(asset["url"]) or f"{UPSTREAM_REPO}/{ghcr_repo_name(record['token'])}"
             if blob_exists(repo, digest, token):
                 how = "exists"
             else:
                 _, how = push_blob(repo, b"", token,
-                                   mount_from=f"{UPSTREAM_REPO}/{record['token']}", digest=digest)
+                                   mount_from=src_repo, digest=digest)
                 if how != "mounted":
-                    src = bearer_for(f"{UPSTREAM_REPO}/{record['token']}", pull_only=True, anonymous=True)
-                    data = pull_blob(f"{UPSTREAM_REPO}/{record['token']}", digest, src)
+                    src = bearer_for(src_repo, pull_only=True, anonymous=True)
+                    data = pull_blob(src_repo, digest, src)
                     _, how = push_blob(repo, data, token)
             _, h, _ = http("HEAD", f"{GHCR}/v2/{repo}/blobs/{digest}",
                            {"Authorization": f"Bearer {token}"})
