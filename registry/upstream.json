@@ -18375,6 +18375,1628 @@
       "verification": {
         "sha256": "required"
       }
+    },
+    {
+      "token": "hexyl",
+      "name": "hexyl",
+      "kind": "formula",
+      "homepage": "https://github.com/sharkdp/hexyl",
+      "desc": "Command-line hex viewer",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [],
+      "build_dependencies": [
+        "pandoc",
+        "rust"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "resolved": {
+        "version": "0.17.0",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/hexyl/blobs/sha256:a380040d842d6ced8dc8015f3d9b25d45c5b60f594f4480609d011ef22bd58d5",
+            "sha256": "a380040d842d6ced8dc8015f3d9b25d45c5b60f594f4480609d011ef22bd58d5"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/hexyl/blobs/sha256:1ddae4d3fad1bc47f842293c728ee099aa4b6e1693a93ccc34b34776ecad6a35",
+            "sha256": "1ddae4d3fad1bc47f842293c728ee099aa4b6e1693a93ccc34b34776ecad6a35"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/hexyl/blobs/sha256:b2728e436ddc3e43a3bd757a05c7e375681b8e1e057eb606f151bc9925a7b0ed",
+            "sha256": "b2728e436ddc3e43a3bd757a05c7e375681b8e1e057eb606f151bc9925a7b0ed"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/hexyl/blobs/sha256:9ea9567b1f011c966988dec4e0bbfa23e7685733a9b5b938c65302bc19603e91",
+            "sha256": "9ea9567b1f011c966988dec4e0bbfa23e7685733a9b5b938c65302bc19603e91"
+          }
+        }
+      },
+      "verification": {
+        "sha256": "required"
+      }
+    },
+    {
+      "token": "bash",
+      "name": "bash",
+      "kind": "formula",
+      "homepage": "https://www.gnu.org/software/bash/",
+      "desc": "Bourne-Again SHell, a UNIX command interpreter",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "ncurses",
+        "readline",
+        "gettext"
+      ],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "5.3.15",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/bash/blobs/sha256:12bd38b55cf84424a79cc301d7d09f98265a04b2bc23004e78f2a8095703d3f1",
+            "sha256": "12bd38b55cf84424a79cc301d7d09f98265a04b2bc23004e78f2a8095703d3f1"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/bash/blobs/sha256:08169a5a5ac9762bd3dc6f63c20b0530b95d9de8befae8b69ff140ff371b0c92",
+            "sha256": "08169a5a5ac9762bd3dc6f63c20b0530b95d9de8befae8b69ff140ff371b0c92"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/bash/blobs/sha256:418fed6af88531fc84aa55ec2785ae9075bb76a598377a08e2c40e7ca47311b9",
+            "sha256": "418fed6af88531fc84aa55ec2785ae9075bb76a598377a08e2c40e7ca47311b9"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/bash/blobs/sha256:97a537b34619f8531a179a6977ee7188adbba6291be44dba89e4b0b5de344be6",
+            "sha256": "97a537b34619f8531a179a6977ee7188adbba6291be44dba89e4b0b5de344be6"
+          }
+        }
+      }
+    },
+    {
+      "token": "colima",
+      "name": "colima",
+      "kind": "formula",
+      "homepage": "https://colima.run",
+      "desc": "Container runtimes on MacOS (and Linux) with minimal setup",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "lima"
+      ],
+      "build_dependencies": [
+        "go"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "0.10.3",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/colima/blobs/sha256:a9dfd1fa0a4aee62fef75974f39f174e4da774f7ba495c43dd0bcc23633381b8",
+            "sha256": "a9dfd1fa0a4aee62fef75974f39f174e4da774f7ba495c43dd0bcc23633381b8"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/colima/blobs/sha256:47bdc2c0e4c973fd07e0855800aca386d77db7d22063069210e32a5169e76209",
+            "sha256": "47bdc2c0e4c973fd07e0855800aca386d77db7d22063069210e32a5169e76209"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/colima/blobs/sha256:e97b386468c0b511c53253c31a5f34cbfdf7bb976a5db656bcf31ebe90edbe63",
+            "sha256": "e97b386468c0b511c53253c31a5f34cbfdf7bb976a5db656bcf31ebe90edbe63"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/colima/blobs/sha256:49146e4d5b549033572324cc922404cd783951c11d725a31c8cdea1d38bd1aa0",
+            "sha256": "49146e4d5b549033572324cc922404cd783951c11d725a31c8cdea1d38bd1aa0"
+          }
+        }
+      }
+    },
+    {
+      "token": "ghostscript",
+      "name": "ghostscript",
+      "kind": "formula",
+      "homepage": "https://www.ghostscript.com/",
+      "desc": "Interpreter for PostScript and PDF",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "fontconfig",
+        "freetype",
+        "jbig2dec",
+        "jpeg-turbo",
+        "leptonica",
+        "libarchive",
+        "libidn",
+        "libpng",
+        "libtiff",
+        "little-cms2",
+        "openjpeg",
+        "tesseract"
+      ],
+      "build_dependencies": [
+        "pkgconf"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "10.07.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/ghostscript/blobs/sha256:6a3f21338c5e00b6d99930d96bdd12c9884147d033ae03f0ba3f3ae9d3f5ed06",
+            "sha256": "6a3f21338c5e00b6d99930d96bdd12c9884147d033ae03f0ba3f3ae9d3f5ed06"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/ghostscript/blobs/sha256:44e942ac04a6dd9f856f989483c86b372e8b86aac831acba7fc8b754292bc3e3",
+            "sha256": "44e942ac04a6dd9f856f989483c86b372e8b86aac831acba7fc8b754292bc3e3"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/ghostscript/blobs/sha256:82acdc247c1252a412cb239f5de814e6bc4b8f6cfff4050b64716b0244d55bdb",
+            "sha256": "82acdc247c1252a412cb239f5de814e6bc4b8f6cfff4050b64716b0244d55bdb"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/ghostscript/blobs/sha256:7c27cf6a1db4ccbaf969f57d15af41a18b5547424b1c9e3683ea320a0d69c241",
+            "sha256": "7c27cf6a1db4ccbaf969f57d15af41a18b5547424b1c9e3683ea320a0d69c241"
+          }
+        }
+      }
+    },
+    {
+      "token": "qemu",
+      "name": "qemu",
+      "kind": "formula",
+      "homepage": "https://www.qemu.org/",
+      "desc": "Generic machine emulator and virtualizer",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "capstone",
+        "dtc",
+        "glib",
+        "gnutls",
+        "jpeg-turbo",
+        "libpng",
+        "libslirp",
+        "libssh",
+        "libusb",
+        "lzo",
+        "ncurses",
+        "pixman",
+        "snappy",
+        "vde",
+        "zstd"
+      ],
+      "build_dependencies": [
+        "libtool",
+        "meson",
+        "ninja",
+        "pkgconf",
+        "python-setuptools",
+        "python@3.14",
+        "spice-protocol"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "11.0.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/qemu/blobs/sha256:6a0f89371967043340a580de702754712b1e2e8d9183dca6ca2779197f902c5f",
+            "sha256": "6a0f89371967043340a580de702754712b1e2e8d9183dca6ca2779197f902c5f"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/qemu/blobs/sha256:19b2870aac0173eec062f18deb3e6815b180192ae86c31b71e776936c2b991cd",
+            "sha256": "19b2870aac0173eec062f18deb3e6815b180192ae86c31b71e776936c2b991cd"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/qemu/blobs/sha256:ce60922f08cd53b4178893baba1ba4818c2aac9274d46ea8a714c4041d52a1e9",
+            "sha256": "ce60922f08cd53b4178893baba1ba4818c2aac9274d46ea8a714c4041d52a1e9"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/qemu/blobs/sha256:14a2962495de3bddb7cdd216b007b4bbc5919f34af52c00558c09fb0a07a2485",
+            "sha256": "14a2962495de3bddb7cdd216b007b4bbc5919f34af52c00558c09fb0a07a2485"
+          }
+        }
+      }
+    },
+    {
+      "token": "zsh",
+      "name": "zsh",
+      "kind": "formula",
+      "homepage": "https://www.zsh.org/",
+      "desc": "UNIX shell (command interpreter)",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "ncurses",
+        "pcre2"
+      ],
+      "build_dependencies": [
+        "texinfo"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "5.9.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/zsh/blobs/sha256:19d5c07ae6c903d410ce5d4a2bc7577b64d960d2f4fec8659a1855102efcdafd",
+            "sha256": "19d5c07ae6c903d410ce5d4a2bc7577b64d960d2f4fec8659a1855102efcdafd"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/zsh/blobs/sha256:0c831556a632b10585c62e12eac0043e23a2693b42c9e66eed35203535d01446",
+            "sha256": "0c831556a632b10585c62e12eac0043e23a2693b42c9e66eed35203535d01446"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/zsh/blobs/sha256:61309af530692ca2440f75459731e5e7260148e65877d4a05747122f4d628093",
+            "sha256": "61309af530692ca2440f75459731e5e7260148e65877d4a05747122f4d628093"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/zsh/blobs/sha256:bee42cb9e4a63c5dfcaae67e0988946d536a474d5fcd876fd3e12139b2d5b461",
+            "sha256": "bee42cb9e4a63c5dfcaae67e0988946d536a474d5fcd876fd3e12139b2d5b461"
+          }
+        }
+      }
+    },
+    {
+      "token": "rsync",
+      "name": "rsync",
+      "kind": "formula",
+      "homepage": "https://rsync.samba.org/",
+      "desc": "Utility that provides fast incremental file transfer",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "lz4",
+        "openssl@3",
+        "popt",
+        "xxhash",
+        "zstd"
+      ],
+      "build_dependencies": [
+        "autoconf",
+        "automake"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "3.4.4",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/rsync/blobs/sha256:47a6219946891014eeaa93105f1c2716e1260f068f7d9b9dab43d47e13b04ad2",
+            "sha256": "47a6219946891014eeaa93105f1c2716e1260f068f7d9b9dab43d47e13b04ad2"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/rsync/blobs/sha256:8334f68dbe60dc8bd73e54366164c01e89b32cf3a2c10648f1b328fd778e26f3",
+            "sha256": "8334f68dbe60dc8bd73e54366164c01e89b32cf3a2c10648f1b328fd778e26f3"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/rsync/blobs/sha256:b7fdfd50dd31bc48d1b590b5df638e66f26a2f850c4eabdb1c6be099df2d80b9",
+            "sha256": "b7fdfd50dd31bc48d1b590b5df638e66f26a2f850c4eabdb1c6be099df2d80b9"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/rsync/blobs/sha256:62fd03ffedabb0d878d8324779a5d748a5cd8b4d6797cbca595889b05136ef18",
+            "sha256": "62fd03ffedabb0d878d8324779a5d748a5cd8b4d6797cbca595889b05136ef18"
+          }
+        }
+      }
+    },
+    {
+      "token": "composer",
+      "name": "composer",
+      "kind": "formula",
+      "homepage": "https://getcomposer.org/",
+      "desc": "Dependency Manager for PHP",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "php"
+      ],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "2.10.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/composer/blobs/sha256:652e201e2463dae0c0cb559d77a7f66e88b2baa059f6fc94c021b927463c2013",
+            "sha256": "652e201e2463dae0c0cb559d77a7f66e88b2baa059f6fc94c021b927463c2013"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/composer/blobs/sha256:41f70f8f80aeee9ade2c8306a0ab1782aa2501ce5039f7c442bc9c06972906bf",
+            "sha256": "41f70f8f80aeee9ade2c8306a0ab1782aa2501ce5039f7c442bc9c06972906bf"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/composer/blobs/sha256:41f70f8f80aeee9ade2c8306a0ab1782aa2501ce5039f7c442bc9c06972906bf",
+            "sha256": "41f70f8f80aeee9ade2c8306a0ab1782aa2501ce5039f7c442bc9c06972906bf"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/composer/blobs/sha256:41f70f8f80aeee9ade2c8306a0ab1782aa2501ce5039f7c442bc9c06972906bf",
+            "sha256": "41f70f8f80aeee9ade2c8306a0ab1782aa2501ce5039f7c442bc9c06972906bf"
+          }
+        }
+      }
+    },
+    {
+      "token": "postgresql@16",
+      "name": "postgresql@16",
+      "kind": "formula",
+      "homepage": "https://www.postgresql.org/",
+      "desc": "Object-relational database system",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "icu4c@78",
+        "krb5",
+        "lz4",
+        "openssl@3",
+        "readline",
+        "zstd",
+        "gettext"
+      ],
+      "build_dependencies": [
+        "gettext",
+        "pkgconf"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "16.14",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/postgresql/16/blobs/sha256:75078938cce1444e511dbd556214f3a596e45f086f45cda98356d93083ee80ea",
+            "sha256": "75078938cce1444e511dbd556214f3a596e45f086f45cda98356d93083ee80ea"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/postgresql/16/blobs/sha256:037911424d69c6296ef73e1c9bfe457c75b215f7910dc4b0892f7c86e53ea0c3",
+            "sha256": "037911424d69c6296ef73e1c9bfe457c75b215f7910dc4b0892f7c86e53ea0c3"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/postgresql/16/blobs/sha256:b24f7814ab05e9ceb134989df6f9ecbe150b30b589d33fcfbb49bd85bec98c91",
+            "sha256": "b24f7814ab05e9ceb134989df6f9ecbe150b30b589d33fcfbb49bd85bec98c91"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/postgresql/16/blobs/sha256:5cea02947bc06f6326ccaeb68b9ab8d3914256b2832566bc95fd7ffd3a85363b",
+            "sha256": "5cea02947bc06f6326ccaeb68b9ab8d3914256b2832566bc95fd7ffd3a85363b"
+          }
+        }
+      }
+    },
+    {
+      "token": "mysql",
+      "name": "mysql",
+      "kind": "formula",
+      "homepage": "https://github.com/mysql/mysql-server",
+      "desc": "Open source relational database management system",
+      "revision": 3,
+      "rebuild": 0,
+      "dependencies": [
+        "abseil",
+        "icu4c@78",
+        "lz4",
+        "openssl@3",
+        "protobuf",
+        "zlib-ng-compat",
+        "zstd"
+      ],
+      "build_dependencies": [
+        "bison",
+        "cmake",
+        "pkgconf"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "9.6.0_3",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/mysql/blobs/sha256:ee46fa8655baa8f9083df4c21098b9227ab183634c3918a9a9fe64a75e1ad92e",
+            "sha256": "ee46fa8655baa8f9083df4c21098b9227ab183634c3918a9a9fe64a75e1ad92e"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/mysql/blobs/sha256:5aa47132f40edcf4369d0ddbf3958ba7f61a411eabea716d737777894a92d466",
+            "sha256": "5aa47132f40edcf4369d0ddbf3958ba7f61a411eabea716d737777894a92d466"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/mysql/blobs/sha256:5c355c67b4fb0378659b2d1f90b761d65992fc3c8d82ad34574c588117aacb0a",
+            "sha256": "5c355c67b4fb0378659b2d1f90b761d65992fc3c8d82ad34574c588117aacb0a"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/mysql/blobs/sha256:4fc02bee5dd022b789cc8f67fc44787e97f32229cc2465fb6d6a61cfdfc52425",
+            "sha256": "4fc02bee5dd022b789cc8f67fc44787e97f32229cc2465fb6d6a61cfdfc52425"
+          }
+        }
+      }
+    },
+    {
+      "token": "postgresql@18",
+      "name": "postgresql@18",
+      "kind": "formula",
+      "homepage": "https://www.postgresql.org/",
+      "desc": "Object-relational database system",
+      "revision": 0,
+      "rebuild": 1,
+      "dependencies": [
+        "icu4c@78",
+        "krb5",
+        "lz4",
+        "openssl@3",
+        "readline",
+        "zstd",
+        "gettext"
+      ],
+      "build_dependencies": [
+        "docbook",
+        "docbook-xsl",
+        "gettext",
+        "pkgconf"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "18.4",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/postgresql/18/blobs/sha256:3dd3a49b3cda7f61de2c8d27697c6a48a3dfe990f74a4eaed8733455a1401bc8",
+            "sha256": "3dd3a49b3cda7f61de2c8d27697c6a48a3dfe990f74a4eaed8733455a1401bc8"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/postgresql/18/blobs/sha256:b138867601984b90b7e7e67ee615e47b73c3cf25007321d47984b0f9839d2dd6",
+            "sha256": "b138867601984b90b7e7e67ee615e47b73c3cf25007321d47984b0f9839d2dd6"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/postgresql/18/blobs/sha256:652990f1ed2c117bcf7ee7baec44b80bfc72a4c59f97b9080ee53dff4e765ac0",
+            "sha256": "652990f1ed2c117bcf7ee7baec44b80bfc72a4c59f97b9080ee53dff4e765ac0"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/postgresql/18/blobs/sha256:a588c6d7bab03cd7936de98889ebc07a2ff86e268db92050948a218d08473c24",
+            "sha256": "a588c6d7bab03cd7936de98889ebc07a2ff86e268db92050948a218d08473c24"
+          }
+        }
+      }
+    },
+    {
+      "token": "fastlane",
+      "name": "fastlane",
+      "kind": "formula",
+      "homepage": "https://fastlane.tools",
+      "desc": "Easiest way to build and release mobile apps",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "ruby",
+        "terminal-notifier"
+      ],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "2.236.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/fastlane/blobs/sha256:4a091281a072a364b55dced3298faa461018740d4976aeb010a707303303988d",
+            "sha256": "4a091281a072a364b55dced3298faa461018740d4976aeb010a707303303988d"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/fastlane/blobs/sha256:f3f6859a07add075b22a25d9036fc6686835f7c327861b62fdce17c4e167c87d",
+            "sha256": "f3f6859a07add075b22a25d9036fc6686835f7c327861b62fdce17c4e167c87d"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/fastlane/blobs/sha256:4f0edf4d50fc938b1df428fb94e9082391e9e459baed77b58b388954354b3040",
+            "sha256": "4f0edf4d50fc938b1df428fb94e9082391e9e459baed77b58b388954354b3040"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/fastlane/blobs/sha256:64a8cba8df7725673f4d9c71b6905c66faed1013ba92a2e96c2d538cf7ee3f70",
+            "sha256": "64a8cba8df7725673f4d9c71b6905c66faed1013ba92a2e96c2d538cf7ee3f70"
+          }
+        }
+      }
+    },
+    {
+      "token": "kubeconform",
+      "name": "kubeconform",
+      "kind": "formula",
+      "homepage": "https://github.com/yannh/kubeconform",
+      "desc": "FAST Kubernetes manifests validator, with support for Custom Resources!",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [],
+      "build_dependencies": [
+        "go"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "0.8.0",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/kubeconform/blobs/sha256:8b5965b37da2b084932eb88327d3174b542a2c59de2f8035b30cced7ce8be3ec",
+            "sha256": "8b5965b37da2b084932eb88327d3174b542a2c59de2f8035b30cced7ce8be3ec"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/kubeconform/blobs/sha256:8f820ebe12cc4ab5d467f99220467173700fd32e8ebcbd2f11456fed25d861aa",
+            "sha256": "8f820ebe12cc4ab5d467f99220467173700fd32e8ebcbd2f11456fed25d861aa"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/kubeconform/blobs/sha256:65bc4ae01f3563490655e98c097d45f005f9b69dc8ba2bdae36b7ff6bb5fee19",
+            "sha256": "65bc4ae01f3563490655e98c097d45f005f9b69dc8ba2bdae36b7ff6bb5fee19"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/kubeconform/blobs/sha256:ebedb63f8734f9a6bc8feca5e651aa2f346af7aec39acb7bfad92ae118e9b0e6",
+            "sha256": "ebedb63f8734f9a6bc8feca5e651aa2f346af7aec39acb7bfad92ae118e9b0e6"
+          }
+        }
+      }
+    },
+    {
+      "token": "xclogparser",
+      "name": "xclogparser",
+      "kind": "formula",
+      "homepage": "https://github.com/MobileNativeFoundation/XCLogParser",
+      "desc": "Tool to parse the SLF serialization format used by Xcode",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "0.2.48",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/xclogparser/blobs/sha256:ad6c12167bfbf86e55a70a383799fef9d0a5ee929766c40f6bc11bc93f441d17",
+            "sha256": "ad6c12167bfbf86e55a70a383799fef9d0a5ee929766c40f6bc11bc93f441d17"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/xclogparser/blobs/sha256:0b3e4fb2426f6466a112ecd9d054b208d837461f4df3c50e62ded8148bb5cb94",
+            "sha256": "0b3e4fb2426f6466a112ecd9d054b208d837461f4df3c50e62ded8148bb5cb94"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/xclogparser/blobs/sha256:9ae66cf545d61d0c8d508af16ba4d9013fab7b3702b73d67e0d938a222b470df",
+            "sha256": "9ae66cf545d61d0c8d508af16ba4d9013fab7b3702b73d67e0d938a222b470df"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/xclogparser/blobs/sha256:91a938a63d46213d7a4ea610ae4b2df86cb24dc9c5dfbbd7f6e64abc4fbc5e0e",
+            "sha256": "91a938a63d46213d7a4ea610ae4b2df86cb24dc9c5dfbbd7f6e64abc4fbc5e0e"
+          }
+        }
+      }
+    },
+    {
+      "token": "rustup",
+      "name": "rustup",
+      "kind": "formula",
+      "homepage": "https://rust-lang.github.io/rustup/",
+      "desc": "Rust toolchain installer",
+      "revision": 2,
+      "rebuild": 0,
+      "dependencies": [],
+      "build_dependencies": [
+        "rust"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "1.29.0_2",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/rustup/blobs/sha256:64be4eda51e96b7372ca85f1e9c224a46ed3ff45c1fd6a5f4ec75400d2123841",
+            "sha256": "64be4eda51e96b7372ca85f1e9c224a46ed3ff45c1fd6a5f4ec75400d2123841"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/rustup/blobs/sha256:e68c9a5c36eb99862049114b415a2502aff64fb11e815c4f441e3d21a646c2a5",
+            "sha256": "e68c9a5c36eb99862049114b415a2502aff64fb11e815c4f441e3d21a646c2a5"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/rustup/blobs/sha256:59486bb4ea00d23c54817e5f28220058ae8525deff4d839ee0cf19192541077f",
+            "sha256": "59486bb4ea00d23c54817e5f28220058ae8525deff4d839ee0cf19192541077f"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/rustup/blobs/sha256:5f6d0fa5e4cf9be2d1e4e784072a1d54f165e2188c2af262b4d7a889b2dbbb70",
+            "sha256": "5f6d0fa5e4cf9be2d1e4e784072a1d54f165e2188c2af262b4d7a889b2dbbb70"
+          }
+        }
+      }
+    },
+    {
+      "token": "gradle",
+      "name": "gradle",
+      "kind": "formula",
+      "homepage": "https://www.gradle.org/",
+      "desc": "Open-source build automation tool based on the Groovy and Kotlin DSL",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "gradle-completion",
+        "openjdk"
+      ],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "9.5.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/gradle/blobs/sha256:a050a64f8d8db63b62d07e2d2eaa97e4d316abf5421153a6f979ea998bda8867",
+            "sha256": "a050a64f8d8db63b62d07e2d2eaa97e4d316abf5421153a6f979ea998bda8867"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/gradle/blobs/sha256:a050a64f8d8db63b62d07e2d2eaa97e4d316abf5421153a6f979ea998bda8867",
+            "sha256": "a050a64f8d8db63b62d07e2d2eaa97e4d316abf5421153a6f979ea998bda8867"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/gradle/blobs/sha256:a050a64f8d8db63b62d07e2d2eaa97e4d316abf5421153a6f979ea998bda8867",
+            "sha256": "a050a64f8d8db63b62d07e2d2eaa97e4d316abf5421153a6f979ea998bda8867"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/gradle/blobs/sha256:a050a64f8d8db63b62d07e2d2eaa97e4d316abf5421153a6f979ea998bda8867",
+            "sha256": "a050a64f8d8db63b62d07e2d2eaa97e4d316abf5421153a6f979ea998bda8867"
+          }
+        }
+      }
+    },
+    {
+      "token": "flyctl",
+      "name": "flyctl",
+      "kind": "formula",
+      "homepage": "https://fly.io",
+      "desc": "Command-line tools for fly.io services",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [],
+      "build_dependencies": [
+        "go"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "0.4.59",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/flyctl/blobs/sha256:8b10adef80c49736e9ffd39097e255f3081fb01dd27ee6c0e9d8477b2a34d474",
+            "sha256": "8b10adef80c49736e9ffd39097e255f3081fb01dd27ee6c0e9d8477b2a34d474"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/flyctl/blobs/sha256:0e5ab4962d1bf62f629ced3da4b6f6e7cea96fc3b2c326d2ebfe8d755a1541b0",
+            "sha256": "0e5ab4962d1bf62f629ced3da4b6f6e7cea96fc3b2c326d2ebfe8d755a1541b0"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/flyctl/blobs/sha256:310ca5984c33604532a26482d8aca9904f1d6e037a3f69df051d0e22f0414850",
+            "sha256": "310ca5984c33604532a26482d8aca9904f1d6e037a3f69df051d0e22f0414850"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/flyctl/blobs/sha256:d549708f690ca34829152fac0f613c29a12c8a4a3497935fd2b8a7dfd1543845",
+            "sha256": "d549708f690ca34829152fac0f613c29a12c8a4a3497935fd2b8a7dfd1543845"
+          }
+        }
+      }
+    },
+    {
+      "token": "node@24",
+      "name": "node@24",
+      "kind": "formula",
+      "homepage": "https://nodejs.org/",
+      "desc": "Open-source, cross-platform JavaScript runtime environment",
+      "revision": 0,
+      "rebuild": 1,
+      "dependencies": [
+        "brotli",
+        "c-ares",
+        "hdrhistogram_c",
+        "icu4c@78",
+        "libnghttp2",
+        "libnghttp3",
+        "libngtcp2",
+        "libuv",
+        "openssl@3",
+        "simdjson",
+        "sqlite",
+        "uvwasi",
+        "zstd"
+      ],
+      "build_dependencies": [
+        "pkgconf",
+        "python@3.13"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "24.16.0",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/node/24/blobs/sha256:5121cfd30e74636fb2e68f049f0547f93d2d5c4332c6538d77ce875857c175f7",
+            "sha256": "5121cfd30e74636fb2e68f049f0547f93d2d5c4332c6538d77ce875857c175f7"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/node/24/blobs/sha256:c4bf23a92f6a4521e725c66963bf8f08d143271f37e9d6b4a764faa85d2fb17b",
+            "sha256": "c4bf23a92f6a4521e725c66963bf8f08d143271f37e9d6b4a764faa85d2fb17b"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/node/24/blobs/sha256:38d332bad403d573569a0551f00cd06051c1863b740d1d2c538af5cdf824efc3",
+            "sha256": "38d332bad403d573569a0551f00cd06051c1863b740d1d2c538af5cdf824efc3"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/node/24/blobs/sha256:ea62f644e77cb3b007effa3b7c06f8b177c3737abbf6c843326654d8fa021e5b",
+            "sha256": "ea62f644e77cb3b007effa3b7c06f8b177c3737abbf6c843326654d8fa021e5b"
+          }
+        }
+      }
+    },
+    {
+      "token": "lcov",
+      "name": "lcov",
+      "kind": "formula",
+      "homepage": "https://github.com/linux-test-project/lcov",
+      "desc": "Graphical front-end for GCC's coverage testing tool (gcov)",
+      "revision": 1,
+      "rebuild": 1,
+      "dependencies": [],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "2.4_1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/lcov/blobs/sha256:31751d5ba63f010f5ba85d996f2a487d8f66210650a95c2bd125af69cb949fc3",
+            "sha256": "31751d5ba63f010f5ba85d996f2a487d8f66210650a95c2bd125af69cb949fc3"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/lcov/blobs/sha256:bdcbbe5a978af3066860282aa095d8a2b983f965cb9a86600d29080ffdd18ea3",
+            "sha256": "bdcbbe5a978af3066860282aa095d8a2b983f965cb9a86600d29080ffdd18ea3"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/lcov/blobs/sha256:07128bf10fbe19a6fd27aab9739d6a5e55eccfaaa4c2d2c842961944fc70750f",
+            "sha256": "07128bf10fbe19a6fd27aab9739d6a5e55eccfaaa4c2d2c842961944fc70750f"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/lcov/blobs/sha256:d79b0f67be549e9cc3bcff583fc5502c4384f5b3bb071035049cbb328ad20e23",
+            "sha256": "d79b0f67be549e9cc3bcff583fc5502c4384f5b3bb071035049cbb328ad20e23"
+          }
+        }
+      }
+    },
+    {
+      "token": "mkcert",
+      "name": "mkcert",
+      "kind": "formula",
+      "homepage": "https://github.com/FiloSottile/mkcert",
+      "desc": "Simple tool to make locally trusted development certificates",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [],
+      "build_dependencies": [
+        "go"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "1.4.4",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/mkcert/blobs/sha256:9863f54426db9df99173be319b283ec3a08d5dbd320987259676d2ddbb05b9f0",
+            "sha256": "9863f54426db9df99173be319b283ec3a08d5dbd320987259676d2ddbb05b9f0"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/mkcert/blobs/sha256:192c46a98732881bdd19acd6da8799ad9a931dbb9b895d22408a8eb8539f822e",
+            "sha256": "192c46a98732881bdd19acd6da8799ad9a931dbb9b895d22408a8eb8539f822e"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/mkcert/blobs/sha256:f674faa8be61e225ae604b2ffe215927f6ecbc992aac75e769185862820d2881",
+            "sha256": "f674faa8be61e225ae604b2ffe215927f6ecbc992aac75e769185862820d2881"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/mkcert/blobs/sha256:231294ec75a53e64f54d300c71d8b28a4b7c89ba468d426dc751ef242e9876d6",
+            "sha256": "231294ec75a53e64f54d300c71d8b28a4b7c89ba468d426dc751ef242e9876d6"
+          }
+        }
+      }
+    },
+    {
+      "token": "tailscale",
+      "name": "tailscale",
+      "kind": "formula",
+      "homepage": "https://tailscale.com",
+      "desc": "Easiest, most secure way to use WireGuard and 2FA",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [],
+      "build_dependencies": [
+        "go"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "1.98.5",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/tailscale/blobs/sha256:720e8a9d94c52a7f994bdd266eac5aa74e551ef6f1237bd9b079a0dab56fa06d",
+            "sha256": "720e8a9d94c52a7f994bdd266eac5aa74e551ef6f1237bd9b079a0dab56fa06d"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/tailscale/blobs/sha256:643a77ae9202b5592c45bb0bf57aaf38afdf2e03b35779ddefd06eb326f38e26",
+            "sha256": "643a77ae9202b5592c45bb0bf57aaf38afdf2e03b35779ddefd06eb326f38e26"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/tailscale/blobs/sha256:cf7d1fcb1d8ce110a2d22ebeb7ef321bc9c7478d000645f0cd3bcf7feca303df",
+            "sha256": "cf7d1fcb1d8ce110a2d22ebeb7ef321bc9c7478d000645f0cd3bcf7feca303df"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/tailscale/blobs/sha256:16119e57b69b915099b340f04e1a17bd67fe9f5f0ce0c078802d0e241e823b0c",
+            "sha256": "16119e57b69b915099b340f04e1a17bd67fe9f5f0ce0c078802d0e241e823b0c"
+          }
+        }
+      }
+    },
+    {
+      "token": "aria2",
+      "name": "aria2",
+      "kind": "formula",
+      "homepage": "https://aria2.github.io/",
+      "desc": "Download with resuming and segmented downloading",
+      "revision": 2,
+      "rebuild": 0,
+      "dependencies": [
+        "c-ares",
+        "libssh2",
+        "openssl@3",
+        "sqlite",
+        "gettext"
+      ],
+      "build_dependencies": [
+        "pkgconf"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "1.37.0_2",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/aria2/blobs/sha256:e02198308a07cc13589297bd682c0f63fe2e4ce09ff61d373696f4157eab89e5",
+            "sha256": "e02198308a07cc13589297bd682c0f63fe2e4ce09ff61d373696f4157eab89e5"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/aria2/blobs/sha256:b88e53b1c54d82af91dea90551fc114b7c02149972d536b9d55a33b12f9a9fd5",
+            "sha256": "b88e53b1c54d82af91dea90551fc114b7c02149972d536b9d55a33b12f9a9fd5"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/aria2/blobs/sha256:f2a416d17d88fdbc5a4dabd1a6520eb736964c6d21cd7a9e2b2591330d74bdf5",
+            "sha256": "f2a416d17d88fdbc5a4dabd1a6520eb736964c6d21cd7a9e2b2591330d74bdf5"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/aria2/blobs/sha256:151095fbbfe8819535eb1f3dc63642103f793b79ead0ab8282381baebaad0485",
+            "sha256": "151095fbbfe8819535eb1f3dc63642103f793b79ead0ab8282381baebaad0485"
+          }
+        }
+      }
+    },
+    {
+      "token": "sops",
+      "name": "sops",
+      "kind": "formula",
+      "homepage": "https://getsops.io/",
+      "desc": "Editor of encrypted files",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [],
+      "build_dependencies": [
+        "go"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "3.13.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/sops/blobs/sha256:01e0765d3db7c73c3595c979cd6e4633249ea52f5afe5fc00d731c9ccac0ed9f",
+            "sha256": "01e0765d3db7c73c3595c979cd6e4633249ea52f5afe5fc00d731c9ccac0ed9f"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/sops/blobs/sha256:c77e5ae27b25d89ce1110ce377e450e933e12770bf461d5f8e60e37d41e1c4c4",
+            "sha256": "c77e5ae27b25d89ce1110ce377e450e933e12770bf461d5f8e60e37d41e1c4c4"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/sops/blobs/sha256:44414b8e47da7cd4eba3b904151f281cd23014d6d80558b3667a55cd0300e139",
+            "sha256": "44414b8e47da7cd4eba3b904151f281cd23014d6d80558b3667a55cd0300e139"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/sops/blobs/sha256:1c6b9fffcf763da6b0e93215c3d006c98b8512f45e65adae805bbbdca58a2f4d",
+            "sha256": "1c6b9fffcf763da6b0e93215c3d006c98b8512f45e65adae805bbbdca58a2f4d"
+          }
+        }
+      }
+    },
+    {
+      "token": "nginx",
+      "name": "nginx",
+      "kind": "formula",
+      "homepage": "https://nginx.org/",
+      "desc": "HTTP(S) server and reverse proxy, and IMAP/POP3 proxy server",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "openssl@3",
+        "pcre2"
+      ],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "1.31.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/nginx/blobs/sha256:c6a2b6edabd384f66113b3659c941334189d594a9eca0ce95be324f238533a7c",
+            "sha256": "c6a2b6edabd384f66113b3659c941334189d594a9eca0ce95be324f238533a7c"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/nginx/blobs/sha256:e87efe82dcfd0a312c6cd181decb6e59971a595894c2240d8d4b997c3458af66",
+            "sha256": "e87efe82dcfd0a312c6cd181decb6e59971a595894c2240d8d4b997c3458af66"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/nginx/blobs/sha256:04103af17cf99864bf713c99a93c87544f12d5e775a0a8a7d89011cabcb1cbbf",
+            "sha256": "04103af17cf99864bf713c99a93c87544f12d5e775a0a8a7d89011cabcb1cbbf"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/nginx/blobs/sha256:9fd7f7a18e121e1b5a9592a99635d99aaca8886c29487e140f3c67306173996a",
+            "sha256": "9fd7f7a18e121e1b5a9592a99635d99aaca8886c29487e140f3c67306173996a"
+          }
+        }
+      }
+    },
+    {
+      "token": "telnet",
+      "name": "telnet",
+      "kind": "formula",
+      "homepage": "https://opensource.apple.com/",
+      "desc": "User interface to the TELNET protocol",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "308",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/telnet/blobs/sha256:b1a535635168f05dd931c23ac8fd36447f5df05ef54bd5d90213c0c78152d956",
+            "sha256": "b1a535635168f05dd931c23ac8fd36447f5df05ef54bd5d90213c0c78152d956"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/telnet/blobs/sha256:d37c885591f661684c6ee9cdb35ed504dd61b8ccb09e32af00b3bc3f9943e79c",
+            "sha256": "d37c885591f661684c6ee9cdb35ed504dd61b8ccb09e32af00b3bc3f9943e79c"
+          }
+        }
+      }
+    },
+    {
+      "token": "postgresql@14",
+      "name": "postgresql@14",
+      "kind": "formula",
+      "homepage": "https://www.postgresql.org/",
+      "desc": "Object-relational database system",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "icu4c@78",
+        "krb5",
+        "lz4",
+        "openssl@3",
+        "readline"
+      ],
+      "build_dependencies": [
+        "pkgconf"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "14.23",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/postgresql/14/blobs/sha256:0322195d5cf1702c7c070f072a6c470cf5d4de374436d7e5660903dc2405ae93",
+            "sha256": "0322195d5cf1702c7c070f072a6c470cf5d4de374436d7e5660903dc2405ae93"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/postgresql/14/blobs/sha256:7584def6106fefecd718ec7c076a48004827a7ceddc4bc568b4b80cead474ecc",
+            "sha256": "7584def6106fefecd718ec7c076a48004827a7ceddc4bc568b4b80cead474ecc"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/postgresql/14/blobs/sha256:0a8306e23122766cf7a14a3ffbdc1359d822bf641d8226993c12e71882a0440e",
+            "sha256": "0a8306e23122766cf7a14a3ffbdc1359d822bf641d8226993c12e71882a0440e"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/postgresql/14/blobs/sha256:f36a5345168110d2a60f491e864096908add1c662e50d8cae727913ad6d68030",
+            "sha256": "f36a5345168110d2a60f491e864096908add1c662e50d8cae727913ad6d68030"
+          }
+        }
+      }
+    },
+    {
+      "token": "automake",
+      "name": "automake",
+      "kind": "formula",
+      "homepage": "https://www.gnu.org/software/automake/",
+      "desc": "Tool for generating GNU Standards-compliant Makefiles",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "autoconf"
+      ],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "1.18.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/automake/blobs/sha256:7298e979d484b938f42b96dfd4b270353e64f61ab0f31e0718799b29dc1570fc",
+            "sha256": "7298e979d484b938f42b96dfd4b270353e64f61ab0f31e0718799b29dc1570fc"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/automake/blobs/sha256:78ea48a55a4f8b088e5e83a5284e29307981cc6c265487e026824baad283c3b9",
+            "sha256": "78ea48a55a4f8b088e5e83a5284e29307981cc6c265487e026824baad283c3b9"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/automake/blobs/sha256:c5bc18b0f438a2b7776c8a2cec9f9c5a4189a46dd35b79046249ad9d3abd4da1",
+            "sha256": "c5bc18b0f438a2b7776c8a2cec9f9c5a4189a46dd35b79046249ad9d3abd4da1"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/automake/blobs/sha256:c5bc18b0f438a2b7776c8a2cec9f9c5a4189a46dd35b79046249ad9d3abd4da1",
+            "sha256": "c5bc18b0f438a2b7776c8a2cec9f9c5a4189a46dd35b79046249ad9d3abd4da1"
+          }
+        }
+      }
+    },
+    {
+      "token": "btop",
+      "name": "btop",
+      "kind": "formula",
+      "homepage": "https://github.com/aristocratos/btop",
+      "desc": "Resource monitor. C++ version and continuation of bashtop and bpytop",
+      "revision": 0,
+      "rebuild": 1,
+      "dependencies": [],
+      "build_dependencies": [
+        "lowdown",
+        "coreutils"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "1.4.7",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/btop/blobs/sha256:37a9d33566825cff7b0e3e0c4941b2f0a7718405c3c493fb71eaf7100049f429",
+            "sha256": "37a9d33566825cff7b0e3e0c4941b2f0a7718405c3c493fb71eaf7100049f429"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/btop/blobs/sha256:83b0b284cda00fe757da9d09946e0095a4992e450c5ca46607e4d714558170be",
+            "sha256": "83b0b284cda00fe757da9d09946e0095a4992e450c5ca46607e4d714558170be"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/btop/blobs/sha256:6c471b70902a92ca7820d4e6b1dcb28e45c3d041ccaeba5e7eeee2fdd78a48cd",
+            "sha256": "6c471b70902a92ca7820d4e6b1dcb28e45c3d041ccaeba5e7eeee2fdd78a48cd"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/btop/blobs/sha256:83e59931ea0c68cc39c0cf48a3831756293d37bc1a1f42ad682210dc1f20d402",
+            "sha256": "83e59931ea0c68cc39c0cf48a3831756293d37bc1a1f42ad682210dc1f20d402"
+          }
+        }
+      }
+    },
+    {
+      "token": "summarize",
+      "name": "summarize",
+      "kind": "formula",
+      "homepage": "https://summarize.sh",
+      "desc": "Multi-modal AI tool to extract and summarize content",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "ffmpeg",
+        "node",
+        "tesseract",
+        "yt-dlp"
+      ],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "0.16.3",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/summarize/blobs/sha256:4dc93f75191980687cef1b63992553f5432512873b14c09e042acae385756713",
+            "sha256": "4dc93f75191980687cef1b63992553f5432512873b14c09e042acae385756713"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/summarize/blobs/sha256:4dc93f75191980687cef1b63992553f5432512873b14c09e042acae385756713",
+            "sha256": "4dc93f75191980687cef1b63992553f5432512873b14c09e042acae385756713"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/summarize/blobs/sha256:4dc93f75191980687cef1b63992553f5432512873b14c09e042acae385756713",
+            "sha256": "4dc93f75191980687cef1b63992553f5432512873b14c09e042acae385756713"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/summarize/blobs/sha256:4dc93f75191980687cef1b63992553f5432512873b14c09e042acae385756713",
+            "sha256": "4dc93f75191980687cef1b63992553f5432512873b14c09e042acae385756713"
+          }
+        }
+      }
+    },
+    {
+      "token": "gitleaks",
+      "name": "gitleaks",
+      "kind": "formula",
+      "homepage": "https://gitleaks.io/",
+      "desc": "Audit git repos for secrets",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [],
+      "build_dependencies": [
+        "go"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "8.30.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/gitleaks/blobs/sha256:ea543daa28d39acc7af3aab4491ef53d62c0402b540d087008ff4dce7e2484b3",
+            "sha256": "ea543daa28d39acc7af3aab4491ef53d62c0402b540d087008ff4dce7e2484b3"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/gitleaks/blobs/sha256:6ad6e2b32842b821be789b15ded39cddfe9b886c9a690466e616b330d927044e",
+            "sha256": "6ad6e2b32842b821be789b15ded39cddfe9b886c9a690466e616b330d927044e"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/gitleaks/blobs/sha256:78b43afdf14a05c5df07b73aeaf63ae56b784c905f057411a43ee8fde40fe5d1",
+            "sha256": "78b43afdf14a05c5df07b73aeaf63ae56b784c905f057411a43ee8fde40fe5d1"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/gitleaks/blobs/sha256:e7e4678071fba37d6dbc010e745b880477476e486b1e6141af18148655876b98",
+            "sha256": "e7e4678071fba37d6dbc010e745b880477476e486b1e6141af18148655876b98"
+          }
+        }
+      }
+    },
+    {
+      "token": "httpie",
+      "name": "httpie",
+      "kind": "formula",
+      "homepage": "https://httpie.io/",
+      "desc": "User-friendly cURL replacement (command-line HTTP client)",
+      "revision": 10,
+      "rebuild": 0,
+      "dependencies": [
+        "certifi",
+        "python@3.14"
+      ],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "3.2.4_10",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/httpie/blobs/sha256:31241b4a5d0d8f82bc7c27b3d1936ffa34e2a4f8416bcf93ed0d220b34d13181",
+            "sha256": "31241b4a5d0d8f82bc7c27b3d1936ffa34e2a4f8416bcf93ed0d220b34d13181"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/httpie/blobs/sha256:7c62f93b3fcf287209c2f165939c1b91c969d26c5a07e16a44fbc45bd8208ceb",
+            "sha256": "7c62f93b3fcf287209c2f165939c1b91c969d26c5a07e16a44fbc45bd8208ceb"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/httpie/blobs/sha256:d1c2a3dd855b5b98084a0b48bc8c2bc810fc5c1c3f674b29bbf95e3d7902ac84",
+            "sha256": "d1c2a3dd855b5b98084a0b48bc8c2bc810fc5c1c3f674b29bbf95e3d7902ac84"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/httpie/blobs/sha256:4ce759ccb92d4bad22c8ac0646a205c2fecde216995c982a7d44d77be53e9a79",
+            "sha256": "4ce759ccb92d4bad22c8ac0646a205c2fecde216995c982a7d44d77be53e9a79"
+          }
+        }
+      }
+    },
+    {
+      "token": "expat",
+      "name": "expat",
+      "kind": "formula",
+      "homepage": "https://libexpat.github.io/",
+      "desc": "XML 1.0 parser",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "2.8.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/expat/blobs/sha256:6c0b51cff718474971c0c8c3bf22777d39c561bbb20d6472b9c5af92a4a63339",
+            "sha256": "6c0b51cff718474971c0c8c3bf22777d39c561bbb20d6472b9c5af92a4a63339"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/expat/blobs/sha256:3d422a8ca495c64d5c58eebd814dd79a77f5c7fefbae66a1e224ef4b878d9d12",
+            "sha256": "3d422a8ca495c64d5c58eebd814dd79a77f5c7fefbae66a1e224ef4b878d9d12"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/expat/blobs/sha256:a22baf729b24113da4db4c9736a595f1814bc33c305df78313d5229d78599659",
+            "sha256": "a22baf729b24113da4db4c9736a595f1814bc33c305df78313d5229d78599659"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/expat/blobs/sha256:744dc4e11f8d59a2b3e7c7235fa478ea95c8b2c0105b444ccc17a426c4821892",
+            "sha256": "744dc4e11f8d59a2b3e7c7235fa478ea95c8b2c0105b444ccc17a426c4821892"
+          }
+        }
+      }
+    },
+    {
+      "token": "whisper-cpp",
+      "name": "whisper-cpp",
+      "kind": "formula",
+      "homepage": "https://github.com/ggml-org/whisper.cpp",
+      "desc": "Port of OpenAI's Whisper model in C/C++",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "ggml",
+        "sdl2"
+      ],
+      "build_dependencies": [
+        "cmake"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "1.8.6",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/whisper-cpp/blobs/sha256:b428e507b91af7e6a787126c7eb6907e5631df3cd91a8c39a85c0609cfbca064",
+            "sha256": "b428e507b91af7e6a787126c7eb6907e5631df3cd91a8c39a85c0609cfbca064"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/whisper-cpp/blobs/sha256:6287b9afef7f020d4072441f328d00d4f31c07c79dd16d8b18d7a6489829a687",
+            "sha256": "6287b9afef7f020d4072441f328d00d4f31c07c79dd16d8b18d7a6489829a687"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/whisper-cpp/blobs/sha256:7c50a5dc071efbc3bb725c141fe4ac1539833958f2cbe02f779ced44bac8d3aa",
+            "sha256": "7c50a5dc071efbc3bb725c141fe4ac1539833958f2cbe02f779ced44bac8d3aa"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/whisper-cpp/blobs/sha256:67f5ac4b9404c606a42d58ae4eeee4b4af751bcae4c9927ae36b62a1395043c5",
+            "sha256": "67f5ac4b9404c606a42d58ae4eeee4b4af751bcae4c9927ae36b62a1395043c5"
+          }
+        }
+      }
+    },
+    {
+      "token": "eza",
+      "name": "eza",
+      "kind": "formula",
+      "homepage": "https://github.com/eza-community/eza",
+      "desc": "Modern, maintained replacement for ls",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "libgit2"
+      ],
+      "build_dependencies": [
+        "pandoc",
+        "pkgconf",
+        "rust"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "0.23.4",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/eza/blobs/sha256:41991ad81cb8fd691125d28eda4bbfa0ebb14c6f902767402dc2ea8763ecf196",
+            "sha256": "41991ad81cb8fd691125d28eda4bbfa0ebb14c6f902767402dc2ea8763ecf196"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/eza/blobs/sha256:40120b86f48af531ff13393db0bbbf9fcb4c304bbdd6cb3bbab3bc70d0236c72",
+            "sha256": "40120b86f48af531ff13393db0bbbf9fcb4c304bbdd6cb3bbab3bc70d0236c72"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/eza/blobs/sha256:2bdf49feadb1e11bf7a5247cb64cf6a0efc6624ef7af0305f11e53bc0463bf77",
+            "sha256": "2bdf49feadb1e11bf7a5247cb64cf6a0efc6624ef7af0305f11e53bc0463bf77"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/eza/blobs/sha256:b8b0bd9691c73ab64a5542c0372d5f2f2e0e96bbc8fae25d5bb278ddde5e49b8",
+            "sha256": "b8b0bd9691c73ab64a5542c0372d5f2f2e0e96bbc8fae25d5bb278ddde5e49b8"
+          }
+        }
+      }
+    },
+    {
+      "token": "xcresultparser",
+      "name": "xcresultparser",
+      "kind": "formula",
+      "homepage": "https://github.com/a7ex/xcresultparser",
+      "desc": "Parse binary .xcresult bundles from Xcode builds and test runs",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [],
+      "build_dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "2.0.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/xcresultparser/blobs/sha256:b1114f7ff74791d9d9695dadd5edc80bc200f1bd4b88d01b6d7df7dfb5f56f97",
+            "sha256": "b1114f7ff74791d9d9695dadd5edc80bc200f1bd4b88d01b6d7df7dfb5f56f97"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/xcresultparser/blobs/sha256:8e79f5144e2ec62e20b521b941444384720c3fa5bc88d0d38a58006e03064e9f",
+            "sha256": "8e79f5144e2ec62e20b521b941444384720c3fa5bc88d0d38a58006e03064e9f"
+          }
+        }
+      }
+    },
+    {
+      "token": "direnv",
+      "name": "direnv",
+      "kind": "formula",
+      "homepage": "https://direnv.net/",
+      "desc": "Load/unload environment variables based on $PWD",
+      "revision": 0,
+      "rebuild": 0,
+      "dependencies": [
+        "bash"
+      ],
+      "build_dependencies": [
+        "go"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "2.37.1",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/direnv/blobs/sha256:5496ce0c1abb38345db8f58db469d2971d477ce4e077930ce52165b91d4a0a7a",
+            "sha256": "5496ce0c1abb38345db8f58db469d2971d477ce4e077930ce52165b91d4a0a7a"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/direnv/blobs/sha256:9b274c4ce7351773cd91a9418a2aeb16c72ed5685383a9ea97269c24b81c1c86",
+            "sha256": "9b274c4ce7351773cd91a9418a2aeb16c72ed5685383a9ea97269c24b81c1c86"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/direnv/blobs/sha256:5a3705773719544d8c366610498528d6607de6a2961b2ecb1cdedb5781b9d1c6",
+            "sha256": "5a3705773719544d8c366610498528d6607de6a2961b2ecb1cdedb5781b9d1c6"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/direnv/blobs/sha256:56ea5661ae3fc5537e236f2cecde9117b7dc83e90cce9269c5edb0d2209caa89",
+            "sha256": "56ea5661ae3fc5537e236f2cecde9117b7dc83e90cce9269c5edb0d2209caa89"
+          }
+        }
+      }
+    },
+    {
+      "token": "poetry",
+      "name": "poetry",
+      "kind": "formula",
+      "homepage": "https://python-poetry.org/",
+      "desc": "Python package management tool",
+      "revision": 3,
+      "rebuild": 0,
+      "dependencies": [
+        "certifi",
+        "cffi",
+        "python@3.14",
+        "zstd"
+      ],
+      "build_dependencies": [
+        "cmake",
+        "ninja",
+        "rust"
+      ],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "verification": {
+        "sha256": "required"
+      },
+      "resolved": {
+        "version": "2.4.1_3",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/poetry/blobs/sha256:bc72b2c982312bfeeffeb605b7187975cbe04c4d3aa9b14a577dbf7a8d8f0fae",
+            "sha256": "bc72b2c982312bfeeffeb605b7187975cbe04c4d3aa9b14a577dbf7a8d8f0fae"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/poetry/blobs/sha256:10ebfaf496364551d774e0c5b03cf8bfa6d8e0730f27d5e46129048509e48df6",
+            "sha256": "10ebfaf496364551d774e0c5b03cf8bfa6d8e0730f27d5e46129048509e48df6"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/poetry/blobs/sha256:4c5d7367fbfa2fe137e4f72feafb0978065d0049a6c85bcd0bd9ea13f12a1e1f",
+            "sha256": "4c5d7367fbfa2fe137e4f72feafb0978065d0049a6c85bcd0bd9ea13f12a1e1f"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/poetry/blobs/sha256:bd1c65e7ce1a5208cc86e45b192f1da56bc5936813ade80cdb8bb456c64d9dfc",
+            "sha256": "bd1c65e7ce1a5208cc86e45b192f1da56bc5936813ade80cdb8bb456c64d9dfc"
+          }
+        }
+      }
     }
   ]
 }
