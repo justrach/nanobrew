@@ -51,7 +51,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: mirror every pinned homebrew bottle
-        run: python3 scripts/bottles/nb_bottles.py mirror
+        # Partial failures must not skip the pin/repackage steps; the mirror
+        # is idempotent and the weekly cron (or a re-push) converges the rest.
+        run: python3 scripts/bottles/nb_bottles.py mirror || echo "::warning::mirror finished with failures — re-run to converge"
       - name: pin + mirror extras (not yet in the embedded registry)
         run: python3 scripts/bottles/nb_bottles.py pin hexyl --mirror
       - name: repackage every eligible Tier-2 upstream binary

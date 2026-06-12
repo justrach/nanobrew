@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import tarfile
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -277,6 +278,16 @@ def mirror_one(rec, args, src_token_cache):
             how, size = "exists", None
         else:
             _, how = push_blob(repo, b"", dst_token, mount_from=src_repo, digest=digest)
+            size = None
+            if how == "mounted":
+                # GHCR sometimes acks a cross-repo mount with 201 while the
+                # blob never lands (observed ~180 packages into a fleet
+                # mirror — throttling). Verify; retry once; then do a real
+                # pull+push so the run converges instead of half-mounting.
+                if not blob_exists(repo, digest, dst_token):
+                    time.sleep(1.5)
+                    if not blob_exists(repo, digest, dst_token):
+                        how = "upload-after-phantom-mount"
             if how != "mounted":
                 src = src_token_cache.setdefault(
                     src_repo,
@@ -285,8 +296,6 @@ def mirror_one(rec, args, src_token_cache):
                 data = pull_blob(src_repo, digest, src)
                 _, how = push_blob(repo, data, dst_token)
                 size = len(data)
-            else:
-                size = None
         # tag a manifest so GHCR never garbage-collects the blob
         blob_size = size
         if blob_size is None:
@@ -325,6 +334,8 @@ def cmd_mirror(args):
         except SystemExit:
             failures.append(rec["token"])
             log(f"  {rec['token']}: FAILED — continuing")
+        if not args.dry_run:
+            time.sleep(0.2)  # pace fleet runs below GHCR's throttling radar
     if args.dry_run:
         log("dry-run complete (no writes)")
     if failures:
