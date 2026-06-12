@@ -343,7 +343,10 @@ def cmd_repackage(args):
                     die(f"binary '{base}' not found in upstream archive for {platform}")
                 kind, archive, info = members[base]
                 data = archive.read(info) if kind == "zip" else archive.extractfile(info).read()
-                ti = tarfile.TarInfo(f"{args.name}/{ver}/{rel}")
+                # Bottle kegs link from <name>/<version>/bin/ — normalize
+                # whatever layout upstream used (bare 'rg', 'usr/bin/podman')
+                # into bin/<basename> so linkFormulaKeg finds it.
+                ti = tarfile.TarInfo(f"{args.name}/{ver}/bin/{base}")
                 ti.size = len(data)
                 ti.mode = 0o755
                 bottle.addfile(ti, io.BytesIO(data))
@@ -488,6 +491,21 @@ def cmd_pin(args):
             log(f"  {record['token']} {version} {platform}: {how}")
 
 
+def cmd_tier2(args):
+    """Print tokens of every github_release formula eligible for repackage:
+    binary artifacts declared, resolved assets present, core (non-tap) name."""
+    for r in load_registry():
+        if r["kind"] != "formula" or r["upstream"]["type"] != "github_release":
+            continue
+        if "/" in r["token"]:
+            continue  # tap-namespaced — add individually if ever wanted
+        if not (r.get("resolved") or {}).get("assets"):
+            continue
+        if not any(a.get("type") == "binary" for a in r.get("artifacts", [])):
+            continue
+        print(r["token"])
+
+
 def cmd_record(args):
     rec = find_record(args.name)
     resolved = rec.get("resolved") or die("no resolved assets")
@@ -544,6 +562,9 @@ def main():
     pn.add_argument("--add", action="store_true", help="append to registry_default.json")
     pn.add_argument("--mirror", action="store_true", help="also mirror its blobs to our namespace")
     pn.set_defaults(fn=cmd_pin)
+
+    t2 = sub.add_parser("tier2", help="list github_release formulae eligible for repackage")
+    t2.set_defaults(fn=cmd_tier2)
 
     rc = sub.add_parser("record", help="print registry snippet for the mirror")
     rc.add_argument("name")

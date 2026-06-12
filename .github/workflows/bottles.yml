@@ -54,10 +54,11 @@ jobs:
         run: python3 scripts/bottles/nb_bottles.py mirror
       - name: pin + mirror extras (not yet in the embedded registry)
         run: python3 scripts/bottles/nb_bottles.py pin hexyl --mirror
-      - name: repackage Tier-2 upstream binaries
+      - name: repackage every eligible Tier-2 upstream binary
         run: |
-          python3 scripts/bottles/nb_bottles.py repackage gh
-          python3 scripts/bottles/nb_bottles.py repackage just
+          for p in $(python3 scripts/bottles/nb_bottles.py tier2); do
+            python3 scripts/bottles/nb_bottles.py repackage "$p" || echo "::warning::repackage $p failed, continuing"
+          done
       - name: visibility report
         run: |
           echo "Packages created this run should be PUBLIC (inherited from repo)."
