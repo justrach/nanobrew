@@ -154,7 +154,14 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TITLE="bottle scan: severity gate failed ($(date -u +%F))"
+          # A real gate hit prints "GATE FAILED"; anything else (e.g. the scan
+          # itself erroring on a bottle) leaves that empty, which previously
+          # opened a blank issue. Fall back to the log tail so the issue is
+          # actionable (#328).
           BODY="$(sed -n '/GATE FAILED/,$p' scan.log | head -60)"
+          [ -z "$BODY" ] && BODY="scan did not reach the gate check — it likely errored. Tail of scan.log:
+
+$(tail -n 60 scan.log)"
           gh issue create --title "$TITLE" --label security \
             --body "$(printf 'Weekly bottle rescan found findings at/above the gate.\n\n```\n%s\n```\n\nFix: bump the pin, or `python3 scripts/bottles/nb_bottles.py revoke <name> --advisory <id> --reason ...` to fall installs back to the previous good version.' "$BODY")" \
             || echo "::warning::could not create issue (already open?)"

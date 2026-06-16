@@ -884,11 +884,41 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
     else
         0;
 
-    // Parse dependencies (unmanaged ArrayList in 0.15)
+    // Parse dependencies. The unconditional `dependencies` array is the macOS
+    // closure; on Linux it is incomplete because Homebrew models some deps as
+    // platform-conditional:
+    //   - `uses_from_macos "perl"` — macOS uses the system copy, but on Linux it
+    //     is a real dependency nb must install (autoconf→perl, perl→libxcrypt).
+    //   - `on_linux do depends_on "x" end` — surfaces under
+    //     `variations.<linux>.dependencies` (the already-expanded Linux list,
+    //     which can also differ from the macOS set: e.g. git drops gettext and
+    //     adds openssl@3/zlib-ng-compat).
+    // Folding both in fixes installs that otherwise place a formula whose runtime
+    // deps are silently missing, leaving the binary broken at first run (#324).
     var deps: std.ArrayList([]const u8) = .empty;
     defer deps.deinit(alloc);
     errdefer for (deps.items) |dep| alloc.free(dep);
-    if (root.get("dependencies")) |deps_val| {
+
+    // Base list: on Linux the platform variation's dependency list is
+    // authoritative when present; otherwise the unconditional list.
+    const base_deps: ?std.json.Value = blk: {
+        if (builtin.os.tag == .linux) {
+            if (root.get("variations")) |vars| {
+                if (vars == .object) {
+                    const linux_tag = if (builtin.cpu.arch == .aarch64) "aarch64_linux" else "x86_64_linux";
+                    if (vars.object.get(linux_tag)) |lv| {
+                        if (lv == .object) {
+                            if (lv.object.get("dependencies")) |d| {
+                                if (d == .array) break :blk d;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        break :blk root.get("dependencies");
+    };
+    if (base_deps) |deps_val| {
         if (deps_val == .array) {
             for (deps_val.array.items) |dep| {
                 if (dep == .string) {
@@ -897,21 +927,25 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
             }
         }
     }
-    if (builtin.os.tag == .macos) {
-        if (root.get("uses_from_macos")) |uses_val| {
-            if (uses_val == .array) {
-                for (uses_val.array.items) |dep| {
-                    if (dep != .string) continue;
-                    var present = false;
-                    for (deps.items) |existing| {
-                        if (std.mem.eql(u8, existing, dep.string)) {
-                            present = true;
-                            break;
-                        }
+
+    // uses_from_macos: provided by macOS but a real dependency for nb's bottles
+    // (and genuinely required on Linux). Union the string-form entries on every
+    // platform; object-form entries carry a :build/:test scope (e.g.
+    // {"bison":"build"}) and are not runtime deps, so they are intentionally
+    // skipped. Dedup against whatever the base list already holds.
+    if (root.get("uses_from_macos")) |uses_val| {
+        if (uses_val == .array) {
+            for (uses_val.array.items) |dep| {
+                if (dep != .string) continue;
+                var present = false;
+                for (deps.items) |existing| {
+                    if (std.mem.eql(u8, existing, dep.string)) {
+                        present = true;
+                        break;
                     }
-                    if (!present) {
-                        try deps.append(alloc, try allocDupe(alloc, dep.string));
-                    }
+                }
+                if (!present) {
+                    try deps.append(alloc, try allocDupe(alloc, dep.string));
                 }
             }
         }
@@ -1111,7 +1145,7 @@ test "parseFormulaJson - parses dependencies array" {
     try testing.expectEqualStrings("x265", f.dependencies[2]);
 }
 
-test "parseFormulaJson - includes uses_from_macos on macOS" {
+test "parseFormulaJson - folds uses_from_macos into deps on every platform" {
     const json =
         \\{"name":"python@3.14","desc":"","versions":{"stable":"3.14.3"},"revision":0,
         \\"dependencies":["mpdecimal"],
@@ -1121,14 +1155,45 @@ test "parseFormulaJson - includes uses_from_macos on macOS" {
     const f = try parseFormulaJson(testing.allocator, json);
     defer f.deinit(testing.allocator);
 
-    if (builtin.os.tag == .macos) {
-        try testing.expectEqual(@as(usize, 3), f.dependencies.len);
-        try testing.expectEqualStrings("mpdecimal", f.dependencies[0]);
-        try testing.expectEqualStrings("expat", f.dependencies[1]);
-        try testing.expectEqualStrings("libffi", f.dependencies[2]);
+    // uses_from_macos entries are system-provided on macOS but real deps for nb's
+    // bottles, and genuinely required on Linux — so they are folded in on both
+    // platforms (#324: on Linux this is the autoconf→perl / perl→libxcrypt fix).
+    try testing.expectEqual(@as(usize, 3), f.dependencies.len);
+    try testing.expectEqualStrings("mpdecimal", f.dependencies[0]);
+    try testing.expectEqualStrings("expat", f.dependencies[1]);
+    try testing.expectEqualStrings("libffi", f.dependencies[2]);
+}
+
+test "parseFormulaJson - Linux prefers variations dependencies over the macOS set (#324)" {
+    // git-shaped: on Linux the variation's dependency list is authoritative (drops
+    // gettext, adds openssl@3/zlib-ng-compat vs the macOS deps) and uses_from_macos
+    // (curl/expat) is still folded in on top.
+    const json =
+        \\{"name":"git","desc":"","versions":{"stable":"2.45.0"},"revision":0,
+        \\"dependencies":["pcre2","gettext"],
+        \\"uses_from_macos":["curl","expat"],
+        \\"variations":{"x86_64_linux":{"dependencies":["pcre2","openssl@3","zlib-ng-compat"]},
+        \\"aarch64_linux":{"dependencies":["pcre2","openssl@3","zlib-ng-compat"]}},
+        \\"bottle":{"stable":{"rebuild":0,"files":{"all":{"url":"https://ghcr.io/bottle/git","sha256":"cafe"}}}}}
+    ;
+    const f = try parseFormulaJson(testing.allocator, json);
+    defer f.deinit(testing.allocator);
+
+    if (builtin.os.tag == .linux) {
+        // base = variations.<linux>.dependencies (3) ∪ uses_from_macos (curl, expat) = 5
+        try testing.expectEqual(@as(usize, 5), f.dependencies.len);
+        try testing.expectEqualStrings("pcre2", f.dependencies[0]);
+        try testing.expectEqualStrings("openssl@3", f.dependencies[1]);
+        try testing.expectEqualStrings("zlib-ng-compat", f.dependencies[2]);
+        try testing.expectEqualStrings("curl", f.dependencies[3]);
+        try testing.expectEqualStrings("expat", f.dependencies[4]);
     } else {
-        try testing.expectEqual(@as(usize, 1), f.dependencies.len);
-        try testing.expectEqualStrings("mpdecimal", f.dependencies[0]);
+        // macOS: variations ignored, base = dependencies (pcre2, gettext) ∪ uses_from_macos = 4
+        try testing.expectEqual(@as(usize, 4), f.dependencies.len);
+        try testing.expectEqualStrings("pcre2", f.dependencies[0]);
+        try testing.expectEqualStrings("gettext", f.dependencies[1]);
+        try testing.expectEqualStrings("curl", f.dependencies[2]);
+        try testing.expectEqualStrings("expat", f.dependencies[3]);
     }
 }
 

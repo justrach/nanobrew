@@ -2,6 +2,15 @@
 
 All notable changes to nanobrew are documented here.
 
+## [0.1.199] - 2026-06-16
+
+### Fixed
+- **Linux-only dependencies are now resolved (`uses_from_macos` / `on_linux`) (#324)** — the resolver folds each formula's `uses_from_macos` entries into its runtime dependencies on every platform and, on Linux, prefers the already-expanded `variations.<arch>_linux.dependencies` list when present. So `nb install autoconf` now also installs `perl` (and `perl` → `libxcrypt`), and `git` resolves its full Linux closure (openssl@3, zlib-ng-compat, curl, …) instead of placing a binary whose interpreter/shared libraries are missing. The pinned bottle registry gets the same union via `nb_bottles.py`, and the 72 affected records were backfilled.
+- **`nb install --deb` no longer reports success when nothing was placed (#327)** — `--deb` writes to system paths under `/`, so without root the place step failed with EACCES yet still printed `Installed N/N` and exited 0. Extraction now tracks per-file write failures, a package that lands zero of its files is counted as failed, and a partial/failed install exits non-zero with a `re-run with sudo` hint. Also fixed an uninitialized `installed_files` field that could free a wild pointer (segfault) now that a package can fail extraction. Root installs are unchanged.
+- **`nb --version` / `nb version` / `nb -v`** — now print `nanobrew <version>` instead of erroring with `unknown command`; useful for scripting and bug reports (#327).
+- **`nb update` / `nb update-registry` hardening (#314)** — `nb update` now validates the replacement is a real Mach-O/ELF executable before renaming it over the live `nb`, rejecting any other `nb*` file (e.g. a `.sha256` sidecar) in the release tarball. `nb update-registry` propagates a cache-write failure instead of printing "refreshed N records" while the next command silently serves the stale cache.
+- **Weekly bottle rescan no longer aborts on bottles with absolute symlinks (#328)** — `nb_bottles.py scan` extracted each bottle with Python 3.12's strict `data` tar filter, which raises `AbsoluteLinkError` on bottles shipping an absolute symlink (e.g. `ansible`'s `libexec/bin/python3.14` → `/tmp/opt/...`), crashing the whole scan and opening a blank security issue. Link members — not needed for the SBOM/CVE match — are now skipped, and the workflow falls back to the scan-log tail when a run errors before the gate check so the issue is actionable.
+
 ## [0.1.198] - 2026-06-12
 
 ### Security

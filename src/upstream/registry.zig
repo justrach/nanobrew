@@ -323,7 +323,7 @@ pub fn loadRecordWithOptions(alloc: std.mem.Allocator, options: LoadOptions, tok
             // re-paid the remote fetch on every resolve after TTL expiry.
             if (parseRegistry(alloc, remote_json)) |parsed_registry| {
                 parsed_registry.deinit(alloc);
-                writeRegistryCache(options.cache_path, remote_json);
+                writeRegistryCache(options.cache_path, remote_json) catch {};
             } else |_| {}
             if (parseRecordFromRegistryJson(alloc, remote_json, token, kind)) |record| {
                 if (stale_record) |old_record| old_record.deinit(alloc);
@@ -357,7 +357,7 @@ pub fn loadRegistryWithOptions(alloc: std.mem.Allocator, options: LoadOptions) !
         if (fetchRemoteRegistryJson(alloc, options.remote_url)) |remote_json| {
             defer alloc.free(remote_json);
             if (parseRegistry(alloc, remote_json)) |registry| {
-                writeRegistryCache(options.cache_path, remote_json);
+                writeRegistryCache(options.cache_path, remote_json) catch {};
                 if (stale_registry) |old_registry| old_registry.deinit(alloc);
                 stale_registry = null;
                 return registry;
@@ -397,7 +397,11 @@ pub fn refreshCache(alloc: std.mem.Allocator) !usize {
     var registry = try parseRegistry(alloc, remote_json);
     defer registry.deinit(alloc);
 
-    writeRegistryCache(options.cache_path, remote_json);
+    // Propagate a cache-write failure: refreshCache's whole job is to persist
+    // the fresh registry, so reporting "refreshed N records" when the write
+    // failed would lie and the next command would silently serve the stale
+    // cache (#314).
+    try writeRegistryCache(options.cache_path, remote_json);
     return registry.records.len;
 }
 
@@ -604,20 +608,24 @@ fn readRegistryCache(alloc: std.mem.Allocator, path: []const u8, ttl_ns: i96) ?C
     };
 }
 
-fn writeRegistryCache(path: []const u8, data: []const u8) void {
+fn writeRegistryCache(path: []const u8, data: []const u8) !void {
     if (path.len == 0) return;
     const io = paths.safe_io;
     if (std.fs.path.dirname(path)) |dir_path| {
         if (std.fs.path.isAbsolute(dir_path)) {
-            std.Io.Dir.createDirAbsolute(io, dir_path, .default_dir) catch {};
+            std.Io.Dir.createDirAbsolute(io, dir_path, .default_dir) catch |e| {
+                if (e != error.PathAlreadyExists) return e;
+            };
         } else {
-            std.Io.Dir.cwd().createDirPath(io, dir_path) catch {};
+            std.Io.Dir.cwd().createDirPath(io, dir_path) catch |e| {
+                if (e != error.PathAlreadyExists) return e;
+            };
         }
     }
 
-    const file = createWritableFile(io, path) catch return;
+    const file = try createWritableFile(io, path);
     defer file.close(io);
-    file.writeStreamingAll(io, data) catch {};
+    try file.writeStreamingAll(io, data);
 }
 
 fn openReadableFile(io: std.Io, path: []const u8) !std.Io.File {

@@ -85,7 +85,7 @@ fn extractTarGzOwnParser(alloc: std.mem.Allocator, io: std.Io, blob_path: []cons
         try tar_bytes.appendSlice(alloc, chunk[0..n]);
     }
 
-    const files = try native_tar.extractToDir(alloc, io, tar_bytes.items, dest_dir);
+    const files = try native_tar.extractToDir(alloc, io, tar_bytes.items, dest_dir, null);
     defer {
         for (files) |f| alloc.free(f);
         alloc.free(files);

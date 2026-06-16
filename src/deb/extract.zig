@@ -24,7 +24,7 @@ pub fn extractDeb(alloc: std.mem.Allocator, io: std.Io, deb_path: []const u8, de
     const tar_data = try decompressDataTar(alloc, io, deb_path);
     defer alloc.free(tar_data);
 
-    const files = native_tar.extractToDir(alloc, io, tar_data, dest_dir) catch return error.ExtractFailed;
+    const files = native_tar.extractToDir(alloc, io, tar_data, dest_dir, null) catch return error.ExtractFailed;
     for (files) |f| alloc.free(f);
     alloc.free(files);
 }
@@ -34,7 +34,7 @@ pub fn extractDebToPrefix(alloc: std.mem.Allocator, io: std.Io, deb_path: []cons
     const tar_data = try decompressDataTar(alloc, io, deb_path);
     defer alloc.free(tar_data);
 
-    const files = native_tar.extractToDir(alloc, io, tar_data, "/") catch return error.ExtractFailed;
+    const files = native_tar.extractToDir(alloc, io, tar_data, "/", null) catch return error.ExtractFailed;
     for (files) |f| alloc.free(f);
     alloc.free(files);
 }
@@ -51,11 +51,18 @@ pub fn extractDebToPrefixWithFiles(alloc: std.mem.Allocator, io: std.Io, deb_pat
     const tar_data = try decompressDataTar(alloc, io, deb_path);
     defer alloc.free(tar_data);
 
-    const relative = native_tar.extractToDir(alloc, io, tar_data, "/") catch return error.ExtractFailed;
+    var write_failures: usize = 0;
+    const relative = native_tar.extractToDir(alloc, io, tar_data, "/", &write_failures) catch return error.ExtractFailed;
     errdefer {
         for (relative) |f| alloc.free(f);
         alloc.free(relative);
     }
+
+    // If the archive carried entries but none could be placed, the package was
+    // not installed — most often EACCES, because --deb writes under / and the
+    // process isn't root. Surface it as a hard error so the caller doesn't count
+    // a no-op as a successful install (#327). errdefer frees `relative`.
+    if (relative.len == 0 and write_failures > 0) return error.ExtractPermissionDenied;
 
     // Re-allocate each entry with a leading "/" prefix and free the original.
     for (relative, 0..) |entry, i| {
@@ -99,7 +106,7 @@ pub fn runPostinst(alloc: std.mem.Allocator, io: std.Io, deb_path: []const u8, p
     std.Io.Dir.createDirAbsolute(lib_io, ctrl_dir, .default_dir) catch {};
     defer std.Io.Dir.cwd().deleteTree(lib_io, ctrl_dir) catch {};
 
-    const files = native_tar.extractToDir(alloc, lib_io, ctrl_tar_data, ctrl_dir) catch return;
+    const files = native_tar.extractToDir(alloc, lib_io, ctrl_tar_data, ctrl_dir, null) catch return;
     for (files) |f| alloc.free(f);
     alloc.free(files);
 

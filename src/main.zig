@@ -29,6 +29,7 @@ const Command = enum {
     update,
     update_registry,
     help,
+    version,
     doctor,
     cleanup,
     outdated,
@@ -57,6 +58,11 @@ const Phase = enum(u8) {
 };
 
 var g_io: std.Io = undefined;
+// Process exit code, applied at main's single std.process.exit. Commands that
+// fail without their own immediate exit (e.g. a partial `--deb` install) set
+// this and return, so termination follows the same path as success — avoiding
+// the #298 Io.Threaded teardown race that a deep mid-command exit can trip.
+var g_exit_code: u8 = 0;
 
 const StderrWriter = struct {
     pub fn print(self: @This(), comptime fmt: []const u8, args: anytype) error{OutOfMemory}!void {
@@ -109,7 +115,7 @@ fn milliTimestamp() i64 {
 
 const ROOT = paths.ROOT;
 const PREFIX = paths.PREFIX;
-const VERSION = "0.1.198";
+const VERSION = "0.1.199";
 
 pub fn main(init: std.process.Init) !void {
     g_io = init.io;
@@ -154,6 +160,10 @@ pub fn main(init: std.process.Init) !void {
         .update => runUpdate(alloc),
         .update_registry => runUpdateRegistry(alloc),
         .help => printUsage(),
+        .version => {
+            const stdout = StdoutWriter{};
+            stdout.print("nanobrew {s}\n", .{VERSION}) catch {};
+        },
         .doctor => runDoctor(alloc),
         .cleanup => runCleanup(alloc, args[2..]),
         .outdated => runOutdated(alloc),
@@ -172,7 +182,7 @@ pub fn main(init: std.process.Init) !void {
 
     // Check for updates (once per day, non-blocking); skip after self-update
     // to avoid a spurious banner from the stale in-memory VERSION constant.
-    if (cmd != .update) checkForUpdate(alloc);
+    if (cmd != .update and cmd != .version) checkForUpdate(alloc);
 
     // Terminate immediately on success. Returning from main lets the Zig
     // runtime tear down the global `std.Io.Threaded` instance, and its
@@ -180,7 +190,7 @@ pub fn main(init: std.process.Init) !void {
     // Zig 0.16.0 (the crash reported in #298 fires *after* "Done"). All of our
     // output is written unbuffered straight to the underlying file, so there
     // is nothing to flush before exit.
-    std.process.exit(0);
+    std.process.exit(g_exit_code);
 }
 fn parseCommand(arg: []const u8) ?Command {
     const cmds = .{
@@ -206,6 +216,9 @@ fn parseCommand(arg: []const u8) ?Command {
         .{ "help", Command.help },
         .{ "--help", Command.help },
         .{ "-h", Command.help },
+        .{ "version", Command.version },
+        .{ "--version", Command.version },
+        .{ "-v", Command.version },
         .{ "doctor", Command.doctor },
         .{ "dr", Command.doctor },
         .{ "cleanup", Command.cleanup },
@@ -2769,34 +2782,52 @@ fn runUpdate(alloc: std.mem.Allocator) void {
         },
     }
 
-    // Replace current binary atomically: copy to staged temp, then rename
+    // Validate a candidate is a real executable (Mach-O thin/universal, or ELF)
+    // before we ever rename it over the live binary. (#314)
+    const looksLikeExecutable = struct {
+        fn check(io: std.Io, path: []const u8) bool {
+            const f = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return false;
+            defer f.close(io);
+            var magic: [4]u8 = undefined;
+            const n = f.readPositionalAll(io, &magic, 0) catch return false;
+            if (n < 4) return false;
+            return std.mem.eql(u8, &magic, &[_]u8{ 0xcf, 0xfa, 0xed, 0xfe }) or // Mach-O 64 LE
+                std.mem.eql(u8, &magic, &[_]u8{ 0xce, 0xfa, 0xed, 0xfe }) or // Mach-O 32 LE
+                std.mem.eql(u8, &magic, &[_]u8{ 0xca, 0xfe, 0xba, 0xbe }) or // Mach-O universal
+                std.mem.eql(u8, &magic, &[_]u8{ 0xca, 0xfe, 0xba, 0xbf }) or // Mach-O universal 64
+                std.mem.eql(u8, &magic, &[_]u8{ 0x7f, 'E', 'L', 'F' }); // ELF
+        }
+    }.check;
+
+    // Replace current binary atomically: copy to staged temp, then rename. Prefer
+    // the canonical "nb"; the release tarball may instead ship it as "nb-<arch>"
+    // (#293/#296). Only ever accept an "nb"-prefixed regular file that validates
+    // as an executable — never a stray sidecar like "nb.sha256", and never an
+    // unvalidated blob renamed over the live binary (#314).
     var extracted_bin_buf: [512]u8 = undefined;
     const extracted_bin = std.fmt.bufPrint(&extracted_bin_buf, "{s}/nb", .{tmp_dir}) catch {
         std.process.exit(1);
     };
 
-    // Fallback: if tarball contains "nb-<arch>" instead of "nb", find it
-    const bin_exists = blk: {
-        const f = std.Io.Dir.openFileAbsolute(g_io, extracted_bin, .{}) catch break :blk false;
-        f.close(g_io);
-        break :blk true;
-    };
     var fallback_bin_buf: [512]u8 = undefined;
-    const final_extracted_bin = if (bin_exists) extracted_bin else fb: {
+    const final_extracted_bin = pick: {
+        if (looksLikeExecutable(g_io, extracted_bin)) break :pick extracted_bin;
+
         var dir = std.Io.Dir.openDirAbsolute(g_io, tmp_dir, .{ .iterate = true }) catch {
             stderr.print("nb: update failed: could not open extract dir\n", .{}) catch {};
+            std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
+            std.Io.Dir.cwd().deleteTree(g_io, tmp_dir) catch {};
             std.process.exit(1);
         };
         defer dir.close(g_io);
         var iter = dir.iterate();
         while (iter.next(g_io) catch null) |entry| {
-            if (std.mem.startsWith(u8, entry.name, "nb") and entry.kind == .file) {
-                break :fb std.fmt.bufPrint(&fallback_bin_buf, "{s}/{s}", .{ tmp_dir, entry.name }) catch {
-                    std.process.exit(1);
-                };
-            }
+            if (entry.kind != .file) continue;
+            if (!std.mem.startsWith(u8, entry.name, "nb")) continue;
+            const cand = std.fmt.bufPrint(&fallback_bin_buf, "{s}/{s}", .{ tmp_dir, entry.name }) catch continue;
+            if (looksLikeExecutable(g_io, cand)) break :pick cand;
         }
-        stderr.print("nb: update failed: extracted binary not found\n", .{}) catch {};
+        stderr.print("nb: update failed: no valid nb executable in release tarball\n", .{}) catch {};
         std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
         std.Io.Dir.cwd().deleteTree(g_io, tmp_dir) catch {};
         std.process.exit(1);
@@ -4768,6 +4799,11 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
         @memcpy(item.cache_path_storage[0..cache_path.len], cache_path);
         item.cache_path_len = cache_path.len;
         item.needs_download = if (std.Io.Dir.accessAbsolute(g_io, cache_path, .{})) |_| false else |_| true;
+        // `item` is `undefined` above, so installed_files must be set explicitly:
+        // the struct default only applies to literals. A worker that fails to
+        // extract leaves this field untouched, so without this it would stay
+        // garbage and the cleanup defer would free a wild pointer (#327).
+        item.installed_files = null;
 
         extract_items.append(alloc, item) catch continue;
     }
@@ -4899,6 +4935,25 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
         stdout.print("==> Installed {d}/{d} packages ({d} cached) in {d:.1}ms\n", .{ installed, resolved.len, cached, elapsed_ms }) catch {};
     } else {
         stdout.print("==> Installed {d}/{d} packages in {d:.1}ms\n", .{ installed, resolved.len, elapsed_ms }) catch {};
+    }
+
+    // A partial/failed install must not report success. --deb writes to system
+    // paths under /, and without root the place step fails silently (EACCES);
+    // previously that still printed "Installed N/N" and exited 0 even though
+    // nothing landed (#327). Now extraction surfaces the failure, the count is
+    // honest, and a shortfall exits non-zero with an actionable hint.
+    if (installed < resolved.len) {
+        const failed = resolved.len - installed;
+        stderr.print("nb: {d} of {d} package(s) failed to install (extraction/placement failed)\n", .{ failed, resolved.len }) catch {};
+        if (comptime builtin.os.tag == .linux) {
+            if (std.os.linux.geteuid() != 0) {
+                stderr.print("nb: --deb installs to system paths under / and needs root — re-run with sudo\n", .{}) catch {};
+            }
+        }
+        // Return with a failure code rather than exiting here: a deep exit while
+        // the download/extract worker pool is still settling can trip the #298
+        // Io.Threaded teardown race. main applies g_exit_code at its single exit.
+        g_exit_code = 1;
     }
 }
 

@@ -253,13 +253,17 @@ pub fn listFiles(alloc: std.mem.Allocator, tar_data: []const u8) !TarListResult 
 /// here and the singleton's vtable + pipe-aggregation state would corrupt
 /// under concurrent use, surfacing as `nb install --deb cowsay` SIGSEGV.
 /// Always thread the caller's `g_io` through.
-pub fn extractToDir(alloc: std.mem.Allocator, io: std.Io, tar_data: []const u8, dest_dir: []const u8) ![][]const u8 {
+pub fn extractToDir(alloc: std.mem.Allocator, io: std.Io, tar_data: []const u8, dest_dir: []const u8, write_errors: ?*usize) ![][]const u8 {
     var files: std.ArrayList([]const u8) = .empty;
     errdefer {
         for (files.items) |f| alloc.free(f);
         files.deinit(alloc);
     }
     var rejected: usize = 0;
+    // Entries we tried to place but couldn't (e.g. EACCES writing under / without
+    // root). Surfaced via write_errors so a caller can tell "this archive had
+    // nothing to place" apart from "everything failed to place" (#327).
+    var write_failures: usize = 0;
     const lib_io = io;
     var pos: usize = 0;
     var gnu_long_name: ?[]const u8 = null;
@@ -366,7 +370,10 @@ pub fn extractToDir(alloc: std.mem.Allocator, io: std.Io, tar_data: []const u8, 
                 const mode: std.posix.mode_t = @intCast(mode_val & 0o0777);
 
                 writeFile(lib_io, abs_path, tar_data[pos..data_end], mode) catch {
-                    // Skip files we can't write (permission errors, etc.)
+                    // Couldn't place this file (permission errors, etc.). Count it
+                    // so the caller can tell a real failure from an archive that
+                    // legitimately carried no regular files (#327).
+                    write_failures += 1;
                     pos += alignToBlock(file_size);
                     continue;
                 };
@@ -394,6 +401,7 @@ pub fn extractToDir(alloc: std.mem.Allocator, io: std.Io, tar_data: []const u8, 
                 lt_buf[lt_len] = 0;
                 const link_target_z: [*:0]const u8 = @ptrCast(&lt_buf);
                 if (std.c.symlink(link_target_z, abs_path_z) != 0) {
+                    write_failures += 1;
                     pos += alignToBlock(file_size);
                     continue;
                 }
@@ -421,6 +429,7 @@ pub fn extractToDir(alloc: std.mem.Allocator, io: std.Io, tar_data: []const u8, 
                 const abs_target_z: [*:0]const u8 = @ptrCast(abs_target.ptr);
                 const abs_path_z2: [*:0]const u8 = @ptrCast(abs_path.ptr);
                 if (std.c.link(abs_target_z, abs_path_z2) != 0) {
+                    write_failures += 1;
                     pos += alignToBlock(file_size);
                     continue;
                 }
@@ -441,6 +450,7 @@ pub fn extractToDir(alloc: std.mem.Allocator, io: std.Io, tar_data: []const u8, 
         std.Io.File.stderr().writeStreamingAll(lib_io2, msg) catch {};
     }
 
+    if (write_errors) |we| we.* = write_failures;
     return try files.toOwnedSlice(alloc);
 }
 
@@ -619,7 +629,7 @@ test "extractToDir - hardlink entry creates a link to an earlier regular file (i
     std.Io.Dir.createDirAbsolute(lib_io, tmp_dir, .default_dir) catch {};
     defer std.Io.Dir.cwd().deleteTree(lib_io, tmp_dir) catch {};
 
-    const files = try extractToDir(alloc, lib_io, &tar_data, tmp_dir);
+    const files = try extractToDir(alloc, lib_io, &tar_data, tmp_dir, null);
     defer {
         for (files) |f| alloc.free(f);
         alloc.free(files);

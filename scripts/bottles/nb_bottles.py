@@ -487,6 +487,23 @@ def cmd_verify(args):
     sys.exit(0 if ok else 1)
 
 
+def merged_dependencies(api):
+    """Runtime dependency closure nb should install for a pinned formula.
+
+    Homebrew's ``dependencies`` is the macOS closure. ``uses_from_macos`` deps
+    are provided by macOS but are real runtime dependencies on Linux
+    (autoconf->perl, perl->libxcrypt) -- and nb folds them in on macOS too, so
+    storing the union keeps the pinned record consistent with the live-API
+    resolver on both platforms (#324). Object-form entries ({"bison": "build"})
+    are build/test scoped, not runtime, and are skipped.
+    """
+    deps = list(api.get("dependencies", []) or [])
+    for u in api.get("uses_from_macos", []) or []:
+        if isinstance(u, str) and u not in deps:
+            deps.append(u)
+    return deps
+
+
 def cmd_pin(args):
     """Create a homebrew_bottle registry record for ANY Homebrew formula by
     reading the live API, optionally mirroring its blobs to our namespace."""
@@ -523,7 +540,7 @@ def cmd_pin(args):
         "desc": api.get("desc", ""),
         "revision": revision,
         "rebuild": api["bottle"]["stable"].get("rebuild", 0),
-        "dependencies": api.get("dependencies", []),
+        "dependencies": merged_dependencies(api),
         "build_dependencies": api.get("build_dependencies", []),
         "upstream": {"type": "homebrew_bottle", "verified": True},
         "verification": {"sha256": "required"},
@@ -767,7 +784,15 @@ def _scan_one(rec, platforms, outdir):
                 zipfile.ZipFile(io.BytesIO(data)).extractall(td)
             else:
                 with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tf:
-                    tf.extractall(td, filter="data")
+                    # Some bottles ship absolute symlinks (e.g. ansible's
+                    # libexec/bin/python3.14 -> /tmp/opt/python@3.14/...), which
+                    # Python 3.12's strict "data" filter rejects with
+                    # LinkOutsideDestinationError, aborting the whole rescan
+                    # (#328). The SBOM/CVE match only needs the regular files, so
+                    # drop link members and keep the filter's protections for the
+                    # rest.
+                    members = [m for m in tf.getmembers() if not (m.issym() or m.islnk())]
+                    tf.extractall(td, members=members, filter="data")
             subprocess.run(
                 ["syft", "scan", f"dir:{td}", "-q", "-o", f"spdx-json={sbom_path}"],
                 check=True,
