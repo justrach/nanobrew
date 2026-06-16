@@ -3551,7 +3551,11 @@
         "libssh",
         "libyaml",
         "python@3.14",
-        "tree"
+        "tree",
+        "krb5",
+        "libxml2",
+        "libxslt",
+        "openldap"
       ],
       "build_dependencies": [
         "pkgconf",
@@ -3599,7 +3603,8 @@
       "revision": 0,
       "rebuild": 0,
       "dependencies": [
-        "m4"
+        "m4",
+        "perl"
       ],
       "build_dependencies": [],
       "upstream": {
@@ -3645,7 +3650,9 @@
       "rebuild": 0,
       "dependencies": [
         "openssl@3",
-        "python@3.14"
+        "python@3.14",
+        "libffi",
+        "mandoc"
       ],
       "build_dependencies": [
         "cmake"
@@ -3695,7 +3702,8 @@
         "libsodium",
         "libyaml",
         "openssl@3",
-        "python@3.13"
+        "python@3.13",
+        "libffi"
       ],
       "build_dependencies": [
         "pkgconf",
@@ -3845,7 +3853,9 @@
       "desc": "Cross-platform make",
       "revision": 0,
       "rebuild": 0,
-      "dependencies": [],
+      "dependencies": [
+        "ncurses"
+      ],
       "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
@@ -3889,7 +3899,8 @@
       "revision": 2,
       "rebuild": 0,
       "dependencies": [
-        "ruby"
+        "ruby",
+        "libffi"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -3987,7 +3998,9 @@
         "libngtcp2",
         "libssh2",
         "openssl@3",
-        "zstd"
+        "zstd",
+        "krb5",
+        "openldap"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -4035,7 +4048,8 @@
       "rebuild": 0,
       "dependencies": [
         "little-cms2",
-        "sqlite"
+        "sqlite",
+        "libffi"
       ],
       "build_dependencies": [
         "cmake",
@@ -4189,7 +4203,9 @@
         "sdl2",
         "svt-av1",
         "x264",
-        "x265"
+        "x265",
+        "bzip2",
+        "libxml2"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -4235,7 +4251,9 @@
       "desc": "Command-line fuzzy finder written in Go",
       "revision": 0,
       "rebuild": 0,
-      "dependencies": [],
+      "dependencies": [
+        "ncurses"
+      ],
       "build_dependencies": [
         "go"
       ],
@@ -4378,7 +4396,9 @@
       "rebuild": 0,
       "dependencies": [
         "pcre2",
-        "gettext"
+        "gettext",
+        "curl",
+        "expat"
       ],
       "build_dependencies": [
         "gettext",
@@ -4472,7 +4492,9 @@
       "rebuild": 0,
       "dependencies": [
         "pcre2",
-        "gettext"
+        "gettext",
+        "libffi",
+        "python"
       ],
       "build_dependencies": [
         "bison",
@@ -4577,7 +4599,10 @@
         "npth",
         "pinentry",
         "readline",
-        "gettext"
+        "gettext",
+        "bzip2",
+        "openldap",
+        "sqlite"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -4680,7 +4705,8 @@
         "freetype",
         "gdk-pixbuf",
         "gettext",
-        "harfbuzz"
+        "harfbuzz",
+        "expat"
       ],
       "build_dependencies": [
         "bison",
@@ -4975,7 +5001,9 @@
         "libtool",
         "little-cms2",
         "webp",
-        "xz"
+        "xz",
+        "bzip2",
+        "libxml2"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -5161,7 +5189,8 @@
       "dependencies": [
         "icu4c@78",
         "krb5",
-        "openssl@3"
+        "openssl@3",
+        "curl"
       ],
       "build_dependencies": [
         "docbook",
@@ -5261,7 +5290,10 @@
         "python@3.14",
         "xz",
         "z3",
-        "zstd"
+        "zstd",
+        "libedit",
+        "libffi",
+        "ncurses"
       ],
       "build_dependencies": [
         "cmake",
@@ -5538,7 +5570,8 @@
         "lua",
         "openssl@3",
         "pcre2",
-        "python@3.14"
+        "python@3.14",
+        "libpcap"
       ],
       "build_dependencies": [
         "python-setuptools"
@@ -5601,7 +5634,8 @@
         "simdjson",
         "sqlite",
         "uvwasi",
-        "zstd"
+        "zstd",
+        "python"
       ],
       "build_dependencies": [
         "pkgconf",
@@ -5661,7 +5695,8 @@
         "simdutf",
         "sqlite",
         "uvwasi",
-        "zstd"
+        "zstd",
+        "python"
       ],
       "build_dependencies": [
         "pkgconf",
@@ -5851,7 +5886,10 @@
         "harfbuzz",
         "jpeg-turbo",
         "libpng",
-        "little-cms2"
+        "little-cms2",
+        "cups",
+        "unzip",
+        "zip"
       ],
       "build_dependencies": [
         "autoconf",
@@ -5904,7 +5942,10 @@
         "harfbuzz",
         "jpeg-turbo",
         "libpng",
-        "little-cms2"
+        "little-cms2",
+        "cups",
+        "unzip",
+        "zip"
       ],
       "build_dependencies": [
         "autoconf",
@@ -5997,7 +6038,8 @@
       "revision": 0,
       "rebuild": 0,
       "dependencies": [
-        "gmp"
+        "gmp",
+        "libffi"
       ],
       "build_dependencies": [
         "cabal-install",
@@ -6121,7 +6163,12 @@
         "sqlite",
         "tidy-html5",
         "unixodbc",
-        "gettext"
+        "gettext",
+        "bzip2",
+        "libedit",
+        "libffi",
+        "libxml2",
+        "libxslt"
       ],
       "build_dependencies": [
         "httpd",
@@ -6316,7 +6363,8 @@
         "openjpeg",
         "gettext",
         "gpgme",
-        "libassuan"
+        "libassuan",
+        "curl"
       ],
       "build_dependencies": [
         "cmake",
@@ -6462,7 +6510,11 @@
         "autoconf",
         "openssl@3",
         "pkgconf",
-        "readline"
+        "readline",
+        "bzip2",
+        "libffi",
+        "ncurses",
+        "xz"
       ],
       "build_dependencies": [],
       "upstream": {
@@ -6512,7 +6564,13 @@
         "openssl@3",
         "readline",
         "sqlite",
-        "xz"
+        "xz",
+        "bzip2",
+        "expat",
+        "libffi",
+        "libxcrypt",
+        "ncurses",
+        "unzip"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -6562,7 +6620,14 @@
         "mpdecimal",
         "openssl@3",
         "sqlite",
-        "xz"
+        "xz",
+        "bzip2",
+        "expat",
+        "libedit",
+        "libffi",
+        "libxcrypt",
+        "ncurses",
+        "unzip"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -6612,7 +6677,14 @@
         "mpdecimal",
         "openssl@3",
         "sqlite",
-        "xz"
+        "xz",
+        "bzip2",
+        "expat",
+        "libedit",
+        "libffi",
+        "libxcrypt",
+        "ncurses",
+        "unzip"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -6662,7 +6734,13 @@
         "mpdecimal",
         "openssl@3",
         "sqlite",
-        "xz"
+        "xz",
+        "bzip2",
+        "expat",
+        "libedit",
+        "libffi",
+        "ncurses",
+        "unzip"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -6713,7 +6791,13 @@
         "openssl@3",
         "sqlite",
         "xz",
-        "zstd"
+        "zstd",
+        "bzip2",
+        "expat",
+        "libedit",
+        "libffi",
+        "ncurses",
+        "unzip"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -6896,7 +6980,10 @@
       "rebuild": 0,
       "dependencies": [
         "libyaml",
-        "openssl@3"
+        "openssl@3",
+        "gperf",
+        "libffi",
+        "libxcrypt"
       ],
       "build_dependencies": [
         "autoconf",
@@ -6950,7 +7037,8 @@
         "llvm",
         "openssl@3",
         "pkgconf",
-        "zstd"
+        "zstd",
+        "curl"
       ],
       "build_dependencies": [],
       "upstream": {
@@ -7055,7 +7143,10 @@
       "desc": "Tool to enforce Swift style and conventions",
       "revision": 0,
       "rebuild": 0,
-      "dependencies": [],
+      "dependencies": [
+        "curl",
+        "libxml2"
+      ],
       "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
@@ -7459,7 +7550,9 @@
       "desc": "Little beautifier tool for xcodebuild",
       "revision": 0,
       "rebuild": 0,
-      "dependencies": [],
+      "dependencies": [
+        "libxml2"
+      ],
       "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
@@ -7502,7 +7595,9 @@
       "desc": "Generate your Xcode project from a spec file and your folder structure",
       "revision": 0,
       "rebuild": 0,
-      "dependencies": [],
+      "dependencies": [
+        "swift"
+      ],
       "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
@@ -7817,7 +7912,9 @@
       "desc": "Apache Portable Runtime library",
       "revision": 0,
       "rebuild": 0,
-      "dependencies": [],
+      "dependencies": [
+        "libxcrypt"
+      ],
       "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
@@ -7862,7 +7959,10 @@
       "rebuild": 0,
       "dependencies": [
         "apr",
-        "openssl@3"
+        "openssl@3",
+        "expat",
+        "libxcrypt",
+        "sqlite"
       ],
       "build_dependencies": [],
       "upstream": {
@@ -7997,7 +8097,8 @@
       "dependencies": [
         "icu4c@78",
         "xz",
-        "zstd"
+        "zstd",
+        "bzip2"
       ],
       "build_dependencies": [],
       "upstream": {
@@ -8281,7 +8382,8 @@
       "revision": 1,
       "rebuild": 0,
       "dependencies": [
-        "pycparser"
+        "pycparser",
+        "libffi"
       ],
       "build_dependencies": [
         "python@3.13",
@@ -8473,7 +8575,8 @@
       "dependencies": [
         "brotli",
         "icu4c@78",
-        "openssl@3"
+        "openssl@3",
+        "krb5"
       ],
       "build_dependencies": [
         "cmake",
@@ -8845,7 +8948,8 @@
         "openssl@3",
         "snappy",
         "xz",
-        "zstd"
+        "zstd",
+        "bzip2"
       ],
       "build_dependencies": [
         "cmake",
@@ -8895,7 +8999,8 @@
       "rebuild": 1,
       "dependencies": [
         "freetype",
-        "gettext"
+        "gettext",
+        "expat"
       ],
       "build_dependencies": [
         "gettext",
@@ -8946,7 +9051,8 @@
       "rebuild": 0,
       "dependencies": [
         "openssl@3",
-        "unixodbc"
+        "unixodbc",
+        "krb5"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -8993,7 +9099,8 @@
       "revision": 0,
       "rebuild": 0,
       "dependencies": [
-        "libpng"
+        "libpng",
+        "bzip2"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -9233,7 +9340,9 @@
       "revision": 0,
       "rebuild": 0,
       "dependencies": [
-        "libunistring"
+        "libunistring",
+        "libxml2",
+        "ncurses"
       ],
       "build_dependencies": [],
       "upstream": {
@@ -10069,7 +10178,9 @@
       "desc": "High quality MPEG Audio Layer III (MP3) encoder",
       "revision": 0,
       "rebuild": 0,
-      "dependencies": [],
+      "dependencies": [
+        "ncurses"
+      ],
       "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
@@ -10168,7 +10279,9 @@
         "libb2",
         "lz4",
         "xz",
-        "zstd"
+        "zstd",
+        "bzip2",
+        "expat"
       ],
       "build_dependencies": [],
       "upstream": {
@@ -11055,7 +11168,8 @@
         "pango",
         "freetype",
         "gettext",
-        "libpng"
+        "libpng",
+        "libxml2"
       ],
       "build_dependencies": [
         "cargo-c",
@@ -11984,7 +12098,8 @@
       "rebuild": 0,
       "dependencies": [
         "xz",
-        "zstd"
+        "zstd",
+        "bzip2"
       ],
       "build_dependencies": [
         "cmake"
@@ -12831,7 +12946,8 @@
         "jasper",
         "jpeg-turbo",
         "libpng",
-        "libtiff"
+        "libtiff",
+        "libxml2"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -13009,7 +13125,8 @@
       "revision": 0,
       "rebuild": 0,
       "dependencies": [
-        "nspr"
+        "nspr",
+        "sqlite"
       ],
       "build_dependencies": [],
       "upstream": {
@@ -13106,7 +13223,10 @@
         "harfbuzz",
         "jpeg-turbo",
         "libpng",
-        "little-cms2"
+        "little-cms2",
+        "cups",
+        "unzip",
+        "zip"
       ],
       "build_dependencies": [
         "autoconf",
@@ -13204,7 +13324,8 @@
       "revision": 0,
       "rebuild": 0,
       "dependencies": [
-        "openssl@3"
+        "openssl@3",
+        "cyrus-sasl"
       ],
       "build_dependencies": [],
       "upstream": {
@@ -13293,7 +13414,8 @@
       "rebuild": 0,
       "dependencies": [
         "ca-certificates",
-        "libtasn1"
+        "libtasn1",
+        "libffi"
       ],
       "build_dependencies": [
         "meson",
@@ -13341,7 +13463,9 @@
       "desc": "Perl compatible regular expressions library with a new API",
       "revision": 1,
       "rebuild": 0,
-      "dependencies": [],
+      "dependencies": [
+        "bzip2"
+      ],
       "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
@@ -13386,7 +13510,8 @@
       "rebuild": 0,
       "dependencies": [
         "libassuan",
-        "libgpg-error"
+        "libgpg-error",
+        "ncurses"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -13524,7 +13649,9 @@
       "desc": "Library for command-line editing",
       "revision": 0,
       "rebuild": 0,
-      "dependencies": [],
+      "dependencies": [
+        "ncurses"
+      ],
       "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
@@ -13931,7 +14058,8 @@
       "dependencies": [
         "libevent",
         "libnghttp2",
-        "openssl@3"
+        "openssl@3",
+        "expat"
       ],
       "build_dependencies": [],
       "upstream": {
@@ -18524,7 +18652,8 @@
         "libtiff",
         "little-cms2",
         "openjpeg",
-        "tesseract"
+        "tesseract",
+        "expat"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -18581,7 +18710,8 @@
         "pixman",
         "snappy",
         "vde",
-        "zstd"
+        "zstd",
+        "bzip2"
       ],
       "build_dependencies": [
         "libtool",
@@ -18769,7 +18899,11 @@
         "openssl@3",
         "readline",
         "zstd",
-        "gettext"
+        "gettext",
+        "libxml2",
+        "libxslt",
+        "openldap",
+        "perl"
       ],
       "build_dependencies": [
         "gettext",
@@ -18819,7 +18953,10 @@
         "openssl@3",
         "protobuf",
         "zlib-ng-compat",
-        "zstd"
+        "zstd",
+        "curl",
+        "cyrus-sasl",
+        "libedit"
       ],
       "build_dependencies": [
         "bison",
@@ -18870,7 +19007,12 @@
         "openssl@3",
         "readline",
         "zstd",
-        "gettext"
+        "gettext",
+        "curl",
+        "libxml2",
+        "libxslt",
+        "openldap",
+        "perl"
       ],
       "build_dependencies": [
         "docbook",
@@ -18998,7 +19140,9 @@
       "desc": "Tool to parse the SLF serialization format used by Xcode",
       "revision": 0,
       "rebuild": 0,
-      "dependencies": [],
+      "dependencies": [
+        "swift"
+      ],
       "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
@@ -19037,7 +19181,10 @@
       "desc": "Rust toolchain installer",
       "revision": 2,
       "rebuild": 0,
-      "dependencies": [],
+      "dependencies": [
+        "curl",
+        "xz"
+      ],
       "build_dependencies": [
         "rust"
       ],
@@ -19174,7 +19321,8 @@
         "simdjson",
         "sqlite",
         "uvwasi",
-        "zstd"
+        "zstd",
+        "python"
       ],
       "build_dependencies": [
         "pkgconf",
@@ -19217,7 +19365,9 @@
       "desc": "Graphical front-end for GCC's coverage testing tool (gcov)",
       "revision": 1,
       "rebuild": 1,
-      "dependencies": [],
+      "dependencies": [
+        "perl"
+      ],
       "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
@@ -19343,7 +19493,8 @@
         "libssh2",
         "openssl@3",
         "sqlite",
-        "gettext"
+        "gettext",
+        "libxml2"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -19428,7 +19579,8 @@
       "rebuild": 0,
       "dependencies": [
         "openssl@3",
-        "pcre2"
+        "pcre2",
+        "libxcrypt"
       ],
       "build_dependencies": [],
       "upstream": {
@@ -19504,7 +19656,11 @@
         "krb5",
         "lz4",
         "openssl@3",
-        "readline"
+        "readline",
+        "libxml2",
+        "libxslt",
+        "openldap",
+        "perl"
       ],
       "build_dependencies": [
         "pkgconf"
@@ -19962,7 +20118,8 @@
         "certifi",
         "cffi",
         "python@3.14",
-        "zstd"
+        "zstd",
+        "libffi"
       ],
       "build_dependencies": [
         "cmake",

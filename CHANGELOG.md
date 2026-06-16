@@ -2,6 +2,13 @@
 
 All notable changes to nanobrew are documented here.
 
+## Unreleased
+
+### Fixed
+- **Linux-only dependencies are now resolved (`uses_from_macos` / `on_linux`) (#324)** — the resolver folds each formula's `uses_from_macos` entries into its runtime dependencies on every platform and, on Linux, prefers the already-expanded `variations.<arch>_linux.dependencies` list when present. So `nb install autoconf` now also installs `perl` (and `perl` → `libxcrypt`), and `git` resolves its full Linux closure (openssl@3, zlib-ng-compat, curl, …) instead of placing a binary whose interpreter/shared libraries are missing. The pinned bottle registry gets the same union via `nb_bottles.py`, and the 72 affected records were backfilled.
+- **`nb install --deb` no longer reports success when nothing was placed (#327)** — `--deb` writes to system paths under `/`, so without root the place step failed with EACCES yet still printed `Installed N/N` and exited 0. Extraction now tracks per-file write failures, a package that lands zero of its files is counted as failed, and a partial/failed install exits non-zero with a `re-run with sudo` hint. Also fixed an uninitialized `installed_files` field that could free a wild pointer (segfault) now that a package can fail extraction. Root installs are unchanged.
+- **`nb --version` / `nb version` / `nb -v`** — now print `nanobrew <version>` instead of erroring with `unknown command`; useful for scripting and bug reports (#327).
+
 ## [0.1.198] - 2026-06-12
 
 ### Security
