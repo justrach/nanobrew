@@ -2,7 +2,7 @@
 
 All notable changes to nanobrew are documented here.
 
-## Unreleased
+## [0.1.199] - 2026-06-16
 
 ### Fixed
 - **Linux-only dependencies are now resolved (`uses_from_macos` / `on_linux`) (#324)** — the resolver folds each formula's `uses_from_macos` entries into its runtime dependencies on every platform and, on Linux, prefers the already-expanded `variations.<arch>_linux.dependencies` list when present. So `nb install autoconf` now also installs `perl` (and `perl` → `libxcrypt`), and `git` resolves its full Linux closure (openssl@3, zlib-ng-compat, curl, …) instead of placing a binary whose interpreter/shared libraries are missing. The pinned bottle registry gets the same union via `nb_bottles.py`, and the 72 affected records were backfilled.
