@@ -784,7 +784,15 @@ def _scan_one(rec, platforms, outdir):
                 zipfile.ZipFile(io.BytesIO(data)).extractall(td)
             else:
                 with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tf:
-                    tf.extractall(td, filter="data")
+                    # Some bottles ship absolute symlinks (e.g. ansible's
+                    # libexec/bin/python3.14 -> /tmp/opt/python@3.14/...), which
+                    # Python 3.12's strict "data" filter rejects with
+                    # LinkOutsideDestinationError, aborting the whole rescan
+                    # (#328). The SBOM/CVE match only needs the regular files, so
+                    # drop link members and keep the filter's protections for the
+                    # rest.
+                    members = [m for m in tf.getmembers() if not (m.issym() or m.islnk())]
+                    tf.extractall(td, members=members, filter="data")
             subprocess.run(
                 ["syft", "scan", f"dir:{td}", "-q", "-o", f"spdx-json={sbom_path}"],
                 check=True,
