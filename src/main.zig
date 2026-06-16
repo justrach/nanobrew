@@ -2782,34 +2782,52 @@ fn runUpdate(alloc: std.mem.Allocator) void {
         },
     }
 
-    // Replace current binary atomically: copy to staged temp, then rename
+    // Validate a candidate is a real executable (Mach-O thin/universal, or ELF)
+    // before we ever rename it over the live binary. (#314)
+    const looksLikeExecutable = struct {
+        fn check(io: std.Io, path: []const u8) bool {
+            const f = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return false;
+            defer f.close(io);
+            var magic: [4]u8 = undefined;
+            const n = f.readPositionalAll(io, &magic, 0) catch return false;
+            if (n < 4) return false;
+            return std.mem.eql(u8, &magic, &[_]u8{ 0xcf, 0xfa, 0xed, 0xfe }) or // Mach-O 64 LE
+                std.mem.eql(u8, &magic, &[_]u8{ 0xce, 0xfa, 0xed, 0xfe }) or // Mach-O 32 LE
+                std.mem.eql(u8, &magic, &[_]u8{ 0xca, 0xfe, 0xba, 0xbe }) or // Mach-O universal
+                std.mem.eql(u8, &magic, &[_]u8{ 0xca, 0xfe, 0xba, 0xbf }) or // Mach-O universal 64
+                std.mem.eql(u8, &magic, &[_]u8{ 0x7f, 'E', 'L', 'F' }); // ELF
+        }
+    }.check;
+
+    // Replace current binary atomically: copy to staged temp, then rename. Prefer
+    // the canonical "nb"; the release tarball may instead ship it as "nb-<arch>"
+    // (#293/#296). Only ever accept an "nb"-prefixed regular file that validates
+    // as an executable — never a stray sidecar like "nb.sha256", and never an
+    // unvalidated blob renamed over the live binary (#314).
     var extracted_bin_buf: [512]u8 = undefined;
     const extracted_bin = std.fmt.bufPrint(&extracted_bin_buf, "{s}/nb", .{tmp_dir}) catch {
         std.process.exit(1);
     };
 
-    // Fallback: if tarball contains "nb-<arch>" instead of "nb", find it
-    const bin_exists = blk: {
-        const f = std.Io.Dir.openFileAbsolute(g_io, extracted_bin, .{}) catch break :blk false;
-        f.close(g_io);
-        break :blk true;
-    };
     var fallback_bin_buf: [512]u8 = undefined;
-    const final_extracted_bin = if (bin_exists) extracted_bin else fb: {
+    const final_extracted_bin = pick: {
+        if (looksLikeExecutable(g_io, extracted_bin)) break :pick extracted_bin;
+
         var dir = std.Io.Dir.openDirAbsolute(g_io, tmp_dir, .{ .iterate = true }) catch {
             stderr.print("nb: update failed: could not open extract dir\n", .{}) catch {};
+            std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
+            std.Io.Dir.cwd().deleteTree(g_io, tmp_dir) catch {};
             std.process.exit(1);
         };
         defer dir.close(g_io);
         var iter = dir.iterate();
         while (iter.next(g_io) catch null) |entry| {
-            if (std.mem.startsWith(u8, entry.name, "nb") and entry.kind == .file) {
-                break :fb std.fmt.bufPrint(&fallback_bin_buf, "{s}/{s}", .{ tmp_dir, entry.name }) catch {
-                    std.process.exit(1);
-                };
-            }
+            if (entry.kind != .file) continue;
+            if (!std.mem.startsWith(u8, entry.name, "nb")) continue;
+            const cand = std.fmt.bufPrint(&fallback_bin_buf, "{s}/{s}", .{ tmp_dir, entry.name }) catch continue;
+            if (looksLikeExecutable(g_io, cand)) break :pick cand;
         }
-        stderr.print("nb: update failed: extracted binary not found\n", .{}) catch {};
+        stderr.print("nb: update failed: no valid nb executable in release tarball\n", .{}) catch {};
         std.Io.Dir.deleteFileAbsolute(g_io, tmp_tar) catch {};
         std.Io.Dir.cwd().deleteTree(g_io, tmp_dir) catch {};
         std.process.exit(1);
