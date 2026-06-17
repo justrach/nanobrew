@@ -670,6 +670,14 @@ fn parseCaskJsonArch(alloc: std.mem.Allocator, json_data: []const u8, prefer_int
                             } });
                         }
                     }
+                } else if (obj.get("font")) |font_val| {
+                    if (font_val == .array) {
+                        for (font_val.array.items) |f| {
+                            if (f == .string) {
+                                try artifacts.append(alloc, .{ .font = try rewriteVersion(alloc, f.string, root_version, version) });
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -1491,4 +1499,23 @@ test "parseCaskJson - parses suite and artifact stanzas (KiCad shape)" {
     try testing.expect(saw_suite);
     try testing.expect(saw_artifact);
     try testing.expect(saw_binary);
+}
+
+test "parseCaskJson - parses font stanzas" {
+    const json =
+        \\{"token":"font-fira-code","version":"6.2","url":"https://example.com/fira.zip",
+        \\"sha256":"abc123","homepage":"","desc":"",
+        \\"artifacts":[
+        \\  {"font":["ttf/FiraCode-Bold.ttf"],"target":"/$HOME/Library/Fonts/FiraCode-Bold.ttf"},
+        \\  {"font":["ttf/FiraCode-Regular.ttf"],"target":"/$HOME/Library/Fonts/FiraCode-Regular.ttf"},
+        \\  {"font":["variable_ttf/FiraCode-VF.ttf"],"target":"/$HOME/Library/Fonts/FiraCode-VF.ttf"}
+        \\]}
+    ;
+    const cask = try parseCaskJson(testing.allocator, json);
+    defer cask.deinit(testing.allocator);
+
+    try testing.expectEqual(@as(usize, 3), cask.artifacts.len);
+    try testing.expectEqualStrings("ttf/FiraCode-Bold.ttf", cask.artifacts[0].font);
+    try testing.expectEqualStrings("ttf/FiraCode-Regular.ttf", cask.artifacts[1].font);
+    try testing.expectEqualStrings("variable_ttf/FiraCode-VF.ttf", cask.artifacts[2].font);
 }
