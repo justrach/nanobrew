@@ -257,7 +257,7 @@ fn installShimLink(
     const wrapper_path = std.fmt.bufPrint(&wrapper_path_buf, "{s}/{s}", .{ wrapper_dir, entry_name }) catch return;
 
     // Detect per-package env vars (e.g. GIT_EXEC_PATH for git)
-    var extra_env_buf: [2][2][]const u8 = undefined;
+    var extra_env_buf: [4][2][]const u8 = undefined;
     var extra_env_count: usize = 0;
     var git_core_buf: [512]u8 = undefined;
     const git_core_path = std.fmt.bufPrint(&git_core_buf, "{s}/libexec/git-core", .{keg_dir}) catch "";
@@ -266,6 +266,16 @@ fn installShimLink(
             var bd = d;
             bd.close(lib_io);
             extra_env_buf[extra_env_count] = .{ "GIT_EXEC_PATH", git_core_path };
+            extra_env_count += 1;
+        } else |_| {}
+    }
+    var git_tpl_buf: [512]u8 = undefined;
+    const git_tpl_path = std.fmt.bufPrint(&git_tpl_buf, "{s}/share/git-core/templates", .{keg_dir}) catch "";
+    if (git_tpl_path.len > 0) {
+        if (std.Io.Dir.openDirAbsolute(lib_io, git_tpl_path, .{})) |d| {
+            var bd = d;
+            bd.close(lib_io);
+            extra_env_buf[extra_env_count] = .{ "GIT_TEMPLATE_DIR", git_tpl_path };
             extra_env_count += 1;
         } else |_| {}
     }
@@ -530,6 +540,17 @@ pub fn linkKegWithOptions(name: []const u8, version: []const u8, options: LinkOp
                 needs_env_shim = true;
             } else |_| {}
         }
+        if (!needs_env_shim) {
+            var git_tpl_buf2: [512]u8 = undefined;
+            const git_tpl_path2 = std.fmt.bufPrint(&git_tpl_buf2, "{s}/share/git-core/templates", .{keg_dir}) catch "";
+            if (git_tpl_path2.len > 0) {
+                if (std.Io.Dir.openDirAbsolute(lib_io, git_tpl_path2, .{})) |d| {
+                    var bd = d;
+                    bd.close(lib_io);
+                    needs_env_shim = true;
+                } else |_| {}
+            }
+        }
     }
 
     for (subdir_mappings) |mapping| {
@@ -700,11 +721,14 @@ test "renderShimWrapper prepends private PATH entries and execs actual binary" {
 test "renderShimWrapper includes extra env vars" {
     const env = [_][2][]const u8{
         .{ "GIT_EXEC_PATH", "/opt/nanobrew/prefix/Cellar/git/2.47.0/libexec/git-core" },
+        .{ "GIT_TEMPLATE_DIR", "/opt/nanobrew/prefix/Cellar/git/2.47.0/share/git-core/templates" },
     };
     const script = try renderShimWrapper(std.testing.allocator, "/opt/nanobrew/prefix/Cellar/git/2.47.0/bin/git", &.{}, &env);
     defer std.testing.allocator.free(script);
 
     try std.testing.expect(std.mem.indexOf(u8, script, "GIT_EXEC_PATH=\"/opt/nanobrew/prefix/Cellar/git/2.47.0/libexec/git-core\"") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "export GIT_EXEC_PATH") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "GIT_TEMPLATE_DIR=\"/opt/nanobrew/prefix/Cellar/git/2.47.0/share/git-core/templates\"") != null);
+    try std.testing.expect(std.mem.indexOf(u8, script, "export GIT_TEMPLATE_DIR") != null);
     try std.testing.expect(std.mem.indexOf(u8, script, "exec \"/opt/nanobrew/prefix/Cellar/git/2.47.0/bin/git\" \"$@\"") != null);
 }
