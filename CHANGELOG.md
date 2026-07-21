@@ -4,6 +4,12 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+## [0.1.204] - 2026-07-21
+
+### Fixed
+- **Mach-O relocation rewrites compile-time paths, not just load commands**: Homebrew bottles bake literal `/opt/homebrew/...` defaults into `.rodata` (OpenSSL `OPENSSLDIR`/`ENGINESDIR`/`MODULESDIR`, git `--html-path`/`--man-path`, `GIT_CONFIG_SYSTEM`/`GIT_ATTR_SYSTEM`), and the old macOS pass only rewrote load commands via `install_name_tool`, so installed packages kept reporting non-existent Homebrew runtime paths. Relocation now mirrors the ELF relocator's native-first design: one whole-file byte pass rewrites `@@HOMEBREW_*@@` placeholders plus literal `/opt/homebrew/`, `/usr/local/Cellar/`, and `/usr/local/opt/` prefixes to the strictly-shorter, slash-padded `/opt/nb` form across `.rodata`, load-command dylib IDs/rpaths, and every fat slice, followed by a batch re-sign; `nb init` creates the `/opt/nb` symlink on macOS as well now. Verified end to end on fresh pours: `openssl version -a` reports the nanobrew `OPENSSLDIR`, node's default OpenSSL CA store serves HTTPS without `NODE_EXTRA_CA_CERTS`, git's html/man/system-config paths resolve under the nanobrew prefix, and whole-keg sweeps of openssl@3, node, and git find no `/opt/homebrew` bytes left in any loadable file. (#347)
+- **Bottle `.bottle/etc` payloads are linked into the shared prefix**: bottles stage mutable runtime config (`openssl.cnf`, `gitconfig`, fontconfig's `fonts.conf`, openldap schemas, ...) under `<keg>/.bottle/etc/` rather than the keg root, and the keg linker never processed that prefix, so directories like `prefix/etc/openssl@3` were missing entirely after install. The linker now maps `<keg>/.bottle/etc` into `<prefix>/etc` through the existing bucket logic on both fast and slow link paths (a graceful no-op for kegs without the payload), and unlink stays target-checked so postinstall-added non-keg symlinks such as `etc/openssl@3/cert.pem -> ca-certificates` survive unlink/relink. `git config --system` reads the bottle-shipped `gitconfig` instead of dying on a missing Homebrew path. (#347)
+
 ## [0.1.203] - 2026-07-19
 
 ### Performance
