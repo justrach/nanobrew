@@ -783,6 +783,15 @@ const LANDING_HTML = `<!DOCTYPE html>
       </div>
       <div class="bg-note">38 commits, 20+ targeted bug fixes &middot; deb path correctness sweep (cwd-independent <code>nb remove --deb</code>, native xz, postinst io, patchelf race, locale relocation) &middot; process-wide threadsafe Io accessor &middot; <code>nb cleanup --prune-kegs</code> &middot; HTTP User-Agent override &middot; honest known-issue disclosure &middot; <a href="/v0.1.193">full notes</a></div>
     </div>
+
+    <div class="bg">
+      <div class="bg-title">v0.1.198 <span>/ jun 2026, our own bottle registry + CVE scanning</span></div>
+      <div class="br">
+        <span class="br-l">nb</span>
+        <div class="br-t"><div class="br-b nb" data-w="100%">own GHCR registry &middot; ~800x faster ELF relocate &middot; still 100x+ vs Homebrew</div></div>
+      </div>
+      <div class="bg-note">nanobrew's own bottle registry (<code>ghcr.io/justrach/nb-bottles</code>): 231 Homebrew bottles mirrored byte-for-byte + repackaged upstream binaries &middot; every bottle SBOM'd + CVE-scanned with revoke-and-fallback &middot; native ELF relocation (4,777ms to 6ms) &middot; warm resolve 147ms to 1.8ms &middot; cached reinstall 534ms to 4ms &middot; 37 new packages &middot; <a href="/v0.1.198">full notes</a></div>
+    </div>
   </section>
     <div class="term">
       <div class="term-bar">
@@ -1052,6 +1061,7 @@ const APT_GET_HTML = `<!DOCTYPE html>
     <div class="nav-links">
       <a href="https://github.com/justrach/nanobrew">GitHub</a>
       <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/v0.1.198">v0.1.198</a>
       <a href="/">macOS benchmarks</a>
     </div>
   </nav>
@@ -1289,6 +1299,7 @@ const RELEASE_190_HTML = `<!DOCTYPE html>
     <div class="nav-links">
       <a href="https://github.com/justrach/nanobrew">GitHub</a>
       <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/v0.1.198">v0.1.198</a>
       <a href="/">macOS benchmarks</a>
     </div>
   </nav>
@@ -1553,6 +1564,7 @@ const RELEASE_191_HTML = `<!DOCTYPE html>
     <div class="nav-links">
       <a href="https://github.com/justrach/nanobrew">GitHub</a>
       <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/v0.1.198">v0.1.198</a>
       <a href="/v0.1.193">v0.1.193</a>
       <a href="/v0.1.192">v0.1.192</a>
       <a href="/v0.1.190">v0.1.190</a>
@@ -1926,6 +1938,7 @@ const RELEASE_192_HTML = `<!DOCTYPE html>
     <div class="nav-links">
       <a href="https://github.com/justrach/nanobrew">GitHub</a>
       <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/v0.1.198">v0.1.198</a>
       <a href="/v0.1.193">v0.1.193</a>
       <a href="/v0.1.191">v0.1.191</a>
       <a href="/v0.1.190">v0.1.190</a>
@@ -2296,6 +2309,7 @@ const RELEASE_193_HTML = `<!DOCTYPE html>
     <div class="nav-links">
       <a href="https://github.com/justrach/nanobrew">GitHub</a>
       <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/v0.1.198">v0.1.198</a>
       <a href="/v0.1.192">v0.1.192</a>
       <a href="/v0.1.191">v0.1.191</a>
       <a href="/v0.1.190">v0.1.190</a>
@@ -2557,6 +2571,416 @@ document.querySelectorAll('[data-observe]').forEach(el => obs.observe(el));
 </body>
 </html>`;
 
+const RELEASE_198_HTML = `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>nanobrew v0.1.198: our own bottle registry, scanned for CVEs</title>
+<meta name="description" content="nanobrew v0.1.198 runs its own GHCR bottle registry: 231 Homebrew bottles mirrored byte-for-byte plus repackaged upstream binaries, every bottle SBOM'd and CVE-scanned with revoke-and-fallback. Native ELF relocation makes the Linux relocate phase about 800x faster, warm resolve drops 147ms to 1.8ms, and it stays 100x+ faster than Homebrew.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>⚡</text></svg>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --gold: #FFB800;
+    --gold-soft: rgba(255, 184, 0, 0.12);
+    --bg: #FFFFFF;
+    --surface: #F7F7F7;
+    --border: #E5E5E5;
+    --text: #404040;
+    --bright: #111111;
+    --muted: #777;
+    --dim: #AAAAAA;
+    --fd: 'Inter', system-ui, -apple-system, sans-serif;
+    --fm: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: var(--fm); font-size: 15px; line-height: 1.65;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 880px; margin: 0 auto; padding: 0 2rem; }
+
+  nav { padding: 1.5rem 0; display: flex; justify-content: space-between; align-items: center; }
+  .nav-mark { font-family: var(--fd); font-weight: 700; font-size: 1rem; color: var(--bright); text-decoration: none; }
+  .nav-links { display: flex; gap: 1.5rem; flex-wrap: wrap; justify-content: flex-end; }
+  .nav-links a { color: var(--muted); text-decoration: none; font-size: 0.82rem; font-weight: 500; }
+  .nav-links a:hover { color: var(--bright); }
+
+  @keyframes fadeUp { from { opacity: 0; transform: translateY(18px); } to { opacity: 1; transform: none; } }
+
+  .hero { padding: 4rem 0 3rem; text-align: center; }
+  .hero h1 {
+    font-family: var(--fd); font-weight: 800;
+    font-size: clamp(2.1rem, 5vw, 3.4rem);
+    color: var(--bright); line-height: 1.15;
+    animation: fadeUp 0.7s ease-out both;
+  }
+  .hero-claim {
+    font-family: var(--fd); font-weight: 800;
+    font-size: clamp(1.85rem, 4.7vw, 3.25rem);
+    line-height: 1.12; color: var(--bright);
+    max-width: 820px; margin: 0.45rem auto 0;
+    animation: fadeUp 0.7s ease-out 0.05s both;
+  }
+  .hero-speed {
+    font-family: var(--fd); font-weight: 800;
+    font-size: clamp(1.25rem, 2.8vw, 2rem);
+    line-height: 1.18; color: var(--bright);
+    max-width: 780px; margin: 0.65rem auto 0;
+    animation: fadeUp 0.7s ease-out 0.1s both;
+  }
+  .hero-highlight {
+    display: inline;
+    padding: 0 0.06em;
+    background: linear-gradient(180deg, transparent 55%, rgba(255,184,0,0.55) 55%);
+    -webkit-box-decoration-break: clone;
+    box-decoration-break: clone;
+  }
+  .hero p {
+    font-size: 1rem; color: var(--muted); margin-top: 1rem; max-width: 700px; margin-inline: auto;
+    animation: fadeUp 0.7s ease-out 0.12s both;
+  }
+  .hero .hero-lead {
+    font-size: 1.05rem; color: var(--text);
+  }
+  .hero .hero-lead strong { color: var(--bright); font-weight: 800; }
+  .hero p code {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 3px;
+    padding: 0.1rem 0.35rem; font-size: 0.85rem; color: var(--bright);
+  }
+  .hero > code {
+    display: inline-block; margin-top: 1.5rem; padding: 0.6rem 1.4rem;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    font-size: 0.88rem; color: var(--bright); font-weight: 500;
+    animation: fadeUp 0.7s ease-out 0.24s both;
+  }
+
+  .stat { padding: 4rem 0; border-top: 1px solid var(--border); }
+  .stat-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.2rem; }
+  .stat-card {
+    text-align: center; padding: 1.2rem 1rem; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 8px;
+    animation: fadeUp 0.8s ease-out 0.28s both;
+  }
+  .stat-num {
+    display: block; font-family: var(--fd); font-weight: 900;
+    font-size: clamp(2rem, 5vw, 3.2rem);
+    color: var(--gold); line-height: 1.05;
+    text-shadow: 0 0 80px var(--gold-soft);
+  }
+  .stat-label { display: block; font-size: 0.82rem; color: var(--muted); margin-top: 0.45rem; }
+  .stat-ctx { font-size: 0.82rem; color: var(--dim); margin-top: 1.4rem; text-align: center; }
+  .stat-ctx em { color: var(--muted); font-style: normal; font-weight: 500; }
+
+  .bench { padding: 4rem 0; border-top: 1px solid var(--border); }
+  .bench h2 { font-family: var(--fd); font-weight: 700; font-size: 1.4rem; color: var(--bright); margin-bottom: 0.5rem; }
+  .bench-sub { font-size: 0.8rem; color: var(--dim); margin-bottom: 2.3rem; }
+  .bench-sub code { background: var(--surface); padding: 0.1rem 0.35rem; border-radius: 3px; font-size: 0.75rem; color: var(--bright); }
+
+  .bg { margin-bottom: 2.8rem; }
+  .bg-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.9rem; flex-wrap: wrap; gap: 0.5rem; }
+  .bg-title { font-family: var(--fd); font-weight: 700; font-size: 0.95rem; color: var(--bright); }
+  .bg-title span { color: var(--muted); font-weight: 400; font-size: 0.82rem; margin-left: 0.4rem; }
+  .bg-note { font-size: 0.8rem; color: var(--muted); line-height: 1.55; margin-top: 0.6rem; }
+  .bg-note code { background: var(--surface); padding: 0.05rem 0.3rem; border-radius: 3px; font-size: 0.72rem; color: var(--bright); }
+  .bg-badge {
+    font-family: var(--fd); font-weight: 800; font-size: 0.82rem; color: #92400e;
+    background: rgba(251,191,36,0.15); border: 1px solid rgba(251,191,36,0.35);
+    padding: 0.2rem 0.75rem; border-radius: 20px;
+    opacity: 0; transform: translateY(4px); transition: opacity 0.4s 0.9s, transform 0.4s 0.9s;
+  }
+  .bg.visible .bg-badge { opacity: 1; transform: none; }
+  .br { display: flex; align-items: center; gap: 0.7rem; margin-bottom: 0.45rem; }
+  .br-l { width: 8.5rem; text-align: right; font-size: 0.72rem; color: var(--muted); flex-shrink: 0; font-weight: 500; }
+  .br-t { flex: 1; height: 40px; background: var(--surface); border-radius: 6px; overflow: hidden; }
+  .br-b {
+    height: 100%; border-radius: 6px;
+    width: 0; transition: width 1.3s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+  .br-b.apt { background: #E4E4E4; }
+  .br-b.zb { background: #D8D8D8; }
+  .br-b.old { background: linear-gradient(90deg, #FFC84A 0%, #FFB800 100%); opacity: 0.6; }
+  .br-b.nb  { background: linear-gradient(90deg, #FFB800 0%, #FF8000 100%); box-shadow: 0 2px 16px rgba(255,140,0,0.22); }
+  .bg.visible .br:nth-child(1) .br-b { transition-delay: 0s; }
+  .bg.visible .br:nth-child(2) .br-b { transition-delay: 0.12s; }
+  .bg.visible .br:nth-child(3) .br-b { transition-delay: 0.24s; }
+  .bg.visible .br:nth-child(4) .br-b { transition-delay: 0.36s; }
+  .br-time { font-size: 0.76rem; font-family: var(--fd); font-weight: 600; flex-shrink: 0; width: 5.8rem; color: var(--muted); }
+  .br-time.old-t  { color: #b45309; }
+  .br-time.nb-t   { color: #c05621; }
+
+  .how { padding: 4rem 0; border-top: 1px solid var(--border); }
+  .how h2 { font-family: var(--fd); font-weight: 700; font-size: 1.4rem; color: var(--bright); margin-bottom: 1.5rem; }
+  .how-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 1.5rem; }
+  .how-card {
+    padding: 1.5rem; background: var(--surface); border-radius: 8px; border: 1px solid var(--border);
+  }
+  .how-card h3 { font-size: 0.9rem; color: var(--bright); margin-bottom: 0.4rem; }
+  .how-card p { font-size: 0.78rem; color: var(--muted); line-height: 1.5; }
+  .how-card code { background: rgba(255,184,0,0.1); padding: 0.05rem 0.3rem; border-radius: 3px; font-size: 0.72rem; color: var(--bright); }
+  .how-card .num { font-family: var(--fd); font-weight: 800; font-size: 1.4rem; color: var(--gold); margin-bottom: 0.3rem; }
+
+  .method { padding: 4rem 0; border-top: 1px solid var(--border); }
+  .method h2 { font-family: var(--fd); font-weight: 700; font-size: 1.4rem; color: var(--bright); margin-bottom: 0.5rem; }
+  .method-sub { font-size: 0.8rem; color: var(--dim); margin-bottom: 1.5rem; }
+  .method table { width: 100%; border-collapse: collapse; font-size: 0.82rem; }
+  .method th { text-align: left; padding: 0.6rem 0.8rem; border-bottom: 2px solid var(--border); color: var(--muted); font-weight: 500; }
+  .method td { padding: 0.6rem 0.8rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .method td code { font-size: 0.75rem; background: var(--surface); padding: 0.1rem 0.35rem; border-radius: 3px; }
+
+  footer { padding: 3rem 0; border-top: 1px solid var(--border); text-align: center; font-size: 0.75rem; color: var(--dim); }
+  footer a { color: var(--muted); }
+
+  @media (max-width: 760px) {
+    .wrap { padding: 0 1.1rem; }
+    nav { align-items: flex-start; gap: 1rem; }
+    .stat-grid { grid-template-columns: 1fr; }
+    .br { display: block; }
+    .br-l { display: block; width: auto; text-align: left; margin-bottom: 0.25rem; }
+    .br-time { display: block; width: auto; margin-top: 0.25rem; }
+    .method { overflow-x: auto; }
+    .method table { min-width: 680px; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a class="nav-mark" href="/">nanobrew</a>
+    <div class="nav-links">
+      <a href="https://github.com/justrach/nanobrew">GitHub</a>
+      <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/v0.1.198">v0.1.198</a>
+      <a href="/v0.1.193">v0.1.193</a>
+      <a href="/v0.1.192">v0.1.192</a>
+      <a href="/v0.1.191">v0.1.191</a>
+    </div>
+  </nav>
+
+  <section class="hero">
+    <h1>nanobrew v0.1.198</h1>
+    <div class="hero-claim"><span class="hero-highlight">Our own bottle registry.</span> <span class="hero-highlight">Scanned for CVEs.</span></div>
+    <div class="hero-speed"><span class="hero-highlight">Still 100x+ faster than Homebrew.</span></div>
+    <p class="hero-lead"><strong>nanobrew now serves its own bottles.</strong> Covered packages download from <code>ghcr.io/justrach/nb-bottles</code>, our own registry, instead of leaning on Homebrew's servers. Every pinned bottle is SBOM'd and CVE-scanned, with automatic revoke-and-fallback when one goes bad.</p>
+    <p>macOS arm64 and x86_64 tarballs are Developer-ID-signed, hardened-runtime, and notarized by Apple.</p>
+    <code>nb update  # to v0.1.198</code>
+  </section>
+
+  <section class="stat">
+    <div class="stat-grid">
+      <div class="stat-card">
+        <span class="stat-num">231</span>
+        <span class="stat-label">Homebrew bottles mirrored byte-for-byte to our own GHCR registry, across all four platforms</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-num">~800x</span>
+        <span class="stat-label">faster ELF relocate phase on Linux (4,777ms to 6ms) with native in-place rewriting</span>
+      </div>
+      <div class="stat-card">
+        <span class="stat-num">37</span>
+        <span class="stat-label">new verified packages with pinned bottle digests for every platform</span>
+      </div>
+    </div>
+    <p class="stat-ctx"><em>Warm install resolve</em> dropped 147ms to 1.8ms (~80x). <em>Cached-bottle reinstall</em> dropped 534ms to 4ms (~130x). The gap over Homebrew (119.4x on the yt-dlp target reinstall) carries over from the v0.1.192 install path and only widens with these warm-path wins.</p>
+  </section>
+
+  <section class="bench">
+    <h2>This release vs recent nanobrew</h2>
+    <p class="bench-sub">Before and after, measured within nanobrew. macOS Apple Silicon and Linux aarch64, representative runs. Lower is better; the gold bar is v0.1.198.</p>
+
+    <div class="bg" data-observe>
+      <div class="bg-header">
+        <div class="bg-title">ELF relocate phase <span>Linux, fresh machine</span></div>
+        <div class="bg-badge">~800x faster</div>
+      </div>
+      <div class="br"><div class="br-l">before (patchelf)</div><div class="br-t"><div class="br-b old" style="width:100%"></div></div><span class="br-time old-t">4,777ms</span></div>
+      <div class="br"><div class="br-l">v0.1.198 native</div><div class="br-t"><div class="br-b nb" style="width:0.4%"></div></div><span class="br-time nb-t">6ms</span></div>
+    </div>
+
+    <div class="bg" data-observe>
+      <div class="bg-header">
+        <div class="bg-title">cached-bottle reinstall <span>macOS</span></div>
+        <div class="bg-badge">~130x faster</div>
+      </div>
+      <div class="br"><div class="br-l">before</div><div class="br-t"><div class="br-b old" style="width:100%"></div></div><span class="br-time old-t">534ms</span></div>
+      <div class="br"><div class="br-l">v0.1.198</div><div class="br-t"><div class="br-b nb" style="width:0.75%"></div></div><span class="br-time nb-t">4ms</span></div>
+    </div>
+
+    <div class="bg" data-observe>
+      <div class="bg-header">
+        <div class="bg-title">warm install resolve <span>non-registry token</span></div>
+        <div class="bg-badge">~80x faster</div>
+      </div>
+      <div class="br"><div class="br-l">before</div><div class="br-t"><div class="br-b old" style="width:100%"></div></div><span class="br-time old-t">147ms</span></div>
+      <div class="br"><div class="br-l">v0.1.198</div><div class="br-t"><div class="br-b nb" style="width:1.2%"></div></div><span class="br-time nb-t">1.8ms</span></div>
+    </div>
+
+    <div class="bg" data-observe>
+      <div class="bg-header">
+        <div class="bg-title">Linux cold install <span>hexyl, fresh machine</span></div>
+        <div class="bg-badge">~5x faster</div>
+      </div>
+      <div class="br"><div class="br-l">before</div><div class="br-t"><div class="br-b old" style="width:100%"></div></div><span class="br-time old-t">5,876ms</span></div>
+      <div class="br"><div class="br-l">v0.1.198</div><div class="br-t"><div class="br-b nb" style="width:18.9%"></div></div><span class="br-time nb-t">1,110ms</span></div>
+    </div>
+  </section>
+
+  <section class="bench">
+    <h2>vs Homebrew and zerobrew: yt-dlp on a clean macOS runner</h2>
+    <p class="bench-sub">Sandboxed macOS Actions benchmark. Target reinstall means dependencies and the cache/store were primed, then only <code>yt-dlp</code> was removed and reinstalled as <code>nb install --shims yt-dlp</code>. The install path is unchanged since v0.1.192, so these carry forward, and v0.1.198's warm-path wins only widen the gap.</p>
+
+    <div class="bg" data-observe>
+      <div class="bg-header">
+        <div class="bg-title">target reinstall <span>lower is better</span></div>
+        <div class="bg-badge">119.4x faster than Homebrew</div>
+      </div>
+      <div class="br"><div class="br-l">Homebrew 5.1.7</div><div class="br-t"><div class="br-b apt" style="width:100%"></div></div><span class="br-time">5827.7ms</span></div>
+      <div class="br"><div class="br-l">zerobrew 0.2.1</div><div class="br-t"><div class="br-b zb" style="width:31.4%"></div></div><span class="br-time">1830.7ms</span></div>
+      <div class="br"><div class="br-l">nb v0.1.198</div><div class="br-t"><div class="br-b nb" style="width:0.84%"></div></div><span class="br-time nb-t">48.8ms</span></div>
+    </div>
+
+    <div class="bg" data-observe>
+      <div class="bg-header">
+        <div class="bg-title">already installed no-op <span>lower is better</span></div>
+        <div class="bg-badge">158x faster than Homebrew</div>
+      </div>
+      <div class="br"><div class="br-l">zerobrew 0.2.1</div><div class="br-t"><div class="br-b zb" style="width:100%"></div></div><span class="br-time">1083.2ms</span></div>
+      <div class="br"><div class="br-l">Homebrew 5.1.7</div><div class="br-t"><div class="br-b apt" style="width:84.6%"></div></div><span class="br-time">916.9ms</span></div>
+      <div class="br"><div class="br-l">nb v0.1.198</div><div class="br-t"><div class="br-b nb" style="width:0.54%"></div></div><span class="br-time nb-t">5.8ms</span></div>
+    </div>
+  </section>
+
+  <section class="bench">
+    <h2>New: our own bottle registry</h2>
+    <p class="bench-sub">Everything lives under <code>ghcr.io/justrach/nb-bottles</code>. Public GHCR is free for storage and egress, so running it costs $0. Bottles are content-addressed, so a mirror that preserves digests is transparently trustworthy: nanobrew verifies the same sha256 either way.</p>
+
+    <div class="bg">
+      <div class="bg-title">Tier 1: mirror</div>
+      <div class="bg-note">Byte-identical copies of all 231 Homebrew bottles we already pin, four platforms each. Digests are unchanged, so existing registry records work against the mirror with zero edits. This is insurance against upstream garbage-collection, renames, and outages. One env var, <code>NANOBREW_BOTTLE_DOMAIN=https://ghcr.io/v2/justrach/nb-bottles</code>, moves the whole fleet over.</div>
+    </div>
+
+    <div class="bg">
+      <div class="bg-title">Tier 2: repackage</div>
+      <div class="bg-note">Upstream <code>github_release</code> binaries (ripgrep, fd, bat, jq, gh, and friends) re-laid into bottle form and published under our namespace. They carry no Homebrew placeholders, so the relocate phase does nothing and they get the fastest install path nanobrew has: blob cache, store, copy-on-write materialize, link. These pull from our registry by default.</div>
+    </div>
+
+    <div class="bg">
+      <div class="bg-title">Why it matters</div>
+      <div class="bg-note">A metadata mirror is not independence. The bottle, the bytes you actually install and run, is the real dependency. For covered packages, those bytes now come from infrastructure we control, digest-verified identical to what Homebrew pins. Homebrew's bottle host can go down and your covered installs keep working.</div>
+    </div>
+  </section>
+
+  <section class="bench">
+    <h2>Supply-chain security</h2>
+    <p class="bench-sub">The part Homebrew does not do. Every pinned bottle gets a real supply-chain pass, and a weekly CI cron rescans the whole fleet against fresh CVE data, opening a security issue on any hit.</p>
+
+    <div class="bg">
+      <div class="bg-title">CVE scanning</div>
+      <div class="bg-note"><code>syft</code> builds an SBOM for each pinned bottle (all four platforms, Linux included), <code>grype</code> matches it against CVE data, and the job fails at or above the gate (default high). The first full run already caught a real one: <code>gh</code> 2.91.0 ships a Go 1.26.2 standard library with HIGH-severity CVEs.</div>
+    </div>
+
+    <div class="bg">
+      <div class="bg-title">Revoke and fallback</div>
+      <div class="bg-note"><code>revoke</code> marks a bad pin and records the previous known-good version as a fallback. The resolver then installs that fallback and prints a warning naming the advisory; a revoked pin with no fallback fails closed. No binary release is needed, since revocations propagate through the registry in about six hours. <code>nb doctor</code> flags any machine that already installed a now-revoked version, with the exact fix.</div>
+    </div>
+
+    <div class="bg">
+      <div class="bg-title">Provenance and immutability</div>
+      <div class="bg-note"><code>attest</code> ranks each upstream asset by the strongest vouching available (github-attestation, then checksum-file, then pin-only) and dies on any disagreement with upstream's published checksums. Version tags are immutable: a different blob can never be re-tagged under an existing version. SBOMs and scan reports ride along on each bottle's GHCR manifest as OCI referrer artifacts, so anyone can inspect a bottle's record without trusting our CI logs.</div>
+    </div>
+  </section>
+
+  <section class="bench">
+    <h2>What got faster</h2>
+    <p class="bench-sub">The performance work behind the bars above.</p>
+
+    <div class="bg">
+      <div class="bg-title">Native ELF relocation</div>
+      <div class="bg-note">Linux relocation is now native and in-place instead of shelling out to <code>patchelf</code>. A short <code>/opt/nb</code> symlink makes every <code>@@HOMEBREW_*@@</code> replacement shorter than its placeholder, so RPATH/RUNPATH, DT_NEEDED, PT_INTERP, and <code>.rodata</code> strings are all rewritten in one pass. No subprocesses, and no <code>apt-get install patchelf</code> bootstrap, which alone cost about 4.8s on every fresh machine and made installs fail where no package manager existed.</div>
+    </div>
+
+    <div class="bg">
+      <div class="bg-title">Warm resolve: 147ms to 1.8ms</div>
+      <div class="bg-note">Resolving any package outside the verified-upstream registry used to re-download the roughly 650KB registry from GitHub on every resolve. A fresh registry cache is now authoritative for misses too, and a fetched registry is cached even when the requested token is not in it, so non-registry resolves stop re-paying the remote fetch on every call.</div>
+    </div>
+
+    <div class="bg">
+      <div class="bg-title">Cached-bottle reinstall: 534ms to 4ms</div>
+      <div class="bg-note">The batch-shared GHCR bearer token was being fetched whenever any package had a ghcr.io bottle URL, even when every blob was already in the local cache. It is now fetched only when at least one bottle actually needs downloading.</div>
+    </div>
+
+    <div class="bg">
+      <div class="bg-title">TLS out of the box, and more</div>
+      <div class="bg-note">A native post-install step wires <code>cert.pem</code> for brewed openssl/gnutls so TLS verification works on fresh Linux machines &middot; <code>@@HOMEBREW_PERL@@</code> shebangs are relocated so perl-backed tools run &middot; download retries are hardened with a transient-only whitelist and per-worker tmp paths &middot; <code>NB_BENCH=1</code> now reports per-phase timings (extract, materialize, relocate, link, postinstall) for each package.</div>
+    </div>
+  </section>
+
+  <section class="how">
+    <h2>Coverage this release</h2>
+    <p class="bench-sub" style="margin-bottom:1.6rem">37 new verified-upstream packages with pinned bottle digests for all four platforms, on top of the 100/100 top formulae and 100/100 top casks already covered.</p>
+    <div class="how-grid">
+      <div class="how-card"><h3>Servers and infra</h3><p>nginx, qemu, colima, postgresql@14, postgresql@16, postgresql@18, mysql, tailscale</p></div>
+      <div class="how-card"><h3>Languages and build</h3><p>node@24, rustup, gradle, poetry, composer, automake, expat, lcov</p></div>
+      <div class="how-card"><h3>CLI and shells</h3><p>bash, zsh, eza, btop, hexyl, httpie, direnv, aria2, rsync, telnet, ghostscript</p></div>
+      <div class="how-card"><h3>Security and devops</h3><p>sops, gitleaks, mkcert, kubeconform, flyctl, fastlane, xclogparser, xcresultparser, whisper-cpp, summarize</p></div>
+    </div>
+  </section>
+
+  <section class="how">
+    <h2>Release artifacts</h2>
+    <div class="how-grid">
+      <div class="how-card">
+        <div class="num">arm64</div>
+        <h3>macOS arm64</h3>
+        <p><code>nb-arm64-apple-darwin.tar.gz</code><br>signed (Developer ID Application: Rachit Pradhan, WWP9DLJ27P), hardened-runtime, notarized by Apple.</p>
+      </div>
+      <div class="how-card">
+        <div class="num">x86_64</div>
+        <h3>macOS x86_64</h3>
+        <p><code>nb-x86_64-apple-darwin.tar.gz</code><br>built against <code>minos 12.0</code>, signed, hardened-runtime, notarized.</p>
+      </div>
+      <div class="how-card">
+        <div class="num">arm64</div>
+        <h3>Linux aarch64-musl</h3>
+        <p><code>nb-aarch64-linux.tar.gz</code><br>statically linked single binary, no runtime deps.</p>
+      </div>
+      <div class="how-card">
+        <div class="num">x86_64</div>
+        <h3>Linux x86_64-musl</h3>
+        <p><code>nb-x86_64-linux.tar.gz</code><br>statically linked single binary, no runtime deps.</p>
+      </div>
+    </div>
+  </section>
+
+  <section class="method">
+    <h2>How to read this release</h2>
+    <p class="method-sub">v0.1.198 is an infrastructure and security release that also lands real speed wins.</p>
+    <table>
+      <tr><th>Question</th><th>Answer</th></tr>
+      <tr><td>Should I upgrade from v0.1.193?</td><td>Yes. You get the own-registry mirror, CVE scanning with revoke-and-fallback, native ELF relocation, and faster warm installs.</td></tr>
+      <tr><td>Do covered packages still depend on Homebrew's servers?</td><td>No. Their bottles are mirrored byte-for-byte to <code>ghcr.io/justrach/nb-bottles</code> (Tier 1) or repackaged under our namespace (Tier 2). The long-tail formula metadata still falls back to the Homebrew API.</td></tr>
+      <tr><td>What happens if a pinned bottle gets a CVE?</td><td><code>revoke</code> records the last known-good version, the resolver installs that fallback with a warning, and it propagates through the registry without a binary release. <code>nb doctor</code> flags machines already on the bad version.</td></tr>
+      <tr><td>Did anything get faster?</td><td>Yes. The Linux relocate phase is about 800x faster, warm resolve about 80x, and cached reinstalls about 130x. The lead over Homebrew (100x+) is unchanged or wider.</td></tr>
+      <tr><td>Are macOS tarballs notarized?</td><td>Yes, both arm64 and x86_64: Developer-ID-signed, hardened-runtime, notarized by Apple.</td></tr>
+    </table>
+  </section>
+
+  <footer>
+    <p>nanobrew v0.1.198 &middot; <a href="https://github.com/justrach/nanobrew">GitHub</a> &middot; <a href="https://github.com/justrach/nanobrew/releases/tag/v0.1.198">Release notes</a> &middot; Apache-2.0</p>
+  </footer>
+</div>
+<script>
+const obs = new IntersectionObserver(es => es.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); }), { threshold: 0.2 });
+document.querySelectorAll('[data-observe]').forEach(el => obs.observe(el));
+</script>
+</body>
+</html>`;
+
 export default {
   async fetch(request) {
     const url = new URL(request.url);
@@ -2585,7 +3009,7 @@ export default {
         });
         if (!gh.ok) {
           // Rate limited — return last known version
-          return new Response("0.1.193", {
+          return new Response("0.1.198", {
             headers: {
               "content-type": "text/plain; charset=utf-8",
               "cache-control": "public, max-age=60",
@@ -2607,7 +3031,7 @@ export default {
         await cache.put(cacheKey, resp.clone());
         return resp;
       } catch {
-        return new Response("0.1.193", {
+        return new Response("0.1.198", {
           headers: {
             "content-type": "text/plain; charset=utf-8",
             "cache-control": "public, max-age=60",
@@ -2621,7 +3045,7 @@ export default {
       return new Response(LANDING_HTML, {
         headers: {
           "content-type": "text/html; charset=utf-8",
-          "cache-control": "public, max-age=3600",
+          "cache-control": "public, max-age=300",
         },
       });
     }
@@ -2631,6 +3055,15 @@ export default {
         headers: {
           "content-type": "text/html; charset=utf-8",
           "cache-control": "public, max-age=3600",
+        },
+      });
+    }
+
+    if (url.pathname === "/v0.1.198" || url.pathname === "/v-0.1.198") {
+      return new Response(RELEASE_198_HTML, {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "public, max-age=86400",
         },
       });
     }
