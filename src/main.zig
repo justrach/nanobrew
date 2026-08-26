@@ -545,9 +545,8 @@ fn runLocalRbInstall(alloc: std.mem.Allocator, path: []const u8) void {
     var probe_result: ProbeResult = .not_run;
     const local_formulae = [_]nb.formula.Formula{f};
     const local_requested = [_][]const u8{f.name};
-    // Single-formula path: no batch sharing benefit — pass nulls so the
-    // worker creates its own one-shot client (existing behavior).
-    fullInstallOne(alloc, f, &had_error, &phase, &fail_reason, &probe_result, false, &local_requested, &local_formulae, null, null);
+    // Single-formula path: no batch token sharing benefit — pass null.
+    fullInstallOne(alloc, f, &had_error, &phase, &fail_reason, &probe_result, false, &local_requested, &local_formulae, null);
 
     if (had_error.load(.acquire)) {
         if (fail_reason) |why| {
@@ -688,7 +687,7 @@ fn resolveVersionPin(
     const spec = arg[at + 1 ..];
     if (base.len == 0 or !looksLikeVersion(spec)) return null;
 
-    const client: *std.http.Client = if (resolver.client != null) &resolver.client.? else return null;
+    const client: *std.http.Client = if (resolver.client) |*c| c.ptr() else return null;
 
     // Disambiguate: if `name@spec` resolves as a real (versioned) formula, this
     // is not a version pin — let normal resolution handle it (e.g. python@3.11).
@@ -1021,13 +1020,12 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
 
         var had_error = std.atomic.Value(bool).init(false);
 
-        // Batch-scoped HTTP client + GHCR token: one TLS connection pool
-        // shared across every install worker, and one bearer-token lookup
-        // shared across every ghcr.io bottle download. Workers borrow these
-        // read-only; the pool lives only for the duration of `runInstall`.
-        var shared_client: std.http.Client = .{ .allocator = alloc, .io = paths.safe_io };
-        defer shared_client.deinit();
+        // Batch-scoped GHCR token: one bearer-token lookup shared across
+        // every ghcr.io bottle download. Each install worker owns its own
+        // std.http.Client because individual requests are not thread-safe.
         const shared_ghcr_token: ?[]const u8 = blk: {
+            var token_client = nb.proxy.Client.init(alloc, paths.safe_io);
+            defer token_client.deinit();
             for (install_order) |f_check| {
                 if (!std.mem.startsWith(u8, f_check.bottleUrl(), "https://ghcr.io")) continue;
                 // Only pay the token round trip when some ghcr bottle will
@@ -1037,7 +1035,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
                 var tok_blob_buf: [512]u8 = undefined;
                 const tok_blob_path = std.fmt.bufPrint(&tok_blob_buf, "/opt/nanobrew/cache/blobs/{s}", .{f_check.bottle_sha256}) catch break :blk null;
                 if (fileExists(tok_blob_path)) continue;
-                break :blk nb.downloader.fetchGhcrToken(alloc, &shared_client, f_check.bottleUrl()) catch null;
+                break :blk nb.downloader.fetchGhcrToken(alloc, token_client.ptr(), f_check.bottleUrl()) catch null;
             }
             break :blk null;
         };
@@ -1077,7 +1075,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
                 slots.items[idx].handle.join();
                 _ = slots.orderedRemove(idx);
             }
-            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error, &phases[pi], &reasons[pi], &probe_results[pi], use_shims, formulae.items, all_formulae, &shared_client, shared_ghcr_token }) catch {
+            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error, &phases[pi], &reasons[pi], &probe_results[pi], use_shims, formulae.items, all_formulae, shared_ghcr_token }) catch {
                 reasons[pi] = "could not spawn worker thread";
                 had_error.store(true, .release);
                 phases[pi].store(@intFromEnum(Phase.failed), .release);
@@ -1434,10 +1432,9 @@ fn downloadFailureReason(err: anyerror) []const u8 {
 /// Full per-package pipeline: download → extract → materialize → relocate → link
 /// Runs in its own thread — no barriers between phases.
 ///
-/// `shared_client` / `shared_ghcr_token`, when non-null, route the bottle
-/// download through a batch-wide `std.http.Client` so all install workers
-/// share its TLS connection pool (avoiding a fresh handshake per package)
-/// and skip per-package GHCR token lookups.
+/// `shared_ghcr_token`, when non-null, avoids a redundant GHCR token lookup
+/// for each bottle. Each invocation owns its HTTP client because individual
+/// std.http.Client requests are not thread-safe.
 fn fullInstallOne(
     alloc: std.mem.Allocator,
     f: nb.formula.Formula,
@@ -1450,7 +1447,6 @@ fn fullInstallOne(
     use_shims: bool,
     requested: []const []const u8,
     all_formulae: []const nb.formula.Formula,
-    shared_client: ?*std.http.Client,
     shared_ghcr_token: ?[]const u8,
 ) void {
     const stderr = StderrWriter{};
@@ -1523,13 +1519,9 @@ fn fullInstallOne(
                 .target_kind = .formula,
                 .target_name = f.name,
             };
-            // Prefer the batch-shared client+token when runInstall provided
-            // one: keeps the TLS connection pool warm across workers and
-            // skips a per-package GHCR token lookup.
-            const dl_result = if (shared_client) |c|
-                nb.downloader.downloadOneWithClient(alloc, c, dl_req, shared_ghcr_token)
-            else
-                nb.downloader.downloadOne(alloc, dl_req);
+            var client = nb.proxy.Client.init(alloc, paths.safe_io);
+            defer client.deinit();
+            const dl_result = nb.downloader.downloadOneWithClient(alloc, client.ptr(), dl_req, shared_ghcr_token);
             dl_result catch |err| {
                 fail_reason.* = downloadFailureReason(err);
                 stderr.print("nb: {s}: download failed: {s} ({s})\n", .{ f.name, @errorName(err), fail_reason.*.? }) catch {};
@@ -2162,7 +2154,7 @@ fn runLeaves(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     const leavesWorkerFn = struct {
         fn run(ctx: LeavesCtx) void {
-            var client: std.http.Client = .{ .allocator = ctx.alloc_, .io = g_io };
+            var client = nb.proxy.Client.init(ctx.alloc_, g_io);
             defer client.deinit();
 
             while (true) {
@@ -2174,7 +2166,7 @@ fn runLeaves(alloc: std.mem.Allocator, args: []const []const u8) void {
                 // snapshot loaded successfully. Local per-name caches still get
                 // first refusal for taps and old/renamed formulae.
                 const formula = nb.api_client.fetchFormulaLocal(ctx.alloc_, keg.name) orelse
-                    (nb.api_client.fetchFormulaWithClientOptions(ctx.alloc_, &client, keg.name, .{
+                    (nb.api_client.fetchFormulaWithClientOptions(ctx.alloc_, client.ptr(), keg.name, .{
                         .check_upstream_freshness = !ctx.bulk_snapshot_loaded_,
                     }) catch continue);
                 ctx.slots_[idx].formula = formula;
@@ -2680,7 +2672,7 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
     defer if (registry) |*r| r.deinit(alloc);
     var db: ?nb.database.Database = nb.database.Database.open(alloc) catch null;
     defer if (db) |*d| d.close();
-    var client: std.http.Client = .{ .allocator = alloc, .io = g_io };
+    var client = nb.proxy.Client.init(alloc, g_io);
     defer client.deinit();
 
     for (names.items) |name| {
@@ -2690,7 +2682,7 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
             // Try formula first; on failure, try cask as fallback for a hint.
             const f = nb.api_client.fetchFormulaWithClientAndUpstreamRegistry(
                 alloc,
-                &client,
+                client.ptr(),
                 name,
                 if (registry) |*r| r else null,
             ) catch {
@@ -3140,7 +3132,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
 
     const checkWorkerFn = struct {
         fn run(ctx: CheckCtx) void {
-            var client: std.http.Client = .{ .allocator = ctx.alloc_, .io = g_io };
+            var client = nb.proxy.Client.init(ctx.alloc_, g_io);
             defer client.deinit();
 
             while (true) {
@@ -3163,7 +3155,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
                     // A proven fresh-bulk miss may be a tap or a verified-
                     // upstream-only token. If the index failed to load, retain
                     // the normal live freshness cross-check for correctness.
-                    const formula = nb.api_client.fetchFormulaWithClientOptions(ctx.alloc_, &client, item.name, .{
+                    const formula = nb.api_client.fetchFormulaWithClientOptions(ctx.alloc_, client.ptr(), item.name, .{
                         .check_upstream_freshness = !request.proven_bulk_miss,
                     }) catch continue;
                     defer formula.deinit(ctx.alloc_);
@@ -3488,6 +3480,8 @@ fn runUpdate(alloc: std.mem.Allocator) void {
     };
 
     // Download SHA256 checksum (native HTTP with curl/wget fallback).
+    // The fallback tools inherit HTTP(S)_PROXY/ALL_PROXY from the parent
+    // environment; do not duplicate those settings on their command lines.
     // The native std.http client can fail on GitHub's CDN redirect chain
     // (signed Azure blob URL); fall back to curl, then wget.
     stdout.print("==> Verifying checksum...\n", .{}) catch {};
@@ -3568,7 +3562,8 @@ fn runUpdate(alloc: std.mem.Allocator) void {
         std.process.exit(1);
     };
 
-    // Download tarball to temp file (native HTTP with curl/wget fallback)
+    // Download tarball to temp file (native HTTP with curl/wget fallback).
+    // curl and wget inherit the process environment, including proxy variables.
     var update_telemetry = nb.telemetry.DownloadEvent.start(.self_update, "nanobrew");
     const download_ok: bool = blk: {
         nb.fetch.download(alloc, tarball_url, tmp_tar) catch {
@@ -5206,7 +5201,7 @@ fn runOutdated(alloc: std.mem.Allocator) void {
         discoverInstallSources(alloc, deb_arch, &sources_buf, &maybe_discovered);
         if (sources_buf.items.len == 0) break :deb_check;
 
-        var client: std.http.Client = .{ .allocator = alloc, .io = g_io };
+        var client = nb.proxy.Client.init(alloc, g_io);
         defer client.deinit();
 
         var all_pkgs_list: std.ArrayList(nb.deb_index.DebPackage) = .empty;
@@ -5225,7 +5220,7 @@ fn runOutdated(alloc: std.mem.Allocator) void {
                     src.mirror, src.suite, component, deb_arch,
                 }) catch continue;
 
-                const index_gz = httpGetToMemory(alloc, &client, index_url) orelse continue;
+                const index_gz = httpGetToMemory(alloc, client.ptr(), index_url) orelse continue;
                 defer alloc.free(index_gz);
 
                 const index_data = nb.deb_extract.decompressGzip(alloc, index_gz) catch continue;
@@ -5789,9 +5784,9 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
         stdout.print("      {s} {s} ({d} comp)\n", .{ src.mirror, src.suite, src.components.len }) catch {};
     }
 
-    // Native HTTP client — shared across all .deb downloads (connection reuse)
-    // (Index fetch uses per-thread clients since std.http.Client is not thread-safe)
-    var client: std.http.Client = .{ .allocator = alloc, .io = g_io };
+    // Native HTTP client for package-index requests. Download workers use
+    // independent clients because std.http.Client requests are not thread-safe.
+    var client = nb.proxy.Client.init(alloc, g_io);
     defer client.deinit();
 
     // Fetch and merge package indices from all (source, component) pairs.
@@ -5826,7 +5821,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
                 src.mirror, src.suite, component, arch,
             }) catch continue;
 
-            const index_gz = httpGetToMemory(alloc, &client, index_url) orelse {
+            const index_gz = httpGetToMemory(alloc, client.ptr(), index_url) orelse {
                 stderr.print("nb: warning: failed to fetch {s} {s}/{s}\n", .{ src.mirror, src.suite, component }) catch {};
                 continue;
             };
@@ -5953,7 +5948,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
             const debWorkerFn = struct {
                 fn run(ctx: DebWorkerCtx) void {
                     // One HTTP client per thread — reuses TCP+TLS connections
-                    var dl_client: std.http.Client = .{ .allocator = ctx.alloc_, .io = paths.safe_io };
+                    var dl_client = nb.proxy.Client.init(ctx.alloc_, paths.safe_io);
                     defer dl_client.deinit();
 
                     while (true) {
@@ -5965,11 +5960,11 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
                         const name = item.name_storage[0..item.name_len];
 
                         var telemetry_event = nb.telemetry.DownloadEvent.start(.artifact, name);
-                        downloadDebWithSha256(&dl_client, url, item.sha256, dest, ctx.verify) catch {
+                        downloadDebWithSha256(dl_client.ptr(), url, item.sha256, dest, ctx.verify) catch {
                             // Retry once with fresh client (connection may have been reset)
-                            var retry_client: std.http.Client = .{ .allocator = ctx.alloc_, .io = paths.safe_io };
+                            var retry_client = nb.proxy.Client.init(ctx.alloc_, paths.safe_io);
                             defer retry_client.deinit();
-                            downloadDebWithSha256(&retry_client, url, item.sha256, dest, ctx.verify) catch {
+                            downloadDebWithSha256(retry_client.ptr(), url, item.sha256, dest, ctx.verify) catch {
                                 telemetry_event.fail();
                                 ctx.had_error.store(true, .release);
                                 continue;
@@ -6293,7 +6288,7 @@ fn runDebUpgrade(alloc: std.mem.Allocator) void {
         return;
     }
 
-    var client: std.http.Client = .{ .allocator = alloc, .io = g_io };
+    var client = nb.proxy.Client.init(alloc, g_io);
     defer client.deinit();
 
     var all_pkgs_list: std.ArrayList(nb.deb_index.DebPackage) = .empty;
@@ -6312,7 +6307,7 @@ fn runDebUpgrade(alloc: std.mem.Allocator) void {
                 src.mirror, src.suite, component, arch,
             }) catch continue;
 
-            const index_gz = httpGetToMemory(alloc, &client, index_url) orelse continue;
+            const index_gz = httpGetToMemory(alloc, client.ptr(), index_url) orelse continue;
             defer alloc.free(index_gz);
 
             const index_data = nb.deb_extract.decompressGzip(alloc, index_gz) catch continue;
@@ -6588,12 +6583,9 @@ fn checkForUpdate(alloc: std.mem.Allocator) void {
     // futures in `client.deinit()` can SIGSEGV during group teardown on Zig
     // 0.16.0 (see #298). A single-threaded Io runs the request inline and
     // spawns no cancellable futures, so teardown is crash-free.
-    var update_client: std.http.Client = .{
-        .allocator = alloc,
-        .io = std.Io.Threaded.global_single_threaded.io(),
-    };
+    var update_client = nb.proxy.Client.init(alloc, std.Io.Threaded.global_single_threaded.io());
     defer update_client.deinit();
-    const body = nb.fetch.getWithClient(alloc, &update_client, "https://nanobrew.trilok.ai/version") catch return;
+    const body = nb.fetch.getWithClient(alloc, update_client.ptr(), "https://nanobrew.trilok.ai/version") catch return;
     defer alloc.free(body);
     const latest_ver = nb.version.normalizeVersion(body);
     if (latest_ver.len == 0 or std.mem.eql(u8, latest_ver, "error")) return;

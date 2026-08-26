@@ -5,6 +5,7 @@
 
 const std = @import("std");
 const paths = @import("../platform/paths.zig");
+const proxy = @import("proxy.zig");
 const flate = std.compress.flate;
 
 const DOWNLOAD_STREAM_BUFFER_SIZE = 256 * 1024;
@@ -68,9 +69,9 @@ fn requestOptions(
 /// Caller must free the returned slice with `alloc.free()`.
 /// Follows up to 5 redirects. Auto-decompresses gzip. Returns error on non-200 status.
 pub fn get(alloc: std.mem.Allocator, url: []const u8) ![]u8 {
-    var client: std.http.Client = .{ .allocator = alloc, .io = paths.safe_io };
+    var client = proxy.Client.init(alloc, paths.safe_io);
     defer client.deinit();
-    return getWithClient(alloc, &client, url);
+    return getWithClient(alloc, client.ptr(), url);
 }
 
 /// Fetch using an existing client (avoids repeated TLS setup).
@@ -80,9 +81,9 @@ pub fn getWithClient(alloc: std.mem.Allocator, client: *std.http.Client, url: []
 
 /// Fetch a URL with additional headers and return the response body as an owned slice.
 pub fn getWithHeaders(alloc: std.mem.Allocator, url: []const u8, extra_headers: []const std.http.Header) ![]u8 {
-    var client: std.http.Client = .{ .allocator = alloc, .io = paths.safe_io };
+    var client = proxy.Client.init(alloc, paths.safe_io);
     defer client.deinit();
-    return getWithClientHeaders(alloc, &client, url, extra_headers);
+    return getWithClientHeaders(alloc, client.ptr(), url, extra_headers);
 }
 
 /// Fetch using an existing client plus additional headers.
@@ -273,9 +274,9 @@ fn downloadCore(
 
 /// Fetch a URL and write the response body directly to a file.
 pub fn download(alloc: std.mem.Allocator, url: []const u8, dest_path: []const u8) !void {
-    var client: std.http.Client = .{ .allocator = alloc, .io = paths.safe_io };
+    var client = proxy.Client.init(alloc, paths.safe_io);
     defer client.deinit();
-    return downloadWithClient(&client, url, dest_path);
+    return downloadWithClient(client.ptr(), url, dest_path);
 }
 
 /// Download using an existing client.

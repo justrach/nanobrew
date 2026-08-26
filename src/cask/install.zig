@@ -9,6 +9,7 @@ const Artifact = @import("../api/cask.zig").Artifact;
 const PostField = @import("../api/cask.zig").PostField;
 const DownloadFormat = @import("../api/cask.zig").DownloadFormat;
 const paths = @import("../platform/paths.zig");
+const proxy = @import("../net/proxy.zig");
 const fetch = @import("../net/fetch.zig");
 const telemetry = @import("../telemetry/client.zig");
 const builtin = @import("builtin");
@@ -601,7 +602,7 @@ fn downloadArtifact(alloc: std.mem.Allocator, io: std.Io, url: []const u8, dest:
     }
 
     // Native HTTP download (no curl dependency)
-    var client: std.http.Client = .{ .allocator = alloc, .io = io };
+    var client = proxy.Client.init(alloc, io);
     defer client.deinit();
 
     // Some casks (e.g. segger-jlink) require an HTTP POST with a form body to
@@ -624,7 +625,7 @@ fn downloadArtifact(alloc: std.mem.Allocator, io: std.Io, url: []const u8, dest:
     if (cask.sha256.len == 0 or std.mem.eql(u8, cask.sha256, "no_check")) {
         var attempt: usize = 0;
         while (attempt < CASK_DOWNLOAD_ATTEMPTS) : (attempt += 1) {
-            fetch.downloadWithClientHeadersBody(&client, url, dest, req_headers, post_body) catch |err| {
+            fetch.downloadWithClientHeadersBody(client.ptr(), url, dest, req_headers, post_body) catch |err| {
                 std.Io.Dir.deleteFileAbsolute(lib_io, dest) catch {};
                 if (shouldRetryDownload(err, attempt)) {
                     writeDownloadRetryWarning(lib_io, cask, attempt);
@@ -644,7 +645,7 @@ fn downloadArtifact(alloc: std.mem.Allocator, io: std.Io, url: []const u8, dest:
 
     var attempt: usize = 0;
     while (attempt < CASK_DOWNLOAD_ATTEMPTS) : (attempt += 1) {
-        fetch.downloadWithClientSha256HeadersBody(&client, url, dest, cask.sha256, req_headers, post_body) catch |err| {
+        fetch.downloadWithClientSha256HeadersBody(client.ptr(), url, dest, cask.sha256, req_headers, post_body) catch |err| {
             std.Io.Dir.deleteFileAbsolute(lib_io, dest) catch {};
             if (shouldRetryDownload(err, attempt)) {
                 writeDownloadRetryWarning(lib_io, cask, attempt);

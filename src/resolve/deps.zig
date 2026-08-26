@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const paths = @import("../platform/paths.zig");
+const proxy = @import("../net/proxy.zig");
 const api = @import("../api/client.zig");
 const Formula = @import("../api/formula.zig").Formula;
 
@@ -16,14 +17,14 @@ pub const DepResolver = struct {
     alloc: std.mem.Allocator,
     formulae: std.StringHashMap(Formula),
     edges: std.StringHashMap([]const []const u8),
-    client: ?std.http.Client,
+    client: ?proxy.Client,
 
     pub fn init(alloc: std.mem.Allocator) DepResolver {
         return .{
             .alloc = alloc,
             .formulae = std.StringHashMap(Formula).init(alloc),
             .edges = std.StringHashMap([]const []const u8).init(alloc),
-            .client = std.http.Client{ .allocator = alloc, .io = paths.safe_io },
+            .client = proxy.Client.init(alloc, paths.safe_io),
         };
     }
 
@@ -57,7 +58,7 @@ pub const DepResolver = struct {
             if (!gop.found_existing) try frontier.append(self.alloc, name);
         }
 
-        const client_ptr: ?*std.http.Client = if (self.client != null) &self.client.? else null;
+        const client_ptr: ?*std.http.Client = if (self.client) |*c| c.ptr() else null;
         // BFS: each iteration fetches all frontier names in parallel
         while (frontier.items.len > 0) {
             const batch_size = frontier.items.len;
@@ -84,15 +85,12 @@ pub const DepResolver = struct {
 
                 const workerFn = struct {
                     fn run(ctx: WorkerCtx) void {
-                        var client: std.http.Client = .{
-                            .allocator = ctx.alloc_,
-                            .io = paths.safe_io,
-                        };
+                        var client = proxy.Client.init(ctx.alloc_, paths.safe_io);
                         defer client.deinit();
                         while (true) {
                             const idx = ctx.next_idx.fetchAdd(1, .monotonic);
                             if (idx >= ctx.items.len) break;
-                            ctx.results[idx] = api.fetchFormulaWithClient(ctx.alloc_, &client, ctx.items[idx]) catch null;
+                            ctx.results[idx] = api.fetchFormulaWithClient(ctx.alloc_, client.ptr(), ctx.items[idx]) catch null;
                         }
                     }
                 }.run;

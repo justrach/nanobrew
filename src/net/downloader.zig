@@ -13,6 +13,7 @@
 const std = @import("std");
 const store = @import("../store/store.zig");
 const paths = @import("../platform/paths.zig");
+const proxy = @import("proxy.zig");
 const telemetry = @import("../telemetry/client.zig");
 
 fn milliTimestamp() i64 {
@@ -77,7 +78,7 @@ pub const ParallelDownloader = struct {
         // One TLS client per worker — reused across all items this worker handles.
         // std.http.Client pools connections; successive requests to the same host
         // reuse the existing TLS session instead of a full handshake each time.
-        var client: std.http.Client = .{ .allocator = ctx.gpa, .io = paths.safe_io };
+        var client = proxy.Client.init(ctx.gpa, paths.safe_io);
         defer client.deinit();
 
         // Per-download arena: zero GPA mutex calls per allocation; single deinit at exit.
@@ -89,7 +90,7 @@ pub const ParallelDownloader = struct {
             if (idx >= ctx.items.len) break;
             defer _ = arena.reset(.retain_capacity);
             const t0 = if (ctx.bench) milliTimestamp() else @as(i64, 0);
-            downloadOneWithClient(arena.allocator(), &client, ctx.items[idx], ctx.preauth_token) catch {
+            downloadOneWithClient(arena.allocator(), client.ptr(), ctx.items[idx], ctx.preauth_token) catch {
                 ctx.had_error.store(true, .release);
             };
             if (ctx.bench) {
@@ -110,9 +111,9 @@ pub const ParallelDownloader = struct {
         // This replaces N per-download token fetches (disk open + optional HTTP RTT)
         // with a single fetch that all workers share read-only.
         const preauth_token: ?[]const u8 = blk: {
-            var tmp_client: std.http.Client = .{ .allocator = self.alloc };
+            var tmp_client = proxy.Client.init(self.alloc, paths.safe_io);
             defer tmp_client.deinit();
-            break :blk fetchGhcrToken(self.alloc, &tmp_client, self.queue.items[0].url) catch null;
+            break :blk fetchGhcrToken(self.alloc, tmp_client.ptr(), self.queue.items[0].url) catch null;
         };
         defer if (preauth_token) |t| self.alloc.free(t);
 
@@ -181,9 +182,9 @@ pub const StreamingInstaller = struct {
 
         // Pre-fetch the GHCR token once — same rationale as ParallelDownloader.
         const preauth_token: ?[]const u8 = blk: {
-            var tmp_client: std.http.Client = .{ .allocator = self.alloc };
+            var tmp_client = proxy.Client.init(self.alloc, paths.safe_io);
             defer tmp_client.deinit();
-            break :blk fetchGhcrToken(self.alloc, &tmp_client, to_fetch.items[0].url) catch null;
+            break :blk fetchGhcrToken(self.alloc, tmp_client.ptr(), to_fetch.items[0].url) catch null;
         };
         defer if (preauth_token) |t| self.alloc.free(t);
 
@@ -204,7 +205,7 @@ pub const StreamingInstaller = struct {
         const workerFn = struct {
             fn run(ctx: Ctx) void {
                 // Persistent client: 1 TLS handshake per worker, reused across all downloads.
-                var client: std.http.Client = .{ .allocator = ctx.gpa };
+                var client = proxy.Client.init(ctx.gpa, paths.safe_io);
                 defer client.deinit();
 
                 // Per-download arena for temporaries.
@@ -216,7 +217,7 @@ pub const StreamingInstaller = struct {
                     if (idx >= ctx.items.len) break;
                     defer _ = arena.reset(.retain_capacity);
                     const t0 = if (ctx.bench) milliTimestamp() else @as(i64, 0);
-                    downloadAndExtractOne(arena.allocator(), &client, ctx.items[idx], ctx.err, ctx.preauth_token);
+                    downloadAndExtractOne(arena.allocator(), client.ptr(), ctx.items[idx], ctx.err, ctx.preauth_token);
                     if (ctx.bench) {
                         std.debug.print("[nb-bench] pkg {s}: {d}ms\n", .{ ctx.items[idx].name, milliTimestamp() - t0 });
                     }
@@ -411,11 +412,11 @@ fn isRetryable(err: anyerror) bool {
 /// recorded once per logical download here (not per attempt) so retries don't
 /// inflate the failure count.
 ///
-/// Public so the install pipeline can route every bottle download through a
-/// single batch-scoped `std.http.Client` — the connection pool then hangs onto
-/// open TLS sessions and successive downloads avoid a fresh handshake.
-/// `preauth_token` is a read-only slice owned by the caller (shared across
-/// workers, replaces N per-download token lookups with one) — not freed here.
+/// Public so callers can route a bottle download through a client they own;
+/// worker pools can reuse that client for successive downloads without a fresh
+/// TLS handshake. A client must not be used by concurrent requests.
+/// `preauth_token` is a read-only slice owned by the caller (it can be shared
+/// across workers to replace N per-download token lookups) — not freed here.
 pub fn downloadOneWithClient(
     alloc: std.mem.Allocator,
     client: *std.http.Client,
@@ -599,11 +600,11 @@ fn downloadAttempt(
 }
 
 /// Public single-download entry point for callers without a persistent client.
-/// Workers should call downloadOneWithClient directly for connection reuse.
+/// Worker pools should call downloadOneWithClient directly for connection reuse.
 pub fn downloadOne(alloc: std.mem.Allocator, req: DownloadRequest) !void {
-    var client: std.http.Client = .{ .allocator = alloc, .io = paths.safe_io };
+    var client = proxy.Client.init(alloc, paths.safe_io);
     defer client.deinit();
-    return downloadOneWithClient(alloc, &client, req, null);
+    return downloadOneWithClient(alloc, client.ptr(), req, null);
 }
 
 fn fileExists(path: []const u8) bool {

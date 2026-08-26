@@ -4,6 +4,7 @@
 
 const std = @import("std");
 const paths = @import("../platform/paths.zig");
+const proxy = @import("../net/proxy.zig");
 const flate = std.compress.flate;
 
 pub const DEFAULT_REGISTRY_PATH = "registry/upstream.json";
@@ -965,11 +966,11 @@ fn envSlice(name: [*:0]const u8) ?[]const u8 {
 }
 
 fn fetchRemoteRegistryJson(alloc: std.mem.Allocator, url: []const u8) ![]u8 {
-    var client: std.http.Client = .{ .allocator = alloc, .io = paths.safe_io };
+    var client = proxy.Client.init(alloc, paths.safe_io);
     defer client.deinit();
 
     const uri = std.Uri.parse(url) catch return error.InvalidUrl;
-    var req = client.request(.GET, uri, .{
+    var req = client.ptr().request(.GET, uri, .{
         .redirect_behavior = @enumFromInt(3),
         .extra_headers = &.{
             .{ .name = "User-Agent", .value = "nanobrew-upstream-registry" },

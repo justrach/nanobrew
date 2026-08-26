@@ -1,6 +1,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const paths = @import("../platform/paths.zig");
+const proxy = @import("../net/proxy.zig");
 
 const DEFAULT_ENDPOINT = "https://backend.trilok.ai/v1/telemetry/system";
 const CONFIG_PATH = paths.CONFIG_DIR ++ "/telemetry";
@@ -194,17 +195,14 @@ fn sendPayload(payload: Payload) !void {
     const body = try formatPayload(&body_buf, payload);
 
     const uri = std.Uri.parse(endpoint()) catch return error.TelemetrySendFailed;
-    var client: std.http.Client = .{
-        .allocator = alloc,
-        .io = paths.safe_io,
-    };
+    var client = proxy.Client.init(alloc, paths.safe_io);
     defer client.deinit();
 
     const headers = [_]std.http.Header{
         .{ .name = "Content-Type", .value = "application/json" },
         .{ .name = "User-Agent", .value = "nanobrew/telemetry" },
     };
-    var req = client.request(.POST, uri, .{
+    var req = client.ptr().request(.POST, uri, .{
         .redirect_behavior = @enumFromInt(1),
         .extra_headers = &headers,
     }) catch return error.TelemetrySendFailed;
