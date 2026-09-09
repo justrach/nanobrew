@@ -462,7 +462,41 @@ License: [Apache 2.0](./LICENSE)
 | `nb nuke` | | Remove all of nanobrew's state |
 | `nb migrate` | | Import packages from Homebrew |
 | `nb update` | | Self-update nanobrew |
+| `nb autoupdate enable [--upgrade]` | | Opt in to daily updates at 03:00 |
+| `nb autoupdate status` / `disable` | | Inspect or remove the user schedule |
+| `nb version` / `--version` / `-v` | | Print the installed version |
 | `nb init` | | Create directory structure |
 | `nb help` | | Show help |
 
 See [CHANGELOG.md](./CHANGELOG.md) for version history.
+
+### Proxy environments
+
+When `http_proxy`, `https_proxy`, or `all_proxy` is configured, nanobrew uses the
+system `curl` executable for HTTP transport. Uppercase variants are accepted;
+lowercase takes precedence. `HTTP_PROXY` is ignored in CGI environments
+(`REQUEST_METHOD` is set). `NO_PROXY` / `no_proxy` bypass rules are applied on
+redirects too. Credentials stay in the child environment or its stdin, not its
+command-line arguments. HTTPS keeps certificate verification and cannot redirect
+to HTTP. Without proxy settings, downloads use the native Zig HTTP client.
+
+Install curl if proxy requests report `ProxyTransportUnavailable`. Corporate CA
+certificates can be configured using curl's `CURL_CA_BUNDLE`. Proxy matching follows
+[curl's documented environment rules](https://curl.se/docs/manpage.html#ENVIRONMENT).
+POST downloads follow 301/302/303 as GET without forwarding form headers or
+credentials; 307/308 are rejected rather than replaying the body.
+
+### Opt-in scheduled updates
+
+`nb autoupdate enable` schedules `nb update` daily at 03:00 local time.
+`nb autoupdate enable --upgrade` also upgrades packages after a successful update,
+using the newly installed executable. Nothing is scheduled by installation.
+Use `nb autoupdate status`, `nb autoupdate disable`, or `nb autoupdate run [--upgrade]`.
+
+macOS uses a per-user LaunchAgent and writes logs under
+`~/Library/Logs/nanobrew`. Linux uses a systemd user timer under
+`$XDG_CONFIG_HOME/systemd/user` (default `~/.config/systemd/user`), with logs in
+`journalctl --user -u nanobrew-autoupdate`. A running user service manager is
+required; Linux timers catch up after a missed run. Keep the executable at the
+path used when enabling the schedule, and re-enable after moving it. The scheduler
+runs with your user's permissions and does not grant permission to update root-owned files.

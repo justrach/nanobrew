@@ -333,21 +333,10 @@ fn fetchGhcrTokenUncached(alloc: std.mem.Allocator, client: *std.http.Client, re
     var token_url_buf: [512]u8 = undefined;
     const token_url = std.fmt.bufPrint(&token_url_buf, "https://ghcr.io/token?scope=repository:{s}:pull", .{repo}) catch return null;
 
-    const uri = std.Uri.parse(token_url) catch return null;
-    var req = client.request(.GET, uri, .{}) catch return null;
-    defer req.deinit();
-    req.sendBodiless() catch return null;
+    const body = @import("fetch.zig").getWithClient(alloc, client, token_url) catch return null;
+    defer alloc.free(body);
 
-    var redirect_buf: [32768]u8 = undefined;
-    var response = req.receiveHead(&redirect_buf) catch return null;
-    if (response.head.status != .ok) return null;
-
-    var body: std.ArrayList(u8) = .empty;
-    defer body.deinit(alloc);
-    var reader = response.reader(&.{});
-    reader.appendRemainingUnlimited(alloc, &body) catch return null;
-
-    const parsed = std.json.parseFromSlice(std.json.Value, alloc, body.items, .{}) catch return null;
+    const parsed = std.json.parseFromSlice(std.json.Value, alloc, body, .{}) catch return null;
     defer parsed.deinit();
 
     if (parsed.value.object.get("token")) |tok| {
@@ -503,6 +492,19 @@ fn downloadAttempt(
         const auth = std.fmt.bufPrint(&auth_buf, "Bearer {s}", .{t}) catch break :blk &.{};
         break :blk &.{.{ .name = "Authorization", .value = auth }};
     } else &.{};
+
+    if (@import("proxy.zig").enabled()) {
+        const temp = try std.fmt.allocPrint(alloc, "{s}/{s}.{d}-{d}.dl", .{ TMP_DIR, req.expected_sha256, std.c.getpid(), std.Thread.getCurrentId() });
+        defer alloc.free(temp);
+        defer std.Io.Dir.deleteFileAbsolute(paths.safe_io, temp) catch {};
+        @import("proxy.zig").download(alloc, effective_url, temp, req.expected_sha256, extra_headers, null) catch |err| {
+            if (err == error.AuthFailed and is_ghcr and token == null) return error.TokenUnavailable;
+            if (err == error.FetchFailed) return error.DownloadFailed;
+            return err;
+        };
+        try std.Io.Dir.renameAbsolute(temp, dest_path, paths.safe_io);
+        return;
+    }
 
     // Download with native HTTP + streaming SHA256
     const uri = std.Uri.parse(effective_url) catch return error.DownloadFailed;

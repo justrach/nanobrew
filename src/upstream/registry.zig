@@ -965,6 +965,7 @@ fn envSlice(name: [*:0]const u8) ?[]const u8 {
 }
 
 fn fetchRemoteRegistryJson(alloc: std.mem.Allocator, url: []const u8) ![]u8 {
+    if (@import("../net/proxy.zig").enabled()) return @import("../net/fetch.zig").getWithHeaders(alloc, url, &.{ .{ .name = "User-Agent", .value = "nanobrew-upstream-registry" }, .{ .name = "Accept", .value = "application/json" } });
     var client: std.http.Client = .{ .allocator = alloc, .io = paths.safe_io };
     defer client.deinit();
 
