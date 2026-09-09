@@ -47,6 +47,8 @@ jobs:
           python3 tests/autoupdate.py ./zig-out/bin/nb /tmp/nb-autoupdate-fixture
           python3 scripts/bottles/test_scan.py
           node worker/test.mjs
+          node worker/test-outcomes.mjs
+          python3 scripts/trust/test_trust.py ./zig-out/bin/nb
 
       - name: Shell completion regression tests
         run: bash tests/completions.sh ./zig-out/bin/nb
@@ -97,6 +99,8 @@ jobs:
           python3 tests/autoupdate.py ./zig-out/bin/nb /tmp/nb-autoupdate-fixture
           python3 scripts/bottles/test_scan.py
           node worker/test.mjs
+          node worker/test-outcomes.mjs
+          python3 scripts/trust/test_trust.py ./zig-out/bin/nb
 
       - name: Test init creates opt/ directory
         run: |

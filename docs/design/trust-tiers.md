@@ -1,6 +1,8 @@
 # Trust Tiers — "works out of the box" tracking — design doc
 
-Status: **draft**, scoping only — no implementation in this doc.
+Status: **implemented**. See the README section “Install trust and evidence” for
+the signed envelope format, commands, configuration, telemetry privacy model,
+and publication workflow. The sections below preserve the original design.
 Author: post-v0.1.196 issues pass, 2026-06-12.
 Tracks: the recurring class of issues where a package installs but doesn't
 work (#286 missing PATH symlinks, #297 unrelocated binaries, #302 phantom DB

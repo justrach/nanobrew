@@ -65,6 +65,10 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig build -Doptimize=ReleaseFast
       - uses: actions/download-artifact@v4
         with:
           pattern: evidence-*
@@ -83,6 +87,7 @@ jobs:
           trap 'rm -f "$key"' EXIT
           printf '%s\n' "$TRUST_SIGNING_KEY" > "$key"
           python3 scripts/trust/publish.py --previous registry/trust-evidence.json --ci-dir evidence --field field.json --run "$RUN_URL" --key "$key"
+      - run: ./zig-out/bin/nb trust verify registry/trust-evidence.json
       - uses: peter-evans/create-pull-request@v7
         with:
           branch: codex/trust-evidence-refresh

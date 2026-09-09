@@ -45,7 +45,7 @@ pub const Entry = struct {
     cask: ?Cask = null,
 
     pub fn usable(self: Entry, now: i64) bool {
-        if (self.probe_schema != PROBE_SCHEMA or self.observed_at > now + 300 or now - self.observed_at > MAX_AGE_SECONDS) return false;
+        if (self.probe_schema != PROBE_SCHEMA or self.observed_at > now + 300 or self.observed_at < now - MAX_AGE_SECONDS) return false;
         if (self.source == .field) {
             const total: u64 = @as(u64, self.distinct_successes) + self.distinct_failures;
             if (self.result == .pass and (self.distinct_successes < 25 or @as(u64, self.distinct_failures) * 100 >= total * 2)) return false;
@@ -93,7 +93,7 @@ pub const Document = std.json.Parsed(Feed);
 pub fn parse(a: std.mem.Allocator, bytes: []const u8, now: i64) !Document {
     var doc = try std.json.parseFromSlice(Feed, a, bytes, .{ .allocate = .alloc_always });
     errdefer doc.deinit();
-    if (doc.value.schema_version != 1 or doc.value.generated_at > now + 300 or now - doc.value.generated_at > MAX_AGE_SECONDS or doc.value.evidence.len > 50000) return error.InvalidTrustEvidence;
+    if (doc.value.schema_version != 1 or doc.value.generated_at > now + 300 or doc.value.generated_at < now - MAX_AGE_SECONDS or doc.value.evidence.len > 50000) return error.InvalidTrustEvidence;
     for (doc.value.evidence) |e| {
         if (!safeToken(e.token) or !safeVersion(e.version) or !validSha(e.sha256)) return error.InvalidTrustEvidence;
         if (!std.mem.eql(u8, e.platform, "macos_arm64") and !std.mem.eql(u8, e.platform, "macos_x86_64") and !std.mem.eql(u8, e.platform, "linux_x86_64") and !std.mem.eql(u8, e.platform, "linux_aarch64")) return error.InvalidTrustEvidence;
@@ -170,7 +170,7 @@ pub fn write(path: []const u8, data: []const u8) !void {
     try file.writeStreamingAll(io, data);
 }
 const Envelope = struct { payload: []const u8, signature: []const u8 };
-fn verified(a: std.mem.Allocator, bytes: []const u8) !Document {
+pub fn verifyEnvelope(a: std.mem.Allocator, bytes: []const u8) !Document {
     const wrapper = try std.json.parseFromSlice(Envelope, a, bytes, .{});
     defer wrapper.deinit();
     try verify(wrapper.value.payload, wrapper.value.signature, env("NANOBREW_TRUST_PUBLIC_KEY") orelse @embedFile("public-key.txt"));
@@ -183,7 +183,7 @@ pub fn load(a: std.mem.Allocator) !Document {
     var stale: ?Document = null;
     if (read(a, cache)) |bytes| {
         defer a.free(bytes);
-        if (verified(a, bytes)) |doc| {
+        if (verifyEnvelope(a, bytes)) |doc| {
             const file = try std.Io.Dir.cwd().openFile(paths.safe_io, cache, .{});
             defer file.close(paths.safe_io);
             const stat = try file.stat(paths.safe_io);
@@ -202,7 +202,7 @@ pub fn load(a: std.mem.Allocator) !Document {
         return err;
     };
     defer a.free(bytes);
-    const doc = try verified(a, bytes);
+    const doc = try verifyEnvelope(a, bytes);
     // A torn cache write is rejected by the signature on the next read.
     write(cache, bytes) catch {};
     return doc;

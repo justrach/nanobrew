@@ -23,7 +23,7 @@ pub fn report(value: Outcome) void {
 }
 fn send(value: Outcome) !void {
     const a = std.heap.smp_allocator;
-    const seed_path = paths.CONFIG_DIR ++ "/outcome-seed";
+    const seed_path = evidence.env("NANOBREW_OUTCOME_SEED_PATH") orelse paths.CONFIG_DIR ++ "/outcome-seed";
     var seed: [32]u8 = undefined;
     if (evidence.read(a, seed_path)) |stored| {
         defer a.free(stored);
@@ -32,7 +32,7 @@ fn send(value: Outcome) !void {
     } else |err| switch (err) {
         error.FileNotFound => {
             try paths.safe_io.randomSecure(&seed);
-            try std.Io.Dir.cwd().createDirPath(paths.safe_io, paths.CONFIG_DIR);
+            if (std.fs.path.dirname(seed_path)) |dir| try std.Io.Dir.cwd().createDirPath(paths.safe_io, dir);
             const file = try std.Io.Dir.cwd().createFile(paths.safe_io, seed_path, .{ .exclusive = true, .permissions = .fromMode(0o600) });
             defer file.close(paths.safe_io);
             try file.writeStreamingAll(paths.safe_io, &seed);
@@ -48,6 +48,12 @@ fn send(value: Outcome) !void {
     var payload = value;
     payload.reporter = &reporter;
     const json = try std.json.Stringify.valueAlloc(a, payload, .{});
+    if (evidence.env("NANOBREW_TELEMETRY_SYNC")) |v| {
+        if (std.mem.eql(u8, v, "1")) {
+            dispatch(json);
+            return;
+        }
+    }
     const thread = std.Thread.spawn(.{}, dispatch, .{json}) catch {
         a.free(json);
         return;

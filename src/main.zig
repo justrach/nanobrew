@@ -933,9 +933,20 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         return;
     };
     defer alloc.free(all_formulae);
+    var filter_db: ?nb.database.Database = nb.database.Database.open(alloc) catch null;
+    defer if (filter_db) |*db| db.close();
     if (g_min_trust > 0) {
         for (all_formulae) |f| {
             var tier = trust.formulaTier(resolver.evidence, f, trust.timestamp());
+            if (filter_db) |*d| {
+                if (d.findKeg(f.name)) |keg| {
+                    var version_buffer: [256]u8 = undefined;
+                    if (trust.validSha(keg.sha256) and keg.probed_at <= trust.timestamp() + 300 and keg.probe_success and keg.probe_schema == LOCAL_PROBE_SCHEMA and keg.probe_platform == LOCAL_PROBE_PLATFORM and
+                        keg.probed_at >= keg.installed_at and keg.probed_at > 0 and trust.timestamp() - keg.probed_at <= trust.MAX_AGE_SECONDS and
+                        std.mem.eql(u8, keg.version, f.effectiveVersion(&version_buffer)) and std.ascii.eqlIgnoreCase(keg.sha256, formulaArtifactSha(f)) and
+                        probeInstalledFormula(alloc, null, f.name, keg.version, f.install_binaries, .structural)) tier = 3;
+                }
+            }
             if (tier < 2 and sourceVerified(alloc, f)) tier = 2;
             if (tier < g_min_trust) {
                 stderr.print("nb: refusing {s}: trust tier {d} is below required {d} (includes dependencies)\n", .{ f.name, tier, g_min_trust }) catch {};
@@ -946,8 +957,6 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     // The Cellar path identifies a formula revision, while the recorded digest
     // distinguishes source changes and bottle rebuilds at that same path.
-    var filter_db: ?nb.database.Database = nb.database.Database.open(alloc) catch null;
-    defer if (filter_db) |*db| db.close();
 
     // Filter out already-installed packages (keg exists in Cellar)
     var to_install: std.ArrayList(nb.formula.Formula) = .empty;
@@ -2793,11 +2802,7 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
             if (f.license.len > 0) stdout.print("  license: {s}\n", .{f.license}) catch {};
             const artifact_sha = formulaArtifactSha(f);
             var trust_tier: []const u8 = if (artifact_sha.len > 0) "checksum-verified" else "unverified";
-            if (registry) |*loaded_registry| {
-                if (loaded_registry.find(f.name, .formula)) |record| {
-                    if (record.upstream.verified) trust_tier = "source-verified";
-                }
-            }
+            if (sourceVerified(alloc, f)) trust_tier = "source-verified";
             showPublishedTrust(alloc, stdout, f.name, .formula, displayed_version, artifact_sha, &trust_tier);
             var local_probe_status: []const u8 = "not recorded";
             var local_probe_time: i64 = 0;
@@ -4081,7 +4086,7 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
             };
         };
         defer cask_meta.deinit(alloc);
-        if (!trusted) {
+        if (!trusted and !cask_meta.revoked_fallback) {
             if (evidence) |d| {
                 if (d.value.latest(cask_meta.token, .cask, cask_meta.version, trust.platform(), cask_meta.sha256, trust.timestamp())) |e| {
                     if (e.result == .fail) {
@@ -4106,6 +4111,12 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
             if (d.value.latest(cask_meta.token, .cask, cask_meta.version, trust.platform(), cask_meta.sha256, trust.timestamp())) |e| {
                 if (e.result == .pass) tier = 3;
             }
+        }
+        if (db.findCask(token)) |installed| {
+            if (trust.validSha(installed.sha256) and installed.probed_at <= trust.timestamp() + 300 and installed.probe_success and installed.probe_schema == LOCAL_PROBE_SCHEMA and installed.probe_platform == LOCAL_PROBE_PLATFORM and
+                installed.probed_at > 0 and trust.timestamp() - installed.probed_at <= trust.MAX_AGE_SECONDS and
+                std.mem.eql(u8, installed.version, cask_meta.version) and std.ascii.eqlIgnoreCase(installed.sha256, cask_meta.sha256) and
+                probeInstalledCask(alloc, null, installed, .structural)) tier = 3;
         }
         if (tier < required) {
             stderr.print("nb: refusing cask {s}: trust tier {d} is below required {d}\n", .{ token, tier, required }) catch {};
@@ -4291,6 +4302,10 @@ fn printUsage() void {
         \\COMMANDS:
         \\  init                     Create /opt/nanobrew/ directory tree
         \\  install <formula>        Install packages (with full dep resolution)
+        \\  install --trusted-only <formula>
+        \\                           Require tier 3 for packages and dependencies
+        \\  install <formula>@trusted
+        \\                           Select newest install-verified artifact
         \\  install --shims <formula>
         \\                           Install with private dependency executables
         \\  install --cask <app>     Install macOS applications
@@ -5697,6 +5712,7 @@ fn runTelemetry(args: []const []const u8) void {
     const subcmd = if (args.len > 0) args[0] else "status";
     if (std.mem.eql(u8, subcmd, "status")) {
         const state = if (nb.telemetry.isEnabled()) "on" else "off";
+        stdout.print("Install outcome telemetry: {s} (requires explicit opt-in)\n", .{if (nb.telemetry.outcomesEnabled()) "on" else "off"}) catch {};
         stdout.print("Telemetry is {s}.\n", .{state}) catch {};
         stdout.print("Setting file: {s}\n", .{nb.telemetry.settingPath()}) catch {};
         stdout.print("Use `nb telemetry off` to opt out or `nb telemetry on` to turn it back on.\n", .{}) catch {};
@@ -6988,6 +7004,7 @@ fn runMigrate(alloc: std.mem.Allocator) void {
 }
 
 fn sourceVerified(alloc: std.mem.Allocator, f: nb.formula.Formula) bool {
+    if (!trust.validSha(formulaArtifactSha(f))) return false;
     const record = nb.upstream_registry.loadRecord(alloc, f.name, .formula) catch return false;
     defer record.deinit(alloc);
     if (!record.upstream.verified) return false;
@@ -7013,6 +7030,15 @@ fn runTrust(alloc: std.mem.Allocator, args: []const []const u8) void {
     };
 }
 fn trustCommand(alloc: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len == 2 and std.mem.eql(u8, args[0], "verify")) {
+        const bytes = try trust.read(alloc, args[1]);
+        defer alloc.free(bytes);
+        var doc = try trust.verifyEnvelope(alloc, bytes);
+        defer doc.deinit();
+        try (StdoutWriter{}).print("Verified {d} signed evidence records\n", .{doc.value.evidence.len});
+        return;
+    }
+
     if (args.len < 2 or (!std.mem.eql(u8, args[0], "attest") and !std.mem.eql(u8, args[0], "record"))) {
         (StderrWriter{}).print("Usage: nb trust attest <pkg> [--cask] [--output file]\n       nb trust record <pkg> [--cask] [--failed] --output file\nRecords require maintainer review and signing before publication.\n", .{}) catch {};
         return error.InvalidArguments;
