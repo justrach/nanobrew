@@ -10,13 +10,15 @@ https://github.com/justrach/nanobrew/releases/download/v<VERSION>/nb-<arch>-appl
 
 **Rule:** The `version`, `url`, and `sha256` fields in `Formula/nanobrew.rb` must match a **published** release whose assets are already uploaded. Bumping the formula to a version that has no release (or missing assets) breaks `brew install nanobrew` with HTTP 404 (see issue #157).
 
-### Recommended flow (automated)
+### Stable release flow
 
-1. Push an annotated tag: `git tag v0.1.xxx && git push origin v0.1.xxx`
-2. The [Release workflow](.github/workflows/release.yml) builds macOS/Linux binaries, **creates the GitHub Release**, uploads assets, then opens a PR that updates `Formula/nanobrew.rb` with the correct URLs and SHA256s.
-3. Merge that formula PR after CI passes.
+The tag-triggered release workflow is disabled (`.github/workflows/release.yml.disabled`). macOS binaries are signed and notarized locally; do not assume pushing a tag creates release assets.
 
-The `update-formula` job runs **after** the release is created, so tag-driven releases keep the formula aligned.
+1. Bump the version constants and changelog in a maintainer PR, run CI, and merge it.
+2. Build ReleaseFast binaries from that exact commit for macOS ARM64, macOS Intel (`x86_64-macos.12.0`), Linux x86-64/ARM64, and Windows x86-64.
+3. Run `scripts/notarize-macos.sh` on both macOS binaries using the configured local signing identity and notarytool profile. Verify notarization is accepted and smoke tests pass.
+4. Package the binaries and SHA256 sidecars, tag the validated commit, and upload all assets to a draft GitHub Release. Publish only after the asset set is complete.
+5. The `update-formula.yml` workflow downloads the published macOS assets, verifies their checksums, and opens a formula PR. Approve its CI run if GitHub requires it, then merge after checks pass.
 
 ## Beta releases
 
