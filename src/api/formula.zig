@@ -102,11 +102,7 @@ pub const BOTTLE_TAG = switch (@import("builtin").os.tag) {
         .x86_64 => "tahoe",
         else => "all",
     },
-    .linux => switch (@import("builtin").cpu.arch) {
-        .x86_64 => "x86_64_linux",
-        .aarch64 => "aarch64_linux",
-        else => "x86_64_linux",
-    },
+    .linux => linuxBottleTag(@import("builtin").cpu.arch),
     else => "all",
 };
 
@@ -130,10 +126,7 @@ pub const BOTTLE_FALLBACKS = switch (@import("builtin").os.tag) {
         },
         else => [_][]const u8{"all"},
     },
-    .linux => [_][]const u8{
-        "x86_64_linux",
-        "all",
-    },
+    .linux => linuxBottleFallbacks(@import("builtin").cpu.arch),
     else => [_][]const u8{"all"},
 };
 
@@ -217,4 +210,34 @@ test "BOTTLE_TAG - matches arch family on macOS" {
         .x86_64 => try testing.expect(!std.mem.startsWith(u8, BOTTLE_TAG, "arm64_")),
         else => {},
     }
+}
+
+// Homebrew uses arm64_linux for native ARM bottles. Never use Intel as an
+// ARM fallback: it can install successfully while every executable fails.
+fn linuxBottleTag(comptime arch: std.Target.Cpu.Arch) []const u8 {
+    return switch (arch) {
+        .x86_64 => "x86_64_linux",
+        .aarch64 => "arm64_linux",
+        else => "all",
+    };
+}
+
+fn linuxBottleFallbacks(comptime arch: std.Target.Cpu.Arch) []const []const u8 {
+    return switch (arch) {
+        .aarch64 => &.{ "aarch64_linux", "all" }, // legacy third-party tap spelling
+        else => &.{"all"},
+    };
+}
+
+test "Linux bottle tags keep ARM and Intel artifacts separate" {
+    try testing.expectEqualStrings("arm64_linux", linuxBottleTag(.aarch64));
+    try testing.expectEqualStrings("x86_64_linux", linuxBottleTag(.x86_64));
+    for (linuxBottleFallbacks(.aarch64)) |tag| {
+        try testing.expect(!std.mem.eql(u8, tag, "x86_64_linux"));
+    }
+    for (linuxBottleFallbacks(.x86_64)) |tag| {
+        try testing.expect(!std.mem.eql(u8, tag, "arm64_linux"));
+        try testing.expect(!std.mem.eql(u8, tag, "aarch64_linux"));
+    }
+    try testing.expectEqualStrings("all", linuxBottleTag(.riscv64));
 }
