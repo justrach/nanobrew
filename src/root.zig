@@ -43,6 +43,8 @@ pub const tap = @import("api/tap.zig");
 pub const services = @import("services/services.zig");
 pub const autoupdate = @import("autoupdate.zig");
 pub const version = @import("version.zig");
+pub const trust_outcome = @import("trust/outcome.zig");
+pub const trust_evidence = @import("trust/evidence.zig");
 pub const trust_probe = @import("trust/probe.zig");
 pub const upstream_registry = @import("upstream/registry.zig");
 pub const upstream_github = @import("upstream/github.zig");
@@ -83,6 +85,7 @@ comptime {
     _ = version;
     _ = autoupdate;
     _ = trust_probe;
+    _ = trust_evidence;
     _ = upstream_registry;
     _ = upstream_github;
     _ = search_api;

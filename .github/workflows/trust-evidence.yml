@@ -1,0 +1,92 @@
+name: Trust evidence
+on:
+  schedule:
+    - cron: '23 3 * * 1'
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: 'Optional space-separated formula subset; empty uses seeds plus top analytics'
+        required: false
+        default: ''
+permissions:
+  contents: read
+concurrency:
+  group: trust-evidence
+  cancel-in-progress: false
+jobs:
+  collect:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            platform: macos_arm64
+          - runner: macos-15-intel
+            platform: macos_x86_64
+          - runner: ubuntu-24.04
+            platform: linux_x86_64
+          - runner: ubuntu-24.04-arm
+            platform: linux_aarch64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 180
+    env:
+      NANOBREW_NO_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - run: zig build -Doptimize=ReleaseFast
+      - name: Prepare isolated nanobrew prefix
+        run: |
+          sudo mkdir -p /opt/nanobrew
+          sudo chown -R "$(id -u):$(id -g)" /opt/nanobrew
+      - name: Collect install evidence
+        env:
+          PACKAGES: ${{ inputs.packages }}
+        run: |
+          python3 - <<'PY'
+          import os, subprocess, shlex
+          command=['python3','scripts/trust/collect.py','--output','evidence']
+          if os.environ.get('PACKAGES'): command += ['--packages',*shlex.split(os.environ['PACKAGES'])]
+          subprocess.run(command,check=True)
+          PY
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: evidence-${{ matrix.platform }}
+          path: evidence/*.json
+          if-no-files-found: error
+  publish:
+    needs: collect
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: evidence-*
+          path: evidence
+      - name: Fetch anonymous field aggregates
+        run: |
+          curl --fail --max-time 30 https://nanobrew.trilok.ai/v1/trust-aggregate -o field.json || printf '{"evidence":[]}' > field.json
+      - name: Sign validated evidence
+        env:
+          TRUST_SIGNING_KEY: ${{ secrets.TRUST_SIGNING_KEY }}
+          RUN_URL: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          test -n "$TRUST_SIGNING_KEY"
+          umask 077
+          key=$(mktemp)
+          trap 'rm -f "$key"' EXIT
+          printf '%s\n' "$TRUST_SIGNING_KEY" > "$key"
+          python3 scripts/trust/publish.py --previous registry/trust-evidence.json --ci-dir evidence --field field.json --run "$RUN_URL" --key "$key"
+      - uses: peter-evans/create-pull-request@v7
+        with:
+          branch: codex/trust-evidence-refresh
+          title: 'Refresh signed install evidence'
+          commit-message: 'Refresh signed install evidence'
+          body: 'Weekly native macOS and Linux installs, active probes, reviewed attestations, and eligible anonymous field aggregates. Evidence is version, platform, and checksum specific and expires after 30 days.'
+          add-paths: registry/trust-evidence.json

@@ -15,7 +15,10 @@ const nb = @import("nanobrew");
 const builtin = @import("builtin");
 const platform = nb.platform;
 const paths = platform.paths;
+const trust = nb.trust_evidence;
+var g_min_trust: u8 = 0;
 const Command = enum {
+    trust,
     init,
     install,
     remove,
@@ -217,6 +220,7 @@ pub fn main(init: std.process.Init) !void {
         .deps => runDeps(alloc, args[2..]),
         .services => runServices(alloc, args[2..]),
         .completions => runCompletions(args[2..]),
+        .trust => runTrust(alloc, args[2..]),
         .telemetry => runTelemetry(args[2..]),
         .nuke => runNuke(args[2..]),
         .migrate => runMigrate(alloc),
@@ -303,6 +307,7 @@ fn parseCommand(arg: []const u8) ?Command {
         .{ "deps", Command.deps },
         .{ "services", Command.services },
         .{ "service", Command.services },
+        .{ "trust", Command.trust },
         .{ "telemetry", Command.telemetry },
         .{ "completions", Command.completions },
         .{ "nuke", Command.nuke },
@@ -743,6 +748,10 @@ fn resolveVersionPin(
 fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stderr = StderrWriter{};
 
+    g_min_trust = trust.minTrust(alloc) catch |err| {
+        stderr.print("nb: invalid trust configuration: {}\n", .{err}) catch {};
+        std.process.exit(1);
+    };
     // Check for --cask, --deb, --repo, --skip-postinst, --no-verify, and --shims flags
     var is_cask = false;
     var is_deb = false;
@@ -757,6 +766,8 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         const arg = args[arg_idx];
         if (std.mem.eql(u8, arg, "--cask") or std.mem.eql(u8, arg, "--casks")) {
             is_cask = true;
+        } else if (std.mem.eql(u8, arg, "--trusted-only")) {
+            g_min_trust = 3;
         } else if (std.mem.eql(u8, arg, "--deb") or std.mem.eql(u8, arg, "--debs")) {
             is_deb = true;
         } else if (std.mem.eql(u8, arg, "--repo")) {
@@ -794,6 +805,10 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
                 if (std.Io.Dir.accessAbsolute(g_io, arg, .{})) |_| true else |_| false
             else if (std.Io.Dir.cwd().access(g_io, arg, .{})) |_| true else |_| false;
             if (exists) {
+                if (g_min_trust > 0) {
+                    stderr.print("nb: trust gating is unavailable for local Ruby installs\n", .{}) catch {};
+                    std.process.exit(1);
+                }
                 runLocalRbInstall(alloc, arg);
                 return;
             }
@@ -809,6 +824,10 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     }
 
     if (is_deb) {
+        if (g_min_trust > 0) {
+            stderr.print("nb: trust gating is unavailable for deb installs\n", .{}) catch {};
+            std.process.exit(1);
+        }
         runDebInstall(alloc, formulae.items, repo_spec, .{
             .skip_postinst = skip_postinst,
             .no_verify = no_verify,
@@ -839,6 +858,10 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     var resolver = nb.deps.DepResolver.init(alloc);
     defer resolver.deinit();
 
+    var evidence: ?trust.Document = trust.load(alloc) catch null;
+    defer if (evidence) |*d| d.deinit();
+    resolver.evidence = if (evidence) |d| d.value else null;
+
     // A `name@version` arg that is NOT itself a real versioned formula
     // (e.g. `hexyl@0.17.0`) is resolved as a version pin via GHCR; matching args
     // are rewritten to their base name for the rest of the pipeline and recorded
@@ -849,6 +872,27 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     var roots: std.ArrayList([]const u8) = .empty;
     defer roots.deinit(alloc);
     for (formulae.items, 0..) |name, i| {
+        if (std.mem.endsWith(u8, name, "@trusted")) {
+            const base = name[0 .. name.len - "@trusted".len];
+            const good = if (evidence) |d| d.value.newestPassing(base, .formula, trust.platform(), trust.timestamp()) else null;
+            if (good == null) {
+                stderr.print("nb: no fresh signed install evidence for {s} on {s}\n", .{ base, trust.platform() }) catch {};
+                std.process.exit(1);
+            }
+            trust.rejectRevoked(alloc, good.?.*) catch {
+                stderr.print("nb: trusted candidate is revoked\n", .{}) catch {};
+                std.process.exit(1);
+            };
+            const f = good.?.toFormula(alloc) catch {
+                std.process.exit(1);
+            };
+            resolver.addResolved(f) catch {
+                std.process.exit(1);
+            };
+            formulae.items[i] = base;
+            pinned_names.append(alloc, base) catch {};
+            continue;
+        }
         if (resolveVersionPin(alloc, &resolver, name)) |base| {
             formulae.items[i] = base;
             pinned_names.append(alloc, base) catch {};
@@ -889,6 +933,16 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         return;
     };
     defer alloc.free(all_formulae);
+    if (g_min_trust > 0) {
+        for (all_formulae) |f| {
+            var tier = trust.formulaTier(resolver.evidence, f, trust.timestamp());
+            if (tier < 2 and sourceVerified(alloc, f)) tier = 2;
+            if (tier < g_min_trust) {
+                stderr.print("nb: refusing {s}: trust tier {d} is below required {d} (includes dependencies)\n", .{ f.name, tier, g_min_trust }) catch {};
+                std.process.exit(1);
+            }
+        }
+    }
 
     // The Cellar path identifies a formula revision, while the recorded digest
     // distinguishes source changes and bottle rebuilds at that same path.
@@ -1212,6 +1266,17 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
                 db.recordKegProbe(f.name, actual_ver, record_sha, passed, LOCAL_PROBE_SCHEMA, LOCAL_PROBE_PLATFORM) catch {};
             }
         }
+    }
+
+    // Report only after the DB commit, including failures that produced no keg.
+    const persisted = if (db.flush()) |_| true else |_| false;
+    for (install_order, 0..) |f, i| {
+        var ver_buf: [256]u8 = undefined;
+        const ver = f.effectiveVersion(&ver_buf);
+        const keg = db.findKeg(f.name);
+        const installed = persisted and install_succeeded[i] and keg != null and
+            std.mem.eql(u8, keg.?.version, ver) and std.ascii.eqlIgnoreCase(keg.?.sha256, formulaArtifactSha(f));
+        nb.trust_outcome.report(.{ .token = f.name, .kind = .formula, .version = ver, .platform = trust.platform(), .sha256 = formulaArtifactSha(f), .installed = installed, .probe = if (installed) probe_results[i].value() else null });
     }
 
     // Auto-pin version-pinned installs so a later `nb upgrade` won't silently
@@ -2733,6 +2798,7 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
                     if (record.upstream.verified) trust_tier = "source-verified";
                 }
             }
+            showPublishedTrust(alloc, stdout, f.name, .formula, displayed_version, artifact_sha, &trust_tier);
             var local_probe_status: []const u8 = "not recorded";
             var local_probe_time: i64 = 0;
             if (db) |*loaded_db| {
@@ -2836,6 +2902,7 @@ fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name
     const has_immutable_identity = has_valid_sha256 and
         !cask.auto_updates and
         !std.mem.eql(u8, cask.version, "latest");
+    showPublishedTrust(alloc, stdout, cask.token, .cask, cask.version, cask.sha256, &trust_tier);
     var local_probe_status: []const u8 = "not recorded";
     var local_probe_time: i64 = 0;
     if (has_immutable_identity) {
@@ -3981,17 +4048,69 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
     };
     defer db.close();
 
+    var evidence: ?trust.Document = trust.load(alloc) catch null;
+    defer if (evidence) |*d| d.deinit();
+    const required = @max(g_min_trust, trust.minTrust(alloc) catch {
+        std.process.exit(1);
+    });
     var had_error = false;
-    for (tokens) |token| {
+    for (tokens) |requested_token| {
+        const trusted = std.mem.endsWith(u8, requested_token, "@trusted");
+        const token = if (trusted) requested_token[0 .. requested_token.len - "@trusted".len] else requested_token;
         const token_timer = MonoTimer.start();
         stdout.print("==> Fetching cask metadata for {s}...\n", .{token}) catch {};
         var phase_timer = MonoTimer.start();
-        const cask_meta = nb.api_client.fetchCask(alloc, token) catch {
-            stderr.print("nb: cask '{s}' not found\n", .{token}) catch {};
-            had_error = true;
-            continue;
+        var cask_meta = blk: {
+            if (trusted) {
+                const good = if (evidence) |d| d.value.newestPassing(token, .cask, trust.platform(), trust.timestamp()) else null;
+                if (good) |e| {
+                    trust.rejectRevoked(alloc, e.*) catch {
+                        std.process.exit(1);
+                    };
+                    break :blk e.toCask(alloc) catch {
+                        std.process.exit(1);
+                    };
+                }
+                stderr.print("nb: no fresh signed install evidence for cask {s}\n", .{token}) catch {};
+                std.process.exit(1);
+            }
+            break :blk nb.api_client.fetchCask(alloc, token) catch {
+                stderr.print("nb: cask '{s}' not found\n", .{token}) catch {};
+                had_error = true;
+                continue;
+            };
         };
         defer cask_meta.deinit(alloc);
+        if (!trusted) {
+            if (evidence) |d| {
+                if (d.value.latest(cask_meta.token, .cask, cask_meta.version, trust.platform(), cask_meta.sha256, trust.timestamp())) |e| {
+                    if (e.result == .fail) {
+                        if (d.value.newestPassing(cask_meta.token, .cask, trust.platform(), trust.timestamp())) |good| {
+                            trust.rejectRevoked(alloc, good.*) catch {
+                                std.process.exit(1);
+                            };
+                            const replacement = good.toCask(alloc) catch {
+                                std.process.exit(1);
+                            };
+                            stderr.print("nb: {s} {s} has failing install evidence; using verified-working {s}\n", .{ cask_meta.token, cask_meta.version, good.version }) catch {};
+                            cask_meta.deinit(alloc);
+                            cask_meta = replacement;
+                        }
+                    }
+                }
+            }
+        }
+        var tier: u8 = if (trust.validSha(cask_meta.sha256)) 1 else 0;
+        if (tier == 1 and cask_meta.metadata_source == .verified_upstream) tier = 2;
+        if (evidence) |d| {
+            if (d.value.latest(cask_meta.token, .cask, cask_meta.version, trust.platform(), cask_meta.sha256, trust.timestamp())) |e| {
+                if (e.result == .pass) tier = 3;
+            }
+        }
+        if (tier < required) {
+            stderr.print("nb: refusing cask {s}: trust tier {d} is below required {d}\n", .{ token, tier, required }) catch {};
+            std.process.exit(1);
+        }
         nb.cask_installer.traceCaskPhase(cask_trace, token, "metadata", phase_timer.read());
 
         // Resolve aliases before deciding this is a no-op. A requested alias can
@@ -4074,6 +4193,7 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
 
         phase_timer = MonoTimer.start();
         nb.cask_installer.installCask(alloc, g_io, cask_meta) catch |err| {
+            nb.trust_outcome.report(.{ .token = cask_meta.token, .kind = .cask, .version = cask_meta.version, .platform = trust.platform(), .sha256 = cask_meta.sha256, .installed = false, .probe = null });
             nb.cask_installer.traceCaskPhase(cask_trace, token, "payload_install_failed", phase_timer.read());
             stderr.print("nb: failed to install cask '{s}': {}\n", .{ token, err }) catch {};
             had_error = true;
@@ -4101,6 +4221,13 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
             had_error = true;
             break;
         };
+        if (db.findCask(token)) |installed| {
+            const passed = probeInstalledCask(alloc, null, installed, .active);
+            nb.trust_outcome.report(.{ .token = cask_meta.token, .kind = .cask, .version = cask_meta.version, .platform = trust.platform(), .sha256 = cask_meta.sha256, .installed = true, .probe = passed });
+            db.recordCaskProbe(cask_meta.token, cask_meta.version, cask_meta.sha256, passed, LOCAL_PROBE_SCHEMA, LOCAL_PROBE_PLATFORM) catch {};
+            db.flush() catch {};
+            if (!passed) stderr.print("nb: {s}: post-install probe failed; run nb doctor --probe {s}\n", .{ token, token }) catch {};
+        }
         nb.cask_installer.traceCaskPhase(cask_trace, token, "db_record", phase_timer.read());
         nb.cask_installer.traceCaskPhase(cask_trace, token, "command_total", token_timer.read());
 
@@ -4201,8 +4328,10 @@ fn printUsage() void {
         \\                           Manage background services
         \\  completions [zsh|bash|fish]
         \\                           Generate shell completions
+        \\  trust attest <pkg> [--cask] [--output file]
+        \\                           Probe and export a maintainer attestation
         \\  telemetry [status|on|off]
-        \\                           Show or change anonymous download telemetry
+        \\                           Show or change anonymous telemetry (outcomes opt-in)
         \\  nuke                     Completely uninstall nanobrew and all packages
         \\  migrate                  Import existing Homebrew packages into nanobrew
         \\  help                     Show this help
@@ -5641,7 +5770,8 @@ fn runCompletions(args: []const []const u8) void {
             \\    'deps:Show dependency tree'
             \\    'services:Manage services'
             \\    'completions:Generate shell completions'
-            \\    'telemetry:Manage anonymous download telemetry'
+            \\    'trust:Export install evidence for review'
+            \\    'telemetry:Manage anonymous telemetry'
             \\    'nuke:Completely uninstall nanobrew'
             \\    'migrate:Import existing Homebrew packages'
             \\    'help:Show help'
@@ -5692,7 +5822,7 @@ fn runCompletions(args: []const []const u8) void {
     } else if (std.mem.eql(u8, shell, "bash")) {
         stdout.print(
             \\_nb_completions() {{
-            \\  local commands="init install remove list leaves info search where upgrade update update-registry autoupdate version doctor cleanup outdated pin unpin rollback switch bundle deps services completions telemetry nuke migrate help"
+            \\  local commands="init install remove list leaves info search where upgrade update update-registry autoupdate version doctor cleanup outdated pin unpin rollback switch bundle deps services completions trust telemetry nuke migrate help"
             \\  if [[ $COMP_CWORD -eq 1 ]]; then
             \\    COMPREPLY=($(compgen -W "$commands" -- "${{COMP_WORDS[COMP_CWORD]}}"))
             \\  else
@@ -5746,6 +5876,7 @@ fn runCompletions(args: []const []const u8) void {
             \\complete -c nb -n '__fish_use_subcommand' -a 'deps' -d 'Show dependency tree'
             \\complete -c nb -n '__fish_use_subcommand' -a 'services' -d 'Manage services'
             \\complete -c nb -n '__fish_use_subcommand' -a 'completions' -d 'Generate shell completions'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'trust' -d 'Export install evidence'
             \\complete -c nb -n '__fish_use_subcommand' -a 'telemetry' -d 'Manage anonymous download telemetry'
             \\complete -c nb -n '__fish_use_subcommand' -a 'nuke' -d 'Completely uninstall nanobrew'
             \\complete -c nb -n '__fish_use_subcommand' -a 'migrate' -d 'Import existing Homebrew packages'
@@ -6854,4 +6985,80 @@ fn runMigrate(alloc: std.mem.Allocator) void {
             .{},
         ) catch {};
     }
+}
+
+fn sourceVerified(alloc: std.mem.Allocator, f: nb.formula.Formula) bool {
+    const record = nb.upstream_registry.loadRecord(alloc, f.name, .formula) catch return false;
+    defer record.deinit(alloc);
+    if (!record.upstream.verified) return false;
+    const resolved = record.resolved orelse return false;
+    const effective = resolved.effective() orelse return false;
+    const plat = std.meta.stringToEnum(nb.upstream_registry.Platform, trust.platform()) orelse return false;
+    const asset = effective.findAsset(plat) orelse return false;
+    return std.ascii.eqlIgnoreCase(asset.sha256, formulaArtifactSha(f));
+}
+
+fn showPublishedTrust(alloc: std.mem.Allocator, stdout: StdoutWriter, token: []const u8, kind: trust.Kind, ver: []const u8, sha: []const u8, tier: *[]const u8) void {
+    var doc = trust.load(alloc) catch return;
+    defer doc.deinit();
+    const e = doc.value.latest(token, kind, ver, trust.platform(), sha, trust.timestamp()) orelse return;
+    if (e.result == .pass) tier.* = "install-verified";
+    stdout.print("  published evidence: {s}, {s}, {d} ({s})\n", .{ @tagName(e.source), @tagName(e.result), e.observed_at, e.platform }) catch {};
+}
+
+fn runTrust(alloc: std.mem.Allocator, args: []const []const u8) void {
+    trustCommand(alloc, args) catch |err| {
+        (StderrWriter{}).print("nb: trust: {}\n", .{err}) catch {};
+        std.process.exit(1);
+    };
+}
+fn trustCommand(alloc: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len < 2 or (!std.mem.eql(u8, args[0], "attest") and !std.mem.eql(u8, args[0], "record"))) {
+        (StderrWriter{}).print("Usage: nb trust attest <pkg> [--cask] [--output file]\n       nb trust record <pkg> [--cask] [--failed] --output file\nRecords require maintainer review and signing before publication.\n", .{}) catch {};
+        return error.InvalidArguments;
+    }
+    const token = args[1];
+    if (!trust.safeToken(token)) return error.InvalidPackageName;
+    var is_cask = false;
+    var failed = false;
+    var output: ?[]const u8 = null;
+    var i: usize = 2;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--cask")) is_cask = true else if (std.mem.eql(u8, args[i], "--failed") and std.mem.eql(u8, args[0], "record")) failed = true else if (std.mem.eql(u8, args[i], "--output") and i + 1 < args.len) {
+            i += 1;
+            output = args[i];
+        } else return error.InvalidArguments;
+    }
+    var db = try nb.database.Database.open(alloc);
+    defer db.close();
+    var f: ?nb.formula.Formula = null;
+    defer if (f) |v| v.deinit(alloc);
+    var c: ?nb.cask.Cask = null;
+    defer if (c) |v| v.deinit(alloc);
+    var buf: [256]u8 = undefined;
+    var entry: trust.Entry = undefined;
+    if (is_cask) {
+        c = try nb.api_client.fetchCask(alloc, token);
+        const meta = c.?;
+        if (!failed) {
+            const installed = db.findCask(token) orelse return error.NotInstalled;
+            if (!std.mem.eql(u8, installed.version, meta.version) or !std.ascii.eqlIgnoreCase(installed.sha256, meta.sha256)) return error.MetadataDoesNotMatchInstalledArtifact;
+            if (!probeInstalledCask(alloc, null, installed, .active)) return error.ProbeFailed;
+        }
+        entry = .{ .token = meta.token, .kind = .cask, .version = meta.version, .platform = trust.platform(), .sha256 = meta.sha256, .result = if (failed) .fail else .pass, .source = .attested, .observed_at = trust.timestamp(), .probe_schema = LOCAL_PROBE_SCHEMA, .nb_version = VERSION, .cask = meta };
+    } else {
+        f = try nb.api_client.fetchFormula(alloc, token);
+        const meta = f.?;
+        const ver = meta.effectiveVersion(&buf);
+        if (!failed) {
+            const installed = db.findKeg(meta.name) orelse return error.NotInstalled;
+            if (!std.mem.eql(u8, installed.version, ver) or !std.ascii.eqlIgnoreCase(installed.sha256, formulaArtifactSha(meta))) return error.MetadataDoesNotMatchInstalledArtifact;
+            if (!probeInstalledFormula(alloc, null, meta.name, ver, meta.install_binaries, .active)) return error.ProbeFailed;
+        }
+        entry = .{ .token = meta.name, .kind = .formula, .version = ver, .platform = trust.platform(), .sha256 = formulaArtifactSha(meta), .result = if (failed) .fail else .pass, .source = .attested, .observed_at = trust.timestamp(), .probe_schema = LOCAL_PROBE_SCHEMA, .nb_version = VERSION, .formula = meta, .source_verified = sourceVerified(alloc, meta) };
+    }
+    if (!trust.validSha(entry.sha256)) return error.MissingArtifactChecksum;
+    const json = try std.json.Stringify.valueAlloc(alloc, entry, .{ .whitespace = .indent_2 });
+    defer alloc.free(json);
+    if (output) |path| try trust.write(path, json) else try std.Io.File.stdout().writeStreamingAll(g_io, json);
 }
