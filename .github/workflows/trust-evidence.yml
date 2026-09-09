@@ -63,6 +63,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
@@ -89,9 +90,15 @@ jobs:
           python3 scripts/trust/publish.py --previous registry/trust-evidence.json --ci-dir evidence --field field.json --run "$RUN_URL" --key "$key"
       - run: ./zig-out/bin/nb trust verify registry/trust-evidence.json
       - uses: peter-evans/create-pull-request@v7
+        id: evidence_pr
         with:
           branch: codex/trust-evidence-refresh
           title: 'Refresh signed install evidence'
           commit-message: 'Refresh signed install evidence'
           body: 'Weekly native macOS and Linux installs, active probes, reviewed attestations, and eligible anonymous field aggregates. Evidence is version, platform, and checksum specific and expires after 30 days.'
           add-paths: registry/trust-evidence.json
+      - name: Run required checks on the evidence branch
+        if: steps.evidence_pr.outputs.pull-request-number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh workflow run ci.yml --ref codex/trust-evidence-refresh
