@@ -115,10 +115,29 @@ pub fn isRunning(alloc: std.mem.Allocator, io: std.Io, label: []const u8) bool {
     }) catch return false;
     alloc.free(result.stdout);
     alloc.free(result.stderr);
-    return switch (result.term) { .exited => |c| c == 0, else => false };
+    return switch (result.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
 }
 
 pub fn isPlistSafe(content: []const u8, keg_prefix: []const u8) bool {
+    return isPlistSafeImpl(null, content, keg_prefix);
+}
+
+fn executableWithin(io: ?std.Io, path: []const u8, root: []const u8) bool {
+    if (io) |lib_io| {
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const n = std.Io.Dir.cwd().realPathFile(lib_io, path, &path_buf) catch return false;
+        const r = std.Io.Dir.cwd().realPathFile(lib_io, root, &root_buf) catch return false;
+        return executableWithin(null, path_buf[0..n], root_buf[0..r]);
+    }
+    return std.mem.startsWith(u8, path, root) and path.len > root.len and
+        path[root.len] == '/' and std.mem.indexOf(u8, path, "..") == null;
+}
+
+fn isPlistSafeImpl(io: ?std.Io, content: []const u8, keg_prefix: []const u8) bool {
     // Check for UserName root
     if (std.mem.indexOf(u8, content, "<key>UserName</key>")) |idx| {
         const after = content[idx..];
@@ -134,8 +153,7 @@ pub fn isPlistSafe(content: []const u8, keg_prefix: []const u8) bool {
                 const rest = after[str_start..];
                 if (std.mem.indexOf(u8, rest, "</string>")) |end| {
                     const prog_path = rest[0..end];
-                    if (!std.mem.startsWith(u8, prog_path, keg_prefix)) return false;
-                    if (std.mem.indexOf(u8, prog_path, "..") != null) return false;
+                    if (!executableWithin(io, prog_path, keg_prefix)) return false;
                 }
             }
         }
@@ -150,8 +168,7 @@ pub fn isPlistSafe(content: []const u8, keg_prefix: []const u8) bool {
                 const rest = after[str_start..];
                 if (std.mem.indexOf(u8, rest, "</string>")) |end| {
                     const prog_path = rest[0..end];
-                    if (!std.mem.startsWith(u8, prog_path, keg_prefix)) return false;
-                    if (std.mem.indexOf(u8, prog_path, "..") != null) return false;
+                    if (!executableWithin(io, prog_path, keg_prefix)) return false;
                 }
             }
         }
@@ -165,15 +182,24 @@ pub fn start(alloc: std.mem.Allocator, io: std.Io, plist_path: []const u8) !void
 
     // Read and validate the plist file before loading
     const plist_file = std.Io.Dir.openFileAbsolute(lib_io, plist_path, .{}) catch return error.LaunchctlFailed;
-    const plist_stat = plist_file.stat(lib_io) catch { plist_file.close(lib_io); return error.LaunchctlFailed; };
+    const plist_stat = plist_file.stat(lib_io) catch {
+        plist_file.close(lib_io);
+        return error.LaunchctlFailed;
+    };
     const plist_size = @min(plist_stat.size, 64 * 1024);
-    const plist_buf = alloc.alloc(u8, plist_size) catch { plist_file.close(lib_io); return error.LaunchctlFailed; };
+    const plist_buf = alloc.alloc(u8, plist_size) catch {
+        plist_file.close(lib_io);
+        return error.LaunchctlFailed;
+    };
     defer alloc.free(plist_buf);
-    const plist_n = plist_file.readPositionalAll(lib_io, plist_buf, 0) catch { plist_file.close(lib_io); return error.LaunchctlFailed; };
+    const plist_n = plist_file.readPositionalAll(lib_io, plist_buf, 0) catch {
+        plist_file.close(lib_io);
+        return error.LaunchctlFailed;
+    };
     plist_file.close(lib_io);
     const plist_content = plist_buf[0..plist_n];
 
-    if (!isPlistSafe(plist_content, paths.CELLAR_DIR)) {
+    if (!isPlistSafeImpl(lib_io, plist_content, paths.CELLAR_DIR)) {
         var msg_buf: [1024]u8 = undefined;
         const msg = std.fmt.bufPrint(&msg_buf, "nb: refusing to load unsafe plist: {s}\n", .{plist_path}) catch "nb: refusing to load unsafe plist\n";
         std.Io.File.stderr().writeStreamingAll(lib_io, msg) catch {};
@@ -185,7 +211,10 @@ pub fn start(alloc: std.mem.Allocator, io: std.Io, plist_path: []const u8) !void
     }) catch return error.LaunchctlFailed;
     alloc.free(result.stdout);
     alloc.free(result.stderr);
-    if (switch (result.term) { .exited => |c| c != 0, else => true }) return error.LaunchctlFailed;
+    if (switch (result.term) {
+        .exited => |c| c != 0,
+        else => true,
+    }) return error.LaunchctlFailed;
 }
 
 pub fn stop(alloc: std.mem.Allocator, io: std.Io, plist_path: []const u8) !void {
@@ -194,5 +223,32 @@ pub fn stop(alloc: std.mem.Allocator, io: std.Io, plist_path: []const u8) !void 
     }) catch return error.LaunchctlFailed;
     alloc.free(result.stdout);
     alloc.free(result.stderr);
-    if (switch (result.term) { .exited => |c| c != 0, else => true }) return error.LaunchctlFailed;
+    if (switch (result.term) {
+        .exited => |c| c != 0,
+        else => true,
+    }) return error.LaunchctlFailed;
+}
+
+test "launchd follows chained symlinks and rejects escapes (#374)" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const setup = try std.process.run(std.testing.allocator, io, .{
+        .argv = &.{ "sh", "-eu", "-c", "mkdir -p Cellar/pkg/1/bin Cellar/pkg/1/libexec/bin opt; touch Cellar/pkg/1/libexec/bin/daemon outside; ln -s ../Cellar/pkg/1 opt/pkg; ln -s ../libexec/bin/daemon Cellar/pkg/1/bin/daemon; ln -s ../../../../outside Cellar/pkg/1/bin/escape" },
+        .cwd = .{ .dir = tmp.dir },
+    });
+    defer std.testing.allocator.free(setup.stdout);
+    defer std.testing.allocator.free(setup.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, setup.term);
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &root_buf);
+    const root = root_buf[0..n];
+    const cellar = try std.fmt.allocPrint(std.testing.allocator, "{s}/Cellar", .{root});
+    defer std.testing.allocator.free(cellar);
+    for ([_][]const u8{ "daemon", "escape", "missing" }, 0..) |bin, i| {
+        const plist = try std.fmt.allocPrint(std.testing.allocator, "<key>ProgramArguments</key><array><string>{s}/opt/pkg/bin/{s}</string></array>", .{ root, bin });
+        defer std.testing.allocator.free(plist);
+        try std.testing.expectEqual(i == 0, isPlistSafeImpl(io, plist, cellar));
+    }
+    try std.testing.expect(!executableWithin(null, "/tmp/Cellar-other/bin/tool", "/tmp/Cellar"));
 }

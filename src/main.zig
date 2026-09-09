@@ -5725,6 +5725,11 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
         return;
     }
 
+    if (std.c.geteuid() != 0) {
+        stderr.print("nb: --deb installs write to / and require root; rerun with sudo nb install --deb <packages>\n", .{}) catch {};
+        std.process.exit(1);
+    }
+
     var timer = MonoTimer.start();
 
     // --- Step 1: Fetch + decompress package index natively ---
@@ -6204,6 +6209,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
     } else {
         stdout.print("==> Installed {d}/{d} packages in {d:.1}ms\n", .{ installed, resolved.len, elapsed_ms }) catch {};
     }
+    if (installed != resolved.len) std.process.exit(1);
 }
 
 fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {

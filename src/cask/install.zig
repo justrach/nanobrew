@@ -184,13 +184,6 @@ pub fn installCask(alloc: std.mem.Allocator, io: std.Io, cask: Cask) !void {
         traceCaskPhase(trace_enabled, cask.token, "installer_total", total_timer.read());
     }
 
-    phase_timer = TraceTimer.start(trace_enabled);
-    if (try installFastCaskArtifact(alloc, lib_io, cask, format, dl_path, caskroom_path)) {
-        traceCaskPhase(trace_enabled, cask.token, "fast_install", phase_timer.read());
-        return;
-    }
-    traceCaskPhase(trace_enabled, cask.token, "fast_probe", phase_timer.read());
-
     switch (format) {
         .dmg => {
             phase_timer = TraceTimer.start(trace_enabled);
@@ -210,38 +203,42 @@ pub fn installCask(alloc: std.mem.Allocator, io: std.Io, cask: Cask) !void {
             traceCaskPhase(trace_enabled, cask.token, if (mount_point != null) "mount_dmg" else "probe_dmg", phase_timer.read());
             if (mount_point == null) {
                 const tmp_dir = std.fmt.bufPrint(&temp_extract_buf, "{s}/{s}-extract", .{ CACHE_TMP, safe_token }) catch return error.PathTooLong;
-                std.Io.Dir.createDirAbsolute(lib_io, tmp_dir, .default_dir) catch {};
+                try std.Io.Dir.cwd().deleteTree(lib_io, tmp_dir);
+                try std.Io.Dir.createDirAbsolute(lib_io, tmp_dir, .default_dir);
+                temp_extract_dir = tmp_dir;
                 phase_timer = TraceTimer.start(trace_enabled);
                 extractZip(alloc, io, dl_path, tmp_dir) catch {
                     std.Io.Dir.cwd().deleteTree(lib_io, tmp_dir) catch {};
                     return error.UnsupportedArchive;
                 };
-                temp_extract_dir = tmp_dir;
                 traceCaskPhase(trace_enabled, cask.token, "extract_zip", phase_timer.read());
             }
         },
         .zip => {
             const tmp_dir = std.fmt.bufPrint(&temp_extract_buf, "{s}/{s}-extract", .{ CACHE_TMP, safe_token }) catch return error.PathTooLong;
-            std.Io.Dir.createDirAbsolute(lib_io, tmp_dir, .default_dir) catch {};
+            try std.Io.Dir.cwd().deleteTree(lib_io, tmp_dir);
+            try std.Io.Dir.createDirAbsolute(lib_io, tmp_dir, .default_dir);
+            temp_extract_dir = tmp_dir;
             phase_timer = TraceTimer.start(trace_enabled);
             try extractZip(alloc, io, dl_path, tmp_dir);
-            temp_extract_dir = tmp_dir;
             traceCaskPhase(trace_enabled, cask.token, "extract_zip", phase_timer.read());
         },
         .tar_gz => {
             const tmp_dir = std.fmt.bufPrint(&temp_extract_buf, "{s}/{s}-extract", .{ CACHE_TMP, safe_token }) catch return error.PathTooLong;
-            std.Io.Dir.createDirAbsolute(lib_io, tmp_dir, .default_dir) catch {};
+            try std.Io.Dir.cwd().deleteTree(lib_io, tmp_dir);
+            try std.Io.Dir.createDirAbsolute(lib_io, tmp_dir, .default_dir);
+            temp_extract_dir = tmp_dir;
             phase_timer = TraceTimer.start(trace_enabled);
             try extractTarGz(alloc, io, dl_path, tmp_dir);
-            temp_extract_dir = tmp_dir;
             traceCaskPhase(trace_enabled, cask.token, "extract_tar_gz", phase_timer.read());
         },
         .tar_xz => {
             const tmp_dir = std.fmt.bufPrint(&temp_extract_buf, "{s}/{s}-extract", .{ CACHE_TMP, safe_token }) catch return error.PathTooLong;
-            std.Io.Dir.createDirAbsolute(lib_io, tmp_dir, .default_dir) catch {};
+            try std.Io.Dir.cwd().deleteTree(lib_io, tmp_dir);
+            try std.Io.Dir.createDirAbsolute(lib_io, tmp_dir, .default_dir);
+            temp_extract_dir = tmp_dir;
             phase_timer = TraceTimer.start(trace_enabled);
             try extractTarXz(alloc, io, dl_path, tmp_dir);
-            temp_extract_dir = tmp_dir;
             traceCaskPhase(trace_enabled, cask.token, "extract_tar_xz", phase_timer.read());
         },
         .pkg => {}, // standalone, handled directly in artifact processing
@@ -249,8 +246,25 @@ pub fn installCask(alloc: std.mem.Allocator, io: std.Io, cask: Cask) !void {
         .binary => {}, // direct executable download, handled as a binary artifact
     }
 
-    // 4. Process artifacts in order
-    const source_dir: []const u8 = mount_point orelse temp_extract_dir orelse CACHE_TMP;
+    // Commit the complete extracted package before activating its artifacts.
+    // Binary stanzas describe public links, not a manifest of runtime files.
+    var staged_archive = false;
+    if (temp_extract_dir) |extracted| {
+        for (cask.artifacts) |artifact| {
+            switch (artifact) {
+                .binary => |bin| {
+                    if (!std.mem.startsWith(u8, bin.source, "/") and !std.mem.startsWith(u8, bin.source, "$")) {
+                        try prepareStagedBinary(lib_io, extracted, bin.source);
+                    }
+                },
+                else => {},
+            }
+        }
+        try commitStagedArchive(lib_io, extracted, caskroom_path);
+        temp_extract_dir = null;
+        staged_archive = true;
+    }
+    const source_dir: []const u8 = if (staged_archive) caskroom_path else mount_point orelse CACHE_TMP;
 
     var any_artifact_failed = false;
 
@@ -345,6 +359,9 @@ pub fn installCask(alloc: std.mem.Allocator, io: std.Io, cask: Cask) !void {
                 } else if (std.mem.startsWith(u8, bin.source, "/")) {
                     // Absolute path
                     source = bin.source;
+                } else if (staged_archive) {
+                    if (!safeRelativePath(bin.source)) return error.UnsafePath;
+                    source = std.fmt.bufPrint(&resolved_buf, "{s}/{s}", .{ caskroom_path, bin.source }) catch return error.PathTooLong;
                 } else {
                     // Relative path — binary is in the extract/mount dir.
                     // Copy to Caskroom, then symlink from there.
@@ -363,6 +380,7 @@ pub fn installCask(alloc: std.mem.Allocator, io: std.Io, cask: Cask) !void {
                         var _b: [512]u8 = undefined;
                         const _m = std.fmt.bufPrint(&_b, "nb: failed to copy binary {s}\n", .{bin.source}) catch "nb: failed to copy binary\n";
                         std.Io.File.stderr().writeStreamingAll(lib_io, _m) catch {};
+                        any_artifact_failed = true;
                         continue;
                     };
 
@@ -834,103 +852,28 @@ fn unmountDmg(alloc: std.mem.Allocator, io: std.Io, mount_point: []const u8) voi
     }) catch return;
 }
 
-fn installFastCaskArtifact(
-    alloc: std.mem.Allocator,
-    io: std.Io,
-    cask: Cask,
-    format: DownloadFormat,
-    archive_path: []const u8,
-    caskroom_path: []const u8,
-) !bool {
-    switch (format) {
-        .zip => {
-            return installFastZipArtifact(alloc, io, cask, archive_path, caskroom_path);
-        },
-        .unknown => {
-            // Some vendor URLs hide a ZIP payload behind extensionless URLs.
-            // Probe the ZIP fast paths before the slower dmg-then-zip fallback.
-            return installFastZipArtifact(alloc, io, cask, archive_path, caskroom_path);
-        },
-        .tar_gz, .tar_xz => {
-            if (singleBinaryArtifact(&cask)) |bin| {
-                installArchivedBinaryDirect(alloc, io, format, archive_path, caskroom_path, bin.source, bin.target) catch |err| switch (err) {
-                    error.UnsafePath => return err,
-                    error.DestinationAlreadyExists => return err,
-                    else => return false,
-                };
-                return true;
-            }
-        },
-        else => {},
-    }
-    return false;
+fn prepareStagedBinary(io: std.Io, staged: []const u8, relative: []const u8) !void {
+    if (!safeRelativePath(relative)) return error.UnsafePath;
+    var source_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const source = std.fmt.bufPrint(&source_buf, "{s}/{s}", .{ staged, relative }) catch return error.PathTooLong;
+    var resolved_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try std.Io.Dir.cwd().realPathFile(io, source, &resolved_buf);
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const r = try std.Io.Dir.cwd().realPathFile(io, staged, &root_buf);
+    if (n <= r or !std.mem.startsWith(u8, resolved_buf[0..n], root_buf[0..r]) or resolved_buf[r] != '/') return error.UnsafePath;
+    const file = try std.Io.Dir.openFileAbsolute(io, source, .{});
+    defer file.close(io);
+    if ((try file.stat(io)).kind != .file) return error.ArtifactFailed;
+    // ZIP creators sometimes omit Unix execute bits. Keep the old binary
+    // artifact permission contract without flattening the package layout.
+    if (std.c.fchmod(file.handle, 0o755) != 0) return error.ArtifactFailed;
 }
 
-fn installFastZipArtifact(
-    alloc: std.mem.Allocator,
-    io: std.Io,
-    cask: Cask,
-    archive_path: []const u8,
-    caskroom_path: []const u8,
-) !bool {
-    if (zipAppBundleArtifact(&cask)) |app_name| {
-        installZipAppBundleDirect(alloc, io, &cask, archive_path, app_name) catch |err| switch (err) {
-            error.UnsafePath => return err,
-            error.AppAlreadyExists => return err,
-            error.DestinationAlreadyExists => return err,
-            else => return false,
-        };
-        return true;
-    }
-    if (fontArtifactsOnly(&cask)) {
-        installZipFontsDirect(alloc, io, &cask, archive_path) catch |err| switch (err) {
-            error.UnsafePath => return err,
-            error.DestinationAlreadyExists => return err,
-            else => return false,
-        };
-        return true;
-    }
-    if (singleBinaryArtifact(&cask)) |bin| {
-        installArchivedBinaryDirect(alloc, io, .zip, archive_path, caskroom_path, bin.source, bin.target) catch |err| switch (err) {
-            error.UnsafePath => return err,
-            error.DestinationAlreadyExists => return err,
-            else => return false,
-        };
-        return true;
-    }
-    return false;
+fn commitStagedArchive(io: std.Io, extracted: []const u8, destination: []const u8) !void {
+    // rename replaces only an empty destination directory. A populated version
+    // is never merged, which prevents mixed-version helpers on reinstall.
+    try std.Io.Dir.renameAbsolute(extracted, destination, io);
 }
-
-fn zipAppBundleArtifact(cask: *const Cask) ?[]const u8 {
-    var found: ?[]const u8 = null;
-    for (cask.artifacts) |artifact| {
-        switch (artifact) {
-            .app => |app| {
-                if (found != null) return null;
-                found = app;
-            },
-            .binary => {},
-            .uninstall => {},
-            else => return null,
-        }
-    }
-    const app_name = found orelse return null;
-    if (std.mem.indexOfScalar(u8, app_name, '/') != null) return null;
-    for (cask.artifacts) |artifact| {
-        switch (artifact) {
-            .binary => |bin| {
-                if (!appBundleBinarySource(app_name, bin.source)) return null;
-            },
-            else => {},
-        }
-    }
-    return app_name;
-}
-
-const BinaryArtifact = struct {
-    source: []const u8,
-    target: []const u8,
-};
 
 const TraceTimer = struct {
     enabled: bool,
@@ -965,114 +908,6 @@ fn traceMonoNs() u64 {
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * std.time.ns_per_s + @as(u64, @intCast(ts.nsec));
-}
-
-fn singleBinaryArtifact(cask: *const Cask) ?BinaryArtifact {
-    var found: ?BinaryArtifact = null;
-    for (cask.artifacts) |artifact| {
-        switch (artifact) {
-            .binary => |bin| {
-                if (found != null) return null;
-                found = .{ .source = bin.source, .target = bin.target };
-            },
-            .uninstall => {},
-            else => return null,
-        }
-    }
-    return found;
-}
-
-fn fontArtifactsOnly(cask: *const Cask) bool {
-    var font_count: usize = 0;
-    for (cask.artifacts) |artifact| {
-        switch (artifact) {
-            .font => font_count += 1,
-            .uninstall => {},
-            else => return false,
-        }
-    }
-    return font_count > 0;
-}
-
-fn appBundleBinarySource(app_name: []const u8, source_path: []const u8) bool {
-    const prefix = "$APPDIR/";
-    if (!std.mem.startsWith(u8, source_path, prefix)) return false;
-    const relative = source_path[prefix.len..];
-    if (!safeRelativePath(relative)) return false;
-    if (!std.mem.startsWith(u8, relative, app_name)) return false;
-    return relative.len == app_name.len or relative[app_name.len] == '/';
-}
-
-fn installZipAppBundleDirect(
-    alloc: std.mem.Allocator,
-    io: std.Io,
-    cask: *const Cask,
-    zip_path: []const u8,
-    app_name: []const u8,
-) !void {
-    for (cask.artifacts) |artifact| {
-        switch (artifact) {
-            .binary => |bin| try ensureAppBundleBinaryDestinationAvailable(io, app_name, bin.source, bin.target),
-            else => {},
-        }
-    }
-
-    try installZipAppDirect(alloc, io, zip_path, app_name);
-
-    for (cask.artifacts) |artifact| {
-        switch (artifact) {
-            .binary => |bin| try linkAppBundleBinary(io, app_name, bin.source, bin.target),
-            else => {},
-        }
-    }
-}
-
-fn ensureAppBundleBinaryDestinationAvailable(
-    io: std.Io,
-    app_name: []const u8,
-    source_path: []const u8,
-    target: []const u8,
-) !void {
-    if (!appBundleBinarySource(app_name, source_path) or
-        std.mem.indexOf(u8, target, "..") != null or
-        std.mem.indexOfScalar(u8, target, '/') != null)
-    {
-        return error.UnsafePath;
-    }
-    var link_buf: [512]u8 = undefined;
-    const link_path = std.fmt.bufPrint(&link_buf, "{s}/bin/{s}", .{ PREFIX, target }) catch return error.PathTooLong;
-    try ensureDestinationAvailable(io, link_path);
-}
-
-fn installZipAppDirect(
-    alloc: std.mem.Allocator,
-    io: std.Io,
-    zip_path: []const u8,
-    app_name: []const u8,
-) !void {
-    var dst_buf: [512]u8 = undefined;
-    const dst = try appDestinationPath(APPLICATIONS_DIR, app_name, &dst_buf);
-    if (try appDestinationExists(io, dst)) return error.AppAlreadyExists;
-
-    const pattern = try std.fmt.allocPrint(alloc, "{s}/*", .{app_name});
-    defer alloc.free(pattern);
-    try ensureZipPatternSafe(alloc, io, zip_path, pattern);
-
-    const result = std.process.run(alloc, io, .{
-        .argv = &.{ "unzip", "-n", "-q", zip_path, pattern, "-d", APPLICATIONS_DIR },
-        .stdout_limit = .limited(4096),
-        .stderr_limit = .limited(16 * 1024),
-    }) catch return error.ExtractFailed;
-    defer alloc.free(result.stdout);
-    defer alloc.free(result.stderr);
-    if (switch (result.term) {
-        .exited => |code| code != 0,
-        else => true,
-    }) return error.ExtractFailed;
-
-    if (comptime builtin.os.tag == .macos) {
-        clearQuarantineIfPresent(alloc, io, dst, true);
-    }
 }
 
 fn firstAppInstallConflictIn(io: std.Io, applications_dir: []const u8, cask: *const Cask) !?[]const u8 {
@@ -1204,160 +1039,6 @@ fn genericArtifactDestinationPath(target_path: []const u8, buf: []u8) ![]const u
     return buf[0..target_path.len];
 }
 
-fn installZipFontsDirect(
-    alloc: std.mem.Allocator,
-    io: std.Io,
-    cask: *const Cask,
-    zip_path: []const u8,
-) !void {
-    const home = std.c.getenv("HOME") orelse return error.HomeMissing;
-    const home_slice = std.mem.span(home);
-    var font_dir_buf: [1024]u8 = undefined;
-    const font_dir = std.fmt.bufPrint(&font_dir_buf, "{s}/Library/Fonts", .{home_slice}) catch return error.PathTooLong;
-    std.Io.Dir.createDirAbsolute(io, font_dir, .default_dir) catch {};
-
-    for (cask.artifacts) |artifact| {
-        switch (artifact) {
-            .font => |font_path| {
-                if (!safeArchiveMemberPath(font_path)) return error.UnsafePath;
-                var dst_buf: [1024]u8 = undefined;
-                const dst = try fontDestinationPath(home_slice, font_path, &dst_buf);
-                if (try pathExistsNoFollow(io, dst)) {
-                    writeDestinationConflict(io, "font", dst);
-                    return error.DestinationAlreadyExists;
-                }
-            },
-            else => {},
-        }
-    }
-
-    var argv = try alloc.alloc([]const u8, cask.artifacts.len + 7);
-    defer alloc.free(argv);
-    var idx: usize = 0;
-    argv[idx] = "unzip";
-    idx += 1;
-    argv[idx] = "-j";
-    idx += 1;
-    argv[idx] = "-n";
-    idx += 1;
-    argv[idx] = "-q";
-    idx += 1;
-    argv[idx] = zip_path;
-    idx += 1;
-    for (cask.artifacts) |artifact| {
-        switch (artifact) {
-            .font => |font_path| {
-                argv[idx] = font_path;
-                idx += 1;
-            },
-            else => {},
-        }
-    }
-    argv[idx] = "-d";
-    idx += 1;
-    argv[idx] = font_dir;
-    idx += 1;
-
-    const result = std.process.run(alloc, io, .{
-        .argv = argv[0..idx],
-        .stdout_limit = .limited(4096),
-        .stderr_limit = .limited(16 * 1024),
-    }) catch return error.ExtractFailed;
-    defer alloc.free(result.stdout);
-    defer alloc.free(result.stderr);
-    if (switch (result.term) {
-        .exited => |code| code != 0,
-        else => true,
-    }) return error.ExtractFailed;
-}
-
-fn linkAppBundleBinary(
-    io: std.Io,
-    app_name: []const u8,
-    source_path: []const u8,
-    target: []const u8,
-) !void {
-    if (!appBundleBinarySource(app_name, source_path) or
-        std.mem.indexOf(u8, target, "..") != null or
-        std.mem.indexOfScalar(u8, target, '/') != null)
-    {
-        return error.UnsafePath;
-    }
-
-    const relative = source_path["$APPDIR/".len..];
-    var source_buf: [1024]u8 = undefined;
-    const source = std.fmt.bufPrint(&source_buf, "/Applications/{s}", .{relative}) catch return error.PathTooLong;
-    var link_buf: [512]u8 = undefined;
-    const link_path = std.fmt.bufPrint(&link_buf, "{s}/bin/{s}", .{ PREFIX, target }) catch return error.PathTooLong;
-    try ensureDestinationAvailable(io, link_path);
-    try std.Io.Dir.symLinkAbsolute(io, source, link_path, .{});
-}
-
-fn installArchivedBinaryDirect(
-    alloc: std.mem.Allocator,
-    io: std.Io,
-    format: DownloadFormat,
-    archive_path: []const u8,
-    caskroom_path: []const u8,
-    source_path: []const u8,
-    target: []const u8,
-) !void {
-    if (!safeRelativePath(source_path) or
-        !safeArchiveMemberPath(source_path) or
-        std.mem.indexOf(u8, target, "..") != null or
-        std.mem.indexOfScalar(u8, target, '/') != null)
-    {
-        return error.UnsafePath;
-    }
-
-    var caskroom_bin_buf: [1024]u8 = undefined;
-    const caskroom_bin = std.fmt.bufPrint(&caskroom_bin_buf, "{s}/{s}", .{ caskroom_path, target }) catch return error.PathTooLong;
-    var link_buf: [512]u8 = undefined;
-    const link_path = std.fmt.bufPrint(&link_buf, "{s}/bin/{s}", .{ PREFIX, target }) catch return error.PathTooLong;
-    try ensureDestinationAvailable(io, link_path);
-
-    std.Io.Dir.deleteFileAbsolute(io, caskroom_bin) catch {};
-    try extractArchiveMemberToFile(alloc, io, format, archive_path, source_path, caskroom_bin);
-
-    try std.Io.Dir.symLinkAbsolute(io, caskroom_bin, link_path, .{});
-}
-
-fn extractArchiveMemberToFile(
-    _: std.mem.Allocator,
-    io: std.Io,
-    format: DownloadFormat,
-    archive_path: []const u8,
-    member_path: []const u8,
-    dst_path: []const u8,
-) !void {
-    var out = std.Io.Dir.createFileAbsolute(io, dst_path, .{ .permissions = .executable_file }) catch return error.ExtractFailed;
-    defer out.close(io);
-
-    const argv: []const []const u8 = switch (format) {
-        .zip => &.{ "unzip", "-p", archive_path, member_path },
-        .tar_gz => &.{ "tar", "-xOzf", archive_path, member_path },
-        .tar_xz => &.{ "tar", "-xOJf", archive_path, member_path },
-        else => return error.UnsupportedArchive,
-    };
-
-    var child = std.process.spawn(io, .{
-        .argv = argv,
-        .stdin = .ignore,
-        .stdout = .{ .file = out },
-        .stderr = .ignore,
-    }) catch return error.ExtractFailed;
-    defer child.kill(io);
-
-    const term = child.wait(io) catch return error.ExtractFailed;
-    if (switch (term) {
-        .exited => |code| code != 0,
-        else => true,
-    }) {
-        std.Io.Dir.deleteFileAbsolute(io, dst_path) catch {};
-        return error.ExtractFailed;
-    }
-}
-
 fn writeArtifactWarning(io: std.Io, message: []const u8) void {
     std.Io.File.stderr().writeStreamingAll(io, message) catch {};
 }
@@ -1403,11 +1084,6 @@ fn safeRelativePath(path: []const u8) bool {
     return path.len > 0 and
         !std.mem.startsWith(u8, path, "/") and
         std.mem.indexOf(u8, path, "..") == null;
-}
-
-fn safeArchiveMemberPath(path: []const u8) bool {
-    return safeRelativePath(path) and
-        std.mem.indexOfAny(u8, path, "*?[\\") == null;
 }
 
 test "buildCaskHeaders includes UA override, referer, joined cookies, and split headers (#305)" {
@@ -1787,10 +1463,6 @@ fn ensureZipSafe(alloc: std.mem.Allocator, io: std.Io, zip_path: []const u8) !vo
     try ensureZipEntriesSafe(alloc, io, &.{ "unzip", "-Z1", zip_path });
 }
 
-fn ensureZipPatternSafe(alloc: std.mem.Allocator, io: std.Io, zip_path: []const u8, pattern: []const u8) !void {
-    try ensureZipEntriesSafe(alloc, io, &.{ "unzip", "-Z1", zip_path, pattern });
-}
-
 fn ensureZipEntriesSafe(alloc: std.mem.Allocator, io: std.Io, argv: []const []const u8) !void {
     // Pre-list selected ZIP contents and check for path traversal.
     const list_result = std.process.run(alloc, io, .{
@@ -1924,4 +1596,56 @@ test "ownedCaskVersionOnDisk uses the basename for third-party tap tokens" {
     const v = ownedCaskVersionOnDisk(std.testing.io, caskroom_dir, "indaco/tap/sley", "1.2.3", &ver_buf);
     try std.testing.expect(v != null);
     try std.testing.expectEqualStrings("1.2.3", v.?);
+}
+
+test "archive staging preserves helpers resources and literal font names (#371 #373 #376)" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &root_buf);
+    const root = root_buf[0..n];
+    const setup = try std.process.run(a, io, .{
+        .argv = &.{ "sh", "-eu", "-c", "mkdir -p payload/bin payload/resources payload/platform-tools payload/fonts staging version; " ++
+            "printf helper > payload/bin/host; printf metadata > payload/package.json; " ++
+            "printf resource > payload/resources/data; printf adb > payload/platform-tools/adb; " ++
+            "printf variable > 'payload/fonts/Mono[wght].ttf'; " ++
+            "printf '#!/bin/sh\ncd \"$(dirname \"$0\")/..\"\ncat bin/host package.json resources/data\n' > payload/bin/cli; " ++
+            "chmod +x payload/bin/cli; tar -czf fixture.tar.gz -C payload .; " ++
+            "cd payload; zip -qr ../fixture.zip ." },
+        .cwd = .{ .path = root },
+    });
+    defer a.free(setup.stdout);
+    defer a.free(setup.stderr);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, setup.term);
+    const tar = try std.fmt.allocPrint(a, "{s}/fixture.tar.gz", .{root});
+    defer a.free(tar);
+    const zip = try std.fmt.allocPrint(a, "{s}/fixture.zip", .{root});
+    defer a.free(zip);
+    const stage = try std.fmt.allocPrint(a, "{s}/staging", .{root});
+    defer a.free(stage);
+    const version = try std.fmt.allocPrint(a, "{s}/version", .{root});
+    defer a.free(version);
+    try extractTarGz(a, io, tar, stage);
+    try prepareStagedBinary(io, stage, "bin/cli");
+    try std.testing.expectError(error.UnsafePath, prepareStagedBinary(io, stage, "../fixture.zip"));
+    try commitStagedArchive(io, stage, version);
+    const cli = try std.fmt.allocPrint(a, "{s}/bin/cli", .{version});
+    defer a.free(cli);
+    const run = try std.process.run(a, io, .{ .argv = &.{cli} });
+    defer a.free(run.stdout);
+    defer a.free(run.stderr);
+    try std.testing.expectEqualStrings("helpermetadataresource", run.stdout);
+    try std.testing.expectEqual(std.process.Child.Term{ .exited = 0 }, run.term);
+    try std.Io.Dir.createDirAbsolute(io, stage, .default_dir);
+    try extractZip(a, io, zip, stage);
+    const font = try std.fmt.allocPrint(a, "{s}/fonts/Mono[wght].ttf", .{stage});
+    defer a.free(font);
+    try std.Io.Dir.accessAbsolute(io, font, .{});
+    const adb = try std.fmt.allocPrint(a, "{s}/platform-tools/adb", .{stage});
+    defer a.free(adb);
+    try std.Io.Dir.accessAbsolute(io, adb, .{});
+    // An existing version cannot absorb another package tree.
+    if (commitStagedArchive(io, stage, version)) |_| return error.TestExpectedError else |_| {}
 }

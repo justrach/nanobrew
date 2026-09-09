@@ -66,6 +66,7 @@ fn globMatch(pattern: []const u8, name: []const u8) bool {
 const BuildSystem = enum {
     cmake,
     autotools,
+    openssl,
     meson,
     make,
     unknown,
@@ -230,6 +231,17 @@ pub fn buildFromSource(alloc: std.mem.Allocator, io: std.Io, formula: Formula) !
             try runBuildCmd(alloc, lib_io, src_root, &.{ "make", std.fmt.allocPrint(alloc, "-j{s}", .{ncpu_str}) catch return error.OutOfMemory });
             try runBuildCmd(alloc, lib_io, src_root, &.{ "make", "install" });
         },
+        .openssl => {
+            const prefix_arg = try std.fmt.allocPrint(alloc, "--prefix={s}", .{keg_path});
+            defer alloc.free(prefix_arg);
+            const jobs_arg = try std.fmt.allocPrint(alloc, "-j{s}", .{ncpu_str});
+            defer alloc.free(jobs_arg);
+            const ssl_dir_arg = try std.fmt.allocPrint(alloc, "--openssldir={s}/etc/{s}", .{ @import("../platform/paths.zig").PREFIX, formula.name });
+            defer alloc.free(ssl_dir_arg);
+            try runBuildCmd(alloc, lib_io, src_root, &.{ "perl", "./Configure", prefix_arg, ssl_dir_arg });
+            try runBuildCmd(alloc, lib_io, src_root, &.{ "make", jobs_arg });
+            try runBuildCmd(alloc, lib_io, src_root, &.{ "make", "install_sw", "install_ssldirs" });
+        },
         .meson => {
             try runBuildCmd(alloc, lib_io, src_root, &.{ "meson", "setup", "build", std.fmt.allocPrint(alloc, "--prefix={s}", .{keg_path}) catch return error.OutOfMemory });
             try runBuildCmd(alloc, lib_io, src_root, &.{ "meson", "compile", "-C", "build" });
@@ -361,6 +373,14 @@ fn findSourceRoot(alloc: std.mem.Allocator, lib_io: std.Io, dir_path: []const u8
 }
 
 fn detectBuildSystem(lib_io: std.Io, dir_path: []const u8) BuildSystem {
+    // OpenSSL uses a Perl Configure script; it is not a prebuilt payload.
+    var openssl_buf: [4096]u8 = undefined;
+    const openssl_marker = std.fmt.bufPrint(&openssl_buf, "{s}/Configurations", .{dir_path}) catch return .unknown;
+    if (std.Io.Dir.accessAbsolute(lib_io, openssl_marker, .{})) |_| {
+        const configure = std.fmt.bufPrint(&openssl_buf, "{s}/Configure", .{dir_path}) catch return .unknown;
+        if (std.Io.Dir.accessAbsolute(lib_io, configure, .{})) |_| return .openssl else |_| {}
+    } else |_| {}
+
     if (std.Io.Dir.openDirAbsolute(lib_io, dir_path, .{ .iterate = true })) |d| {
         var dir = d;
         var has_makefile = false;
@@ -524,4 +544,16 @@ fn runCommand(lib_io: std.Io, cwd: std.process.Child.Cwd, argv: []const []const 
         .exited => |code| code != 0,
         else => true,
     }) return error.CommandFailed;
+}
+
+test "OpenSSL Configure is recognized as source rather than a prebuilt payload (#375)" {
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    try tmp.dir.createDir(io, "Configurations", .default_dir);
+    const file = try tmp.dir.createFile(io, "Configure", .{});
+    file.close(io);
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &root_buf);
+    try std.testing.expectEqual(BuildSystem.openssl, detectBuildSystem(io, root_buf[0..n]));
 }
