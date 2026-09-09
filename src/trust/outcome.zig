@@ -32,7 +32,7 @@ fn send(value: Outcome) !void {
     } else |err| switch (err) {
         error.FileNotFound => {
             try paths.safe_io.randomSecure(&seed);
-            if (std.fs.path.dirname(seed_path)) |dir| try std.Io.Dir.cwd().createDirPath(paths.safe_io, dir);
+            if (std.fs.path.dirname(seed_path)) |dir| try evidence.ensureDirectory(dir);
             const file = try std.Io.Dir.cwd().createFile(paths.safe_io, seed_path, .{ .exclusive = true, .permissions = .fromMode(0o600) });
             defer file.close(paths.safe_io);
             try file.writeStreamingAll(paths.safe_io, &seed);

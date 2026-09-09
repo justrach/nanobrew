@@ -164,7 +164,7 @@ pub fn read(a: std.mem.Allocator, path: []const u8) ![]u8 {
 }
 pub fn write(path: []const u8, data: []const u8) !void {
     const io = paths.safe_io;
-    if (std.fs.path.dirname(path)) |dir| try std.Io.Dir.cwd().createDirPath(io, dir);
+    if (std.fs.path.dirname(path)) |dir| try ensureDirectory(dir);
     const file = try std.Io.Dir.cwd().createFile(io, path, .{});
     defer file.close(io);
     try file.writeStreamingAll(io, data);
@@ -349,4 +349,39 @@ pub fn chooseCask(a: std.mem.Allocator, feed: Feed, current: Cask) !Cask {
     std.Io.File.stderr().writeStreamingAll(paths.safe_io, message) catch {};
     current.deinit(a);
     return replacement;
+}
+
+/// Open existing directories first: createDirPath rejects symlink components
+/// such as macOS /tmp and /var, even though normal file I/O follows them.
+pub fn ensureDirectory(path: []const u8) anyerror!void {
+    const io = paths.safe_io;
+    var dir = std.Io.Dir.cwd().openDir(io, path, .{}) catch |err| switch (err) {
+        error.FileNotFound => {
+            if (std.fs.path.dirname(path)) |parent| try ensureDirectory(parent);
+            std.Io.Dir.cwd().createDir(io, path, .default_dir) catch |create_err| switch (create_err) {
+                error.PathAlreadyExists => {},
+                else => return create_err,
+            };
+            return;
+        },
+        else => return err,
+    };
+    dir.close(io);
+}
+
+test "evidence cache creates nested directories through an existing symlink" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDir(io, "target", .default_dir);
+    try tmp.dir.symLink(io, "target", "link", .{});
+    var buffer: [4096]u8 = undefined;
+    const length = try tmp.dir.realPath(io, &buffer);
+    const path = try std.fmt.allocPrint(a, "{s}/link/nested/evidence.json", .{buffer[0..length]});
+    defer a.free(path);
+    try write(path, "signed envelope");
+    const bytes = try read(a, path);
+    defer a.free(bytes);
+    try std.testing.expectEqualStrings("signed envelope", bytes);
 }
