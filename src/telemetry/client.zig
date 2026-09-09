@@ -204,6 +204,11 @@ fn sendPayload(payload: Payload) !void {
         .{ .name = "Content-Type", .value = "application/json" },
         .{ .name = "User-Agent", .value = "nanobrew/telemetry" },
     };
+    if (@import("../net/proxy.zig").enabled()) {
+        const result = try @import("../net/proxy.zig").request(alloc, endpoint(), null, &headers, body);
+        defer alloc.free(result);
+        return;
+    }
     var req = client.request(.POST, uri, .{
         .redirect_behavior = @enumFromInt(1),
         .extra_headers = &headers,

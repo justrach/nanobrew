@@ -9,7 +9,7 @@ BIN_DIR="$INSTALL_DIR/prefix/bin"
 SITE_URL="https://nanobrew.trilok.ai"
 # Last-resort release tag if the worker's /version endpoint AND GitHub's
 # API are both unreachable. Bump on every release cut.
-FALLBACK_RELEASE="v0.1.193"
+FALLBACK_RELEASE="v0.1.209"
 
 echo ""
 echo "  nanobrew — the fastest package manager"
@@ -783,6 +783,15 @@ const LANDING_HTML = `<!DOCTYPE html>
       </div>
       <div class="bg-note">38 commits, 20+ targeted bug fixes &middot; deb path correctness sweep (cwd-independent <code>nb remove --deb</code>, native xz, postinst io, patchelf race, locale relocation) &middot; process-wide threadsafe Io accessor &middot; <code>nb cleanup --prune-kegs</code> &middot; HTTP User-Agent override &middot; honest known-issue disclosure &middot; <a href="/v0.1.193">full notes</a></div>
     </div>
+
+    <div class="bg">
+      <div class="bg-title">v0.1.198 <span>/ bottle registry and vulnerability scanning</span></div>
+      <div class="bg-note">GHCR mirror and repackage tooling, weekly SBOM and CVE scans, revocation with fallback, and native ELF relocation. <a href="/v0.1.198">Release notes</a></div>
+    </div>
+    <div class="bg">
+      <div class="bg-title">v0.1.209 <span>/ cask resources and install correctness</span></div>
+      <div class="bg-note">Preserved archive-cask resources, nested binaries, variable fonts, chained service symlinks, and reliable source and Debian installs. <a href="/v0.1.209">Latest release notes</a></div>
+    </div>
   </section>
     <div class="term">
       <div class="term-bar">
@@ -1052,6 +1061,8 @@ const APT_GET_HTML = `<!DOCTYPE html>
     <div class="nav-links">
       <a href="https://github.com/justrach/nanobrew">GitHub</a>
       <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/v0.1.209">v0.1.209</a>
+      <a href="/v0.1.198">v0.1.198</a>
       <a href="/">macOS benchmarks</a>
     </div>
   </nav>
@@ -1289,6 +1300,8 @@ const RELEASE_190_HTML = `<!DOCTYPE html>
     <div class="nav-links">
       <a href="https://github.com/justrach/nanobrew">GitHub</a>
       <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/v0.1.209">v0.1.209</a>
+      <a href="/v0.1.198">v0.1.198</a>
       <a href="/">macOS benchmarks</a>
     </div>
   </nav>
@@ -1553,6 +1566,8 @@ const RELEASE_191_HTML = `<!DOCTYPE html>
     <div class="nav-links">
       <a href="https://github.com/justrach/nanobrew">GitHub</a>
       <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/v0.1.209">v0.1.209</a>
+      <a href="/v0.1.198">v0.1.198</a>
       <a href="/v0.1.193">v0.1.193</a>
       <a href="/v0.1.192">v0.1.192</a>
       <a href="/v0.1.190">v0.1.190</a>
@@ -1926,6 +1941,8 @@ const RELEASE_192_HTML = `<!DOCTYPE html>
     <div class="nav-links">
       <a href="https://github.com/justrach/nanobrew">GitHub</a>
       <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/v0.1.209">v0.1.209</a>
+      <a href="/v0.1.198">v0.1.198</a>
       <a href="/v0.1.193">v0.1.193</a>
       <a href="/v0.1.191">v0.1.191</a>
       <a href="/v0.1.190">v0.1.190</a>
@@ -2296,6 +2313,8 @@ const RELEASE_193_HTML = `<!DOCTYPE html>
     <div class="nav-links">
       <a href="https://github.com/justrach/nanobrew">GitHub</a>
       <a href="https://github.com/justrach/nanobrew#install">Install</a>
+      <a href="/v0.1.209">v0.1.209</a>
+      <a href="/v0.1.198">v0.1.198</a>
       <a href="/v0.1.192">v0.1.192</a>
       <a href="/v0.1.191">v0.1.191</a>
       <a href="/v0.1.190">v0.1.190</a>
@@ -2557,6 +2576,42 @@ document.querySelectorAll('[data-observe]').forEach(el => obs.observe(el));
 </body>
 </html>`;
 
+// Keep release summaries small; detailed historical evidence lives on GitHub.
+const RELEASE_SUMMARIES = {
+  "0.1.198": {
+    title: "Bottle registry and vulnerability scanning",
+    items: [
+      "A nanobrew-owned GHCR bottle registry with mirror and repackage tooling.",
+      "Weekly SBOM and vulnerability scans, revocation, and fallback to earlier versions.",
+      "Native ELF relocation and improvements to cached installs and dependency resolution.",
+      "Version switching and fixes for TLS certificates, cask downloads, and stale upstream pins.",
+    ],
+  },
+  "0.1.209": {
+    title: "Cask resources and install correctness",
+    items: [
+      "Archive-backed casks retain helper files, package metadata, and runtime resources.",
+      "Nested archive binaries and variable fonts with bracketed filenames install correctly.",
+      "Service validation follows chained symlinks and checks that targets remain in the Cellar.",
+      "Tap VERSION constants resolve in download URLs; OpenSSL sources use their proper build steps.",
+      "Debian installs reject non-root execution early and report extraction failures.",
+    ],
+  },
+};
+function releasePage(version) {
+  const release = RELEASE_SUMMARIES[version];
+  return `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>nanobrew v${version} — ${release.title}</title>
+<style>
+:root{color-scheme:dark}*{box-sizing:border-box}body{margin:0;background:#0a0a0b;color:#e8e8e8;font:18px/1.7 system-ui,sans-serif}main{max-width:850px;margin:auto;padding:60px 24px}nav{display:flex;gap:24px;flex-wrap:wrap;font-size:15px}a{color:#84e5bb}h1{font-size:clamp(36px,7vw,62px);line-height:1.1;letter-spacing:-2px;margin:72px 0 16px}h2{font-size:24px;font-weight:500;color:#b5b5bb}ul{padding-left:24px;margin:40px 0}li{padding:10px 0;border-bottom:1px solid #27272a}code{display:inline-block;background:#19191c;border:1px solid #333;border-radius:8px;padding:14px 22px}footer{margin-top:60px;color:#aaa;font-size:14px}
+</style><main><nav><a href="/">nanobrew</a><a href="/v0.1.209">Latest release</a><a href="/v0.1.198">v0.1.198</a><a href="/v0.1.193">v0.1.193</a></nav>
+<h1>nanobrew v${version}</h1><h2>${release.title}</h2>
+<ul>${release.items.map(item => `<li>${item}</li>`).join("")}</ul>
+<p><a href="https://github.com/${REPO}/releases/tag/v${version}">Read the complete release notes and validation</a></p>
+<p>Update to the latest available version:</p><code>nb update</code>
+<footer>macOS and Linux · Apache-2.0 · <a href="https://github.com/${REPO}">Source on GitHub</a></footer></main></html>`;
+}
+
 export default {
   async fetch(request) {
     const url = new URL(request.url);
@@ -2585,7 +2640,7 @@ export default {
         });
         if (!gh.ok) {
           // Rate limited — return last known version
-          return new Response("0.1.193", {
+          return new Response("0.1.209", {
             headers: {
               "content-type": "text/plain; charset=utf-8",
               "cache-control": "public, max-age=60",
@@ -2595,6 +2650,7 @@ export default {
         }
         const data = await gh.json();
         const tag = data.tag_name || "";
+        if (!/^v?\d+\.\d+\.\d+$/.test(tag)) throw new Error("Invalid release tag");
         const ver = tag.startsWith("v") ? tag.slice(1) : tag;
         const resp = new Response(ver, {
           headers: {
@@ -2607,7 +2663,7 @@ export default {
         await cache.put(cacheKey, resp.clone());
         return resp;
       } catch {
-        return new Response("0.1.193", {
+        return new Response("0.1.209", {
           headers: {
             "content-type": "text/plain; charset=utf-8",
             "cache-control": "public, max-age=60",
@@ -2621,7 +2677,7 @@ export default {
       return new Response(LANDING_HTML, {
         headers: {
           "content-type": "text/html; charset=utf-8",
-          "cache-control": "public, max-age=3600",
+          "cache-control": "public, max-age=300",
         },
       });
     }
@@ -2631,6 +2687,21 @@ export default {
         headers: {
           "content-type": "text/html; charset=utf-8",
           "cache-control": "public, max-age=3600",
+        },
+      });
+    }
+
+    if (url.pathname === "/v0.1.209" || url.pathname === "/v-0.1.209") {
+      return new Response(releasePage("0.1.209"), {
+        headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=300" },
+      });
+    }
+
+    if (url.pathname === "/v0.1.198" || url.pathname === "/v-0.1.198") {
+      return new Response(releasePage("0.1.198"), {
+        headers: {
+          "content-type": "text/html; charset=utf-8",
+          "cache-control": "public, max-age=86400",
         },
       });
     }

@@ -153,8 +153,11 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          TITLE="bottle scan: severity gate failed ($(date -u +%F))"
-          BODY="$(sed -n '/GATE FAILED/,$p' scan.log | head -60)"
+          TITLE="bottle scan failed ($(date -u +%F))"
+          BODY="$(awk '/GATE FAILED/ { found=1 } found && n++ < 60 { print }' scan.log 2>/dev/null || true)"
+          if [ -z "$BODY" ]; then
+            BODY="$(tail -60 scan.log 2>/dev/null || echo 'Scan did not produce a log. See the workflow run for setup errors.')"
+          fi
           gh issue create --title "$TITLE" --label security \
-            --body "$(printf 'Weekly bottle rescan found findings at/above the gate.\n\n```\n%s\n```\n\nFix: bump the pin, or `python3 scripts/bottles/nb_bottles.py revoke <name> --advisory <id> --reason ...` to fall installs back to the previous good version.' "$BODY")" \
+            --body "$(printf 'Weekly bottle rescan failed. The log below distinguishes a severity gate hit from a scanner or setup error.\n\n```\n%s\n```\n\nFix: bump the pin, or `python3 scripts/bottles/nb_bottles.py revoke <name> --advisory <id> --reason ...` to fall installs back to the previous good version.' "$BODY")" \
             || echo "::warning::could not create issue (already open?)"

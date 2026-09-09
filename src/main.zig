@@ -27,7 +27,9 @@ const Command = enum {
     where,
     upgrade,
     update,
+    autoupdate,
     update_registry,
+    version,
     help,
     doctor,
     cleanup,
@@ -164,6 +166,7 @@ pub fn main(init: std.process.Init) !void {
     // `paths.safe_io` and crashed under
     // concurrent use. See paths.zig for the full rationale.
     paths.safe_io = init.io;
+    nb.proxy.environment = init.environ_map;
     const alloc = init.gpa;
 
     const args_raw = try init.minimal.args.toSlice(init.arena.allocator());
@@ -197,7 +200,9 @@ pub fn main(init: std.process.Init) !void {
         .where => runWhere(alloc, args[2..]),
         .upgrade => runUpgrade(alloc, args[2..]),
         .update => runUpdate(alloc),
+        .autoupdate => runAutoUpdate(alloc, args[2..]),
         .update_registry => runUpdateRegistry(alloc),
+        .version => (StdoutWriter{}).print("{s}\n", .{VERSION}) catch {},
         .help => printUsage(),
         .doctor => runDoctor(alloc, args[2..]),
         .cleanup => runCleanup(alloc, args[2..]),
@@ -273,8 +278,13 @@ fn parseCommand(arg: []const u8) ?Command {
         .{ "upgrade", Command.upgrade },
         .{ "update", Command.update },
         .{ "self-update", Command.update },
+        .{ "autoupdate", Command.autoupdate },
+        .{ "auto-update", Command.autoupdate },
         .{ "update-registry", Command.update_registry },
         .{ "help", Command.help },
+        .{ "version", Command.version },
+        .{ "--version", Command.version },
+        .{ "-v", Command.version },
         .{ "--help", Command.help },
         .{ "-h", Command.help },
         .{ "doctor", Command.doctor },
@@ -3411,6 +3421,105 @@ fn runUpdateRegistry(alloc: std.mem.Allocator) void {
     refreshUpstreamRegistry(alloc);
 }
 
+fn runAutoUpdate(alloc: std.mem.Allocator, args: []const []const u8) void {
+    const stdout = StdoutWriter{};
+    const stderr = StderrWriter{};
+
+    var subcmd: ?[]const u8 = null;
+    var mode: nb.autoupdate.Mode = .self;
+
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--upgrade")) {
+            mode = .upgrade;
+        } else if (std.mem.eql(u8, arg, "--self-only")) {
+            mode = .self;
+        } else if (arg.len > 0 and arg[0] == '-') {
+            stderr.print("nb: unknown autoupdate option '{s}'\n", .{arg}) catch {};
+            stderr.print("Usage: nb autoupdate [enable|disable|status|run] [--upgrade]\n", .{}) catch {};
+            std.process.exit(1);
+        } else if (subcmd == null) {
+            subcmd = arg;
+        } else {
+            stderr.print("nb: unexpected autoupdate argument '{s}'\n", .{arg}) catch {};
+            stderr.print("Usage: nb autoupdate [enable|disable|status|run] [--upgrade]\n", .{}) catch {};
+            std.process.exit(1);
+        }
+    }
+
+    const action = subcmd orelse "status";
+
+    if (std.mem.eql(u8, action, "enable")) {
+        const exe_path = currentExecutablePath(alloc) catch |err| {
+            stderr.print("nb: autoupdate enable failed: could not determine executable path: {}\n", .{err}) catch {};
+            std.process.exit(1);
+        };
+        defer alloc.free(exe_path);
+
+        nb.autoupdate.enable(alloc, exe_path, mode) catch |err| {
+            stderr.print("nb: autoupdate enable failed: {}\n", .{err}) catch {};
+            if (comptime builtin.os.tag == .linux) {
+                stderr.print("nb: systemd user timers require a running user session; try: systemctl --user status\n", .{}) catch {};
+            }
+            std.process.exit(1);
+        };
+
+        const path: ?[]const u8 = nb.autoupdate.schedulePath(alloc) catch null;
+        defer if (path) |p| alloc.free(p);
+        stdout.print("==> Enabled daily nanobrew auto-update at 03:00\n", .{}) catch {};
+        if (mode == .upgrade) {
+            stdout.print("    Action: nb update, then nb upgrade\n", .{}) catch {};
+        } else {
+            stdout.print("    Action: nb update\n", .{}) catch {};
+        }
+        if (path) |p| stdout.print("    Schedule: {s}\n", .{p}) catch {};
+    } else if (std.mem.eql(u8, action, "disable")) {
+        nb.autoupdate.disable(alloc) catch |err| {
+            stderr.print("nb: autoupdate disable failed: {}\n", .{err}) catch {};
+            std.process.exit(1);
+        };
+        stdout.print("==> Disabled nanobrew auto-update\n", .{}) catch {};
+    } else if (std.mem.eql(u8, action, "status")) {
+        const status_result = nb.autoupdate.status(alloc) catch |err| {
+            stderr.print("nb: autoupdate status failed: {}\n", .{err}) catch {};
+            std.process.exit(1);
+        };
+        const path: ?[]const u8 = nb.autoupdate.schedulePath(alloc) catch null;
+        defer if (path) |p| alloc.free(p);
+
+        const installed = if (status_result.installed) "installed" else "not installed";
+        const loaded = if (status_result.loaded) "enabled" else "not enabled";
+        stdout.print("==> Auto-update is {s}, {s}\n", .{ installed, loaded }) catch {};
+        if (path) |p| stdout.print("    Schedule: {s}\n", .{p}) catch {};
+    } else if (std.mem.eql(u8, action, "run")) {
+        const exe_path = currentExecutablePath(alloc) catch std.process.exit(1);
+        defer alloc.free(exe_path);
+        const code = nb.autoupdate.run(alloc, exe_path, mode) catch |err| {
+            stderr.print("nb: autoupdate run failed: {}\n", .{err}) catch {};
+            std.process.exit(1);
+        };
+        if (code != 0) std.process.exit(code);
+    } else {
+        stderr.print("nb: unknown autoupdate subcommand '{s}'\n", .{action}) catch {};
+        stderr.print("Usage: nb autoupdate [enable|disable|status|run] [--upgrade]\n", .{}) catch {};
+        std.process.exit(1);
+    }
+}
+
+fn currentExecutablePath(alloc: std.mem.Allocator) ![]const u8 {
+    var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+    if (comptime builtin.os.tag == .macos) {
+        var exe_buf_size: u32 = @intCast(exe_buf.len);
+        if (std.c._NSGetExecutablePath(@ptrCast(&exe_buf), &exe_buf_size) != 0) {
+            return error.PathTooLong;
+        }
+        return try alloc.dupe(u8, std.mem.sliceTo(&exe_buf, 0));
+    } else {
+        const n_signed = std.c.readlink("/proc/self/exe", &exe_buf, exe_buf.len);
+        if (n_signed < 0) return error.ReadLinkFailed;
+        return try alloc.dupe(u8, exe_buf[0..@as(usize, @intCast(n_signed))]);
+    }
+}
+
 fn runUpdate(alloc: std.mem.Allocator) void {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
@@ -4074,6 +4183,9 @@ fn printUsage() void {
         \\  upgrade --deb            Upgrade all installed .deb packages
         \\  update                   Self-update nanobrew (also refreshes the upstream registry)
         \\  update-registry          Refresh only the verified-upstream version registry
+        \\  autoupdate [enable|disable|status|run] [--upgrade]
+        \\                           Manage opt-in daily updates at 03:00
+        \\  version                  Print the installed version
         \\  doctor [--probe [pkg]]   Check installation health / probe installed packages
         \\  cleanup [--dry-run]      Remove stale caches and orphaned files
         \\  outdated                 List packages with newer versions available
@@ -5512,6 +5624,8 @@ fn runCompletions(args: []const []const u8) void {
             \\    'search:Search for packages'
             \\    'where:Find packages by pattern (installed, files, index)'
             \\    'upgrade:Upgrade packages'
+            \\    'autoupdate:Manage opt-in daily updates'
+            \\    'version:Print installed version'
             \\    'update:Self-update nanobrew'
             \\    'update-registry:Refresh the verified-upstream registry'
             \\    'doctor:Check installation health'
@@ -5578,7 +5692,7 @@ fn runCompletions(args: []const []const u8) void {
     } else if (std.mem.eql(u8, shell, "bash")) {
         stdout.print(
             \\_nb_completions() {{
-            \\  local commands="init install remove list leaves info search where upgrade update doctor cleanup outdated pin unpin rollback switch bundle deps services completions telemetry nuke migrate help"
+            \\  local commands="init install remove list leaves info search where upgrade update update-registry autoupdate version doctor cleanup outdated pin unpin rollback switch bundle deps services completions telemetry nuke migrate help"
             \\  if [[ $COMP_CWORD -eq 1 ]]; then
             \\    COMPREPLY=($(compgen -W "$commands" -- "${{COMP_WORDS[COMP_CWORD]}}"))
             \\  else
@@ -5616,6 +5730,8 @@ fn runCompletions(args: []const []const u8) void {
             \\complete -c nb -n '__fish_use_subcommand' -a 'search' -d 'Search for packages'
             \\complete -c nb -n '__fish_use_subcommand' -a 'where' -d 'Find packages by pattern'
             \\complete -c nb -n '__fish_use_subcommand' -a 'upgrade' -d 'Upgrade packages'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'autoupdate' -d 'Manage opt-in daily updates'
+            \\complete -c nb -n '__fish_use_subcommand' -a 'version' -d 'Print installed version'
             \\complete -c nb -n '__fish_use_subcommand' -a 'update' -d 'Self-update nanobrew'
             \\complete -c nb -n '__fish_use_subcommand' -a 'update-registry' -d 'Refresh the verified-upstream registry'
             \\complete -c nb -n '__fish_use_subcommand' -a 'doctor' -d 'Check installation health'
@@ -6378,6 +6494,7 @@ fn runDebUpgrade(alloc: std.mem.Allocator) void {
 
 /// Download a URL to memory using Zig's native HTTP client.
 fn httpGetToMemory(alloc: std.mem.Allocator, client: *std.http.Client, url: []const u8) ?[]u8 {
+    if (nb.proxy.enabled()) return nb.fetch.getWithClient(alloc, client, url) catch null;
     const uri = std.Uri.parse(url) catch return null;
     var req = client.request(.GET, uri, .{
         .redirect_behavior = @enumFromInt(3),
@@ -6412,6 +6529,19 @@ fn downloadDebWithSha256(
     dest_path: []const u8,
     verify: bool,
 ) !void {
+    if (nb.proxy.enabled()) {
+        if (expected_sha256.len != 64) return error.ChecksumMissing;
+        const temp = try std.fmt.allocPrint(client.allocator, "{s}.{d}-{d}.dl", .{ dest_path, std.c.getpid(), std.Thread.getCurrentId() });
+        defer client.allocator.free(temp);
+        defer std.Io.Dir.deleteFileAbsolute(g_io, temp) catch {};
+        try nb.proxy.download(client.allocator, url, temp, null, &.{}, null);
+        if (!try nb.proxy.matchesSha(temp, expected_sha256)) {
+            if (verify) return error.ChecksumMismatch;
+            (StderrWriter{}).print("nb: --no-verify: sha256 mismatch for {s}; continuing\n", .{dest_path}) catch {};
+        }
+        try std.Io.Dir.renameAbsolute(temp, dest_path, g_io);
+        return;
+    }
     const uri = std.Uri.parse(url) catch return error.DownloadFailed;
     var req = client.request(.GET, uri, .{
         .redirect_behavior = @enumFromInt(3),
@@ -6532,6 +6662,7 @@ fn downloadDebToFile(
     url: []const u8,
     dest_path: []const u8,
 ) !void {
+    if (nb.proxy.enabled()) return nb.proxy.download(client.allocator, url, dest_path, null, &.{}, null);
     const uri = std.Uri.parse(url) catch return error.DownloadFailed;
     var req = client.request(.GET, uri, .{
         .redirect_behavior = @enumFromInt(3),

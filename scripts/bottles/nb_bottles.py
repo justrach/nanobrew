@@ -767,7 +767,10 @@ def _scan_one(rec, platforms, outdir):
                 zipfile.ZipFile(io.BytesIO(data)).extractall(td)
             else:
                 with tarfile.open(fileobj=io.BytesIO(data), mode="r:*") as tf:
-                    tf.extractall(td, filter="data")
+                    # SBOM scanning needs file contents, not links into the host.
+                    # Homebrew bottles can carry absolute symlinks; omit links
+                    # while retaining tarfile's traversal protection.
+                    tf.extractall(td, members=(m for m in tf if not (m.issym() or m.islnk())), filter="data")
             subprocess.run(
                 ["syft", "scan", f"dir:{td}", "-q", "-o", f"spdx-json={sbom_path}"],
                 check=True,

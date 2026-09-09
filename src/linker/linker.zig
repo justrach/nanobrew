@@ -277,7 +277,7 @@ fn installShimLink(
     // Detect per-package env vars (e.g. GIT_EXEC_PATH for git,
     // ImageMagick config/module paths for bottles whose libMagickCore embeds
     // /opt/homebrew Cellar paths that cannot be length-rewritten in-place).
-    var extra_env_buf: [4][2][]const u8 = undefined;
+    var extra_env_buf: [5][2][]const u8 = undefined;
     var extra_env_count: usize = 0;
     var git_core_buf: [512]u8 = undefined;
     const git_core_path = std.fmt.bufPrint(&git_core_buf, "{s}/libexec/git-core", .{keg_dir}) catch "";
@@ -286,6 +286,17 @@ fn installShimLink(
             var bd = d;
             bd.close(lib_io);
             extra_env_buf[extra_env_count] = .{ "GIT_EXEC_PATH", git_core_path };
+            extra_env_count += 1;
+        } else |_| {}
+    }
+
+    var git_templates_buf: [512]u8 = undefined;
+    const git_templates = std.fmt.bufPrint(&git_templates_buf, "{s}/share/git-core/templates", .{keg_dir}) catch "";
+    if (git_templates.len > 0) {
+        if (std.Io.Dir.openDirAbsolute(lib_io, git_templates, .{})) |d| {
+            var dir = d;
+            dir.close(lib_io);
+            extra_env_buf[extra_env_count] = .{ "GIT_TEMPLATE_DIR", git_templates };
             extra_env_count += 1;
         } else |_| {}
     }
@@ -1461,4 +1472,26 @@ test "bottle payload: slow-path unlink removes keg symlinks, keeps non-keg (#347
     } else |_| {}
     const n_cert = try std.Io.Dir.readLinkAbsolute(lib_io, f.dest_cert, &tbuf);
     try std.testing.expectEqualStrings(f.elsewhere, tbuf[0..n_cert]);
+}
+
+test "git shim uses the keg's templates during git init" {
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, "/tmp/nb-git-template-{d}", .{std.c.getpid()});
+    defer std.Io.Dir.cwd().deleteTree(io, root) catch {};
+    const keg = try std.fmt.allocPrint(a, "{s}/keg", .{root});
+    const templates = try std.fmt.allocPrint(a, "{s}/share/git-core/templates", .{keg});
+    testMkPath(io, templates);
+    const marker = try std.fmt.allocPrint(a, "{s}/nanobrew-template", .{templates});
+    try testWriteFile(io, marker, "from the keg\n");
+    const shim = try std.fmt.allocPrint(a, "{s}/git", .{root});
+    const repo = try std.fmt.allocPrint(a, "{s}/repo", .{root});
+    installShimLink(keg, "/usr/bin/git", shim, "git", &.{});
+    const result = try std.process.run(a, io, .{ .argv = &.{ shim, "init", "--quiet", repo } });
+    try std.testing.expect(result.term == .exited and result.term.exited == 0);
+    const installed = try std.fmt.allocPrint(a, "{s}/.git/nanobrew-template", .{repo});
+    const file = try std.Io.Dir.openFileAbsolute(io, installed, .{});
+    file.close(io);
 }

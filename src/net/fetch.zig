@@ -1,10 +1,11 @@
-// nanobrew — Native HTTP fetch (zero curl dependency)
+// nanobrew — Native HTTP fetch, with optional curl transport for proxies.
 //
-// Replaces all curl subprocess spawns with Zig's std.http.Client.
+// Uses Zig's std.http.Client unless a proxy environment is configured.
 // Follows redirects. Auto-decompresses gzip responses.
 
 const std = @import("std");
 const paths = @import("../platform/paths.zig");
+const proxy = @import("proxy.zig");
 const flate = std.compress.flate;
 
 const DOWNLOAD_STREAM_BUFFER_SIZE = 256 * 1024;
@@ -87,6 +88,7 @@ pub fn getWithHeaders(alloc: std.mem.Allocator, url: []const u8, extra_headers: 
 
 /// Fetch using an existing client plus additional headers.
 pub fn getWithClientHeaders(alloc: std.mem.Allocator, client: *std.http.Client, url: []const u8, extra_headers: []const std.http.Header) ![]u8 {
+    if (proxy.enabled()) return proxy.request(alloc, url, null, extra_headers, null);
     const uri = std.Uri.parse(url) catch return error.InvalidUrl;
     const split = splitUserAgent(alloc, extra_headers);
     defer if (split.rest.ptr != extra_headers.ptr and split.rest.len > 0) alloc.free(split.rest);
@@ -160,6 +162,7 @@ fn downloadCore(
     extra_headers: []const std.http.Header,
     body: PostBody,
 ) !void {
+    if (proxy.enabled()) return proxy.download(client.allocator, url, dest_path, expected_sha256, extra_headers, body);
     if (expected_sha256) |sha| {
         if (sha.len < 64) return error.ChecksumMismatch;
     }

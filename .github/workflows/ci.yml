@@ -35,6 +35,19 @@ jobs:
       - name: Unit tests
         run: zig build test
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Proxy, scheduler, bottle scan and site regression tests
+        run: |
+          zig build-exe -lc src/test_proxy_transport.zig -femit-bin=/tmp/nb-proxy-fixture
+          python3 scripts/test_proxy_transport.py /tmp/nb-proxy-fixture
+          zig build-exe -lc src/test_autoupdate_runner.zig -femit-bin=/tmp/nb-autoupdate-fixture
+          python3 tests/autoupdate.py ./zig-out/bin/nb /tmp/nb-autoupdate-fixture
+          python3 scripts/bottles/test_scan.py
+          node worker/test.mjs
+
       - name: Shell completion regression tests
         run: bash tests/completions.sh ./zig-out/bin/nb
 
@@ -71,6 +84,19 @@ jobs:
 
       - name: Unit tests
         run: zig build test
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Proxy, scheduler, bottle scan and site regression tests
+        run: |
+          zig build-exe -lc src/test_proxy_transport.zig -femit-bin=/tmp/nb-proxy-fixture
+          python3 scripts/test_proxy_transport.py /tmp/nb-proxy-fixture
+          zig build-exe -lc src/test_autoupdate_runner.zig -femit-bin=/tmp/nb-autoupdate-fixture
+          python3 tests/autoupdate.py ./zig-out/bin/nb /tmp/nb-autoupdate-fixture
+          python3 scripts/bottles/test_scan.py
+          node worker/test.mjs
 
       - name: Test init creates opt/ directory
         run: |
