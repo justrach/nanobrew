@@ -225,7 +225,7 @@ pub fn chooseFormula(a: std.mem.Allocator, feed: Feed, current: Formula) !Formul
     const e = feed.latest(current.name, .formula, current.effectiveVersion(&buf), platform(), formulaSha(current), timestamp()) orelse return current;
     if (e.result != .fail) return current;
     const good = feed.newestPassing(current.name, .formula, platform(), timestamp()) orelse return current;
-    try rejectRevoked(a, good.*);
+    rejectRevoked(a, good.*) catch return current;
     const replacement = try good.toFormula(a);
     const message = try std.fmt.allocPrint(a, "nb: {s} {s} has failing install evidence; using verified-working {s}\n", .{ current.name, current.effectiveVersion(&buf), good.version });
     defer a.free(message);
@@ -321,4 +321,29 @@ pub fn rejectRevoked(a: std.mem.Allocator, e: Entry) !void {
             }
         }
     }
+}
+
+test "cask snapshots own nested union artifacts and optional strings" {
+    const a = std.testing.allocator;
+    const c = Cask{ .token = "fixture", .name = "Fixture", .version = "1", .url = "https://example.org/app.zip", .sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", .homepage = "", .desc = "", .auto_updates = false, .min_macos = "13", .artifacts = &.{ .{ .app = "Fixture.app" }, .{ .binary = .{ .source = "bin/helper", .target = "helper" } } }, .headers = &.{"Accept: application/zip"} };
+    const copied = try owned.clone(Cask, a, c);
+    defer copied.deinit(a);
+    try std.testing.expectEqualStrings("Fixture.app", copied.artifacts[0].app);
+    try std.testing.expectEqualStrings("helper", copied.artifacts[1].binary.target);
+    try std.testing.expect(copied.artifacts[0].app.ptr != c.artifacts[0].app.ptr);
+    try std.testing.expectEqualStrings("13", copied.min_macos.?);
+}
+
+pub fn chooseCask(a: std.mem.Allocator, feed: Feed, current: Cask) !Cask {
+    if (current.revoked_fallback) return current;
+    const e = feed.latest(current.token, .cask, current.version, platform(), current.sha256, timestamp()) orelse return current;
+    if (e.result != .fail) return current;
+    const good = feed.newestPassing(current.token, .cask, platform(), timestamp()) orelse return current;
+    rejectRevoked(a, good.*) catch return current;
+    const replacement = try good.toCask(a);
+    const message = try std.fmt.allocPrint(a, "nb: {s} {s} has failing install evidence; using verified-working {s}\n", .{ current.token, current.version, good.version });
+    defer a.free(message);
+    std.Io.File.stderr().writeStreamingAll(paths.safe_io, message) catch {};
+    current.deinit(a);
+    return replacement;
 }

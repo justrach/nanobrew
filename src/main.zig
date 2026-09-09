@@ -982,6 +982,17 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             var dir = d;
             dir.close(g_io);
             const expected_sha = formulaArtifactSha(f);
+            var strict_identity = g_min_trust > 0;
+            for (pinned_names.items) |name| {
+                if (std.mem.eql(u8, name, f.name)) strict_identity = true;
+            }
+            if (strict_identity) {
+                const installed = if (filter_db) |*loaded| loaded.findKeg(f.name) else null;
+                if (installed == null or !trust.validSha(installed.?.sha256)) {
+                    stderr.print("nb: cannot certify existing unrecorded bytes for {s}; reinstall it before requiring trust\n", .{f.name}) catch {};
+                    std.process.exit(1);
+                }
+            }
             const artifact_changed = if (filter_db) |*db| blk: {
                 const installed = db.findKeg(f.name) orelse break :blk false;
                 break :blk expected_sha.len > 0 and
@@ -4086,24 +4097,10 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
             };
         };
         defer cask_meta.deinit(alloc);
-        if (!trusted and !cask_meta.revoked_fallback) {
-            if (evidence) |d| {
-                if (d.value.latest(cask_meta.token, .cask, cask_meta.version, trust.platform(), cask_meta.sha256, trust.timestamp())) |e| {
-                    if (e.result == .fail) {
-                        if (d.value.newestPassing(cask_meta.token, .cask, trust.platform(), trust.timestamp())) |good| {
-                            trust.rejectRevoked(alloc, good.*) catch {
-                                std.process.exit(1);
-                            };
-                            const replacement = good.toCask(alloc) catch {
-                                std.process.exit(1);
-                            };
-                            stderr.print("nb: {s} {s} has failing install evidence; using verified-working {s}\n", .{ cask_meta.token, cask_meta.version, good.version }) catch {};
-                            cask_meta.deinit(alloc);
-                            cask_meta = replacement;
-                        }
-                    }
-                }
-            }
+        if (!trusted) {
+            if (evidence) |d| cask_meta = trust.chooseCask(alloc, d.value, cask_meta) catch {
+                std.process.exit(1);
+            };
         }
         var tier: u8 = if (trust.validSha(cask_meta.sha256)) 1 else 0;
         if (tier == 1 and cask_meta.metadata_source == .verified_upstream) tier = 2;
@@ -4128,6 +4125,10 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
         // be retargeted to a different canonical cask over time; treating the old
         // record as the new cask would orphan payloads and transfer identity.
         if (db.findCask(token)) |existing| {
+            if ((trusted or required > 0) and (!std.mem.eql(u8, existing.version, cask_meta.version) or !std.ascii.eqlIgnoreCase(existing.sha256, cask_meta.sha256))) {
+                stderr.print("nb: installed cask {s} does not match the trusted candidate; keeping it unchanged\n", .{token}) catch {};
+                std.process.exit(1);
+            }
             const installed_canonical = if (existing.canonical_token.len > 0) existing.canonical_token else existing.token;
             if (std.mem.eql(u8, installed_canonical, cask_meta.token)) {
                 stdout.print("==> {s} {s} is already installed\n", .{ token, existing.version }) catch {};
@@ -4141,6 +4142,10 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
             continue;
         }
         if (db.findCask(cask_meta.token)) |existing| {
+            if ((trusted or required > 0) and (!std.mem.eql(u8, existing.version, cask_meta.version) or !std.ascii.eqlIgnoreCase(existing.sha256, cask_meta.sha256))) {
+                stderr.print("nb: installed cask {s} does not match the trusted candidate; keeping it unchanged\n", .{token}) catch {};
+                std.process.exit(1);
+            }
             stdout.print("==> {s} {s} is already installed\n", .{ cask_meta.token, existing.version }) catch {};
             continue;
         }
@@ -4160,6 +4165,10 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
             continue;
         };
         if (cask_conflict) |conflict| {
+            if (trusted or required > 0) {
+                stderr.print("nb: cannot certify an existing unrecorded cask payload at {s}\n", .{conflict.path}) catch {};
+                std.process.exit(1);
+            }
             // The destination already exists. If nanobrew owns this token's
             // Caskroom payload but the DB lost the record (e.g. an earlier
             // multi-cask run was interrupted before it flushed (#302), or only

@@ -1,0 +1,44 @@
+{
+  "token": "ripgrep",
+  "kind": "formula",
+  "version": "15.2.0",
+  "platform": "linux_x86_64",
+  "sha256": "b92a80402edd4e6fa17e9eb580d20e941c60787510c4ce2716fa53d2c6d4c432",
+  "result": "pass",
+  "source": "attested",
+  "observed_at": 1788921066,
+  "probe_schema": 3,
+  "nb_version": "0.1.209",
+  "run": "https://condensation.ai/sandboxes",
+  "source_verified": false,
+  "distinct_successes": 0,
+  "distinct_failures": 0,
+  "formula": {
+    "name": "ripgrep",
+    "version": "15.2.0",
+    "revision": 0,
+    "rebuild": 1,
+    "desc": "Search tool like grep and The Silver Searcher",
+    "homepage": "https://github.com/BurntSushi/ripgrep",
+    "license": "Unlicense",
+    "dependencies": [
+      "pcre2"
+    ],
+    "bottle_url": "https://ghcr.io/v2/homebrew/core/ripgrep/blobs/sha256:b92a80402edd4e6fa17e9eb580d20e941c60787510c4ce2716fa53d2c6d4c432",
+    "bottle_sha256": "b92a80402edd4e6fa17e9eb580d20e941c60787510c4ce2716fa53d2c6d4c432",
+    "source_url": "https://github.com/BurntSushi/ripgrep/archive/refs/tags/15.2.0.tar.gz",
+    "source_sha256": "7605249d3eb0d5f170e3414498e3344e26b1e7a147aec518b57090b80036a562",
+    "source_nounzip": false,
+    "build_deps": [
+      "asciidoctor",
+      "pkgconf",
+      "rust"
+    ],
+    "install_binaries": [],
+    "install_bin_renames": [],
+    "caveats": "",
+    "post_install_defined": false,
+    "revoked_fallback": false
+  },
+  "cask": null
+}
