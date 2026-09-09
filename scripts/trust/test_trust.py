@@ -61,7 +61,7 @@ class TrustTests(unittest.TestCase):
         self.assertEqual(publish.combine([failed,self.entry],[],[],[],self.now)[0]['result'],'fail')
     def test_publish_roundtrip(self):
         inputs=self.root/'ci';inputs.mkdir();(inputs/'fixture.json').write_text(json.dumps(self.entry))
-        subprocess.run([sys.executable,str(Path(__file__).with_name('publish.py')),'--ci-dir',str(inputs),'--key',str(self.key),'--public-key',str(self.pub),'--output',str(self.output)],check=True,capture_output=True)
+        subprocess.run([sys.executable,str(Path(__file__).with_name('publish.py')),'--ci-dir',str(inputs),'--attestations',str(self.root/'empty-attestations'),'--key',str(self.key),'--public-key',str(self.pub),'--output',str(self.output)],check=True,capture_output=True)
         self.assertEqual(self.command('trust','verify',str(self.output)).returncode,0)
         self.assertEqual(len(publish.verify_envelope(self.output,self.pub)),1)
 

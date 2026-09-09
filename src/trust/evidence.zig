@@ -184,6 +184,7 @@ pub fn load(a: std.mem.Allocator) !Document {
     if (read(a, cache)) |bytes| {
         defer a.free(bytes);
         if (verifyEnvelope(a, bytes)) |doc| {
+            errdefer doc.deinit();
             const file = try std.Io.Dir.cwd().openFile(paths.safe_io, cache, .{});
             defer file.close(paths.safe_io);
             const stat = try file.stat(paths.safe_io);
@@ -227,6 +228,7 @@ pub fn chooseFormula(a: std.mem.Allocator, feed: Feed, current: Formula) !Formul
     const good = feed.newestPassing(current.name, .formula, platform(), timestamp()) orelse return current;
     rejectRevoked(a, good.*) catch return current;
     const replacement = try good.toFormula(a);
+    errdefer replacement.deinit(a);
     const message = try std.fmt.allocPrint(a, "nb: {s} {s} has failing install evidence; using verified-working {s}\n", .{ current.name, current.effectiveVersion(&buf), good.version });
     defer a.free(message);
     std.Io.File.stderr().writeStreamingAll(paths.safe_io, message) catch {};
@@ -341,6 +343,7 @@ pub fn chooseCask(a: std.mem.Allocator, feed: Feed, current: Cask) !Cask {
     const good = feed.newestPassing(current.token, .cask, platform(), timestamp()) orelse return current;
     rejectRevoked(a, good.*) catch return current;
     const replacement = try good.toCask(a);
+    errdefer replacement.deinit(a);
     const message = try std.fmt.allocPrint(a, "nb: {s} {s} has failing install evidence; using verified-working {s}\n", .{ current.token, current.version, good.version });
     defer a.free(message);
     std.Io.File.stderr().writeStreamingAll(paths.safe_io, message) catch {};

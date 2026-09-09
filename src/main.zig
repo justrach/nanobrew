@@ -91,7 +91,7 @@ const ProbeResult = enum(u8) {
 
 // Persisted probe evidence is valid only for the platform and semantics that
 // produced it. Bump the schema whenever probe acceptance rules materially change.
-const LOCAL_PROBE_SCHEMA: u32 = 3;
+const LOCAL_PROBE_SCHEMA: u32 = trust.PROBE_SCHEMA;
 const LOCAL_PROBE_PLATFORM: u32 = switch (builtin.os.tag) {
     .macos => switch (builtin.cpu.arch) {
         .aarch64 => 1,
@@ -937,6 +937,12 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     defer if (filter_db) |*db| db.close();
     if (g_min_trust > 0) {
         for (all_formulae) |f| {
+            for (f.dependencies) |dep| {
+                if (!resolver.hasFormula(dep)) {
+                    stderr.print("nb: refusing {s}: dependency {s} has no resolved trust metadata\n", .{ f.name, dep }) catch {};
+                    std.process.exit(1);
+                }
+            }
             var tier = trust.formulaTier(resolver.evidence, f, trust.timestamp());
             if (filter_db) |*d| {
                 if (d.findKeg(f.name)) |keg| {
