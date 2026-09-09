@@ -5,3 +5,17 @@ compatibility_date = "2024-12-01"
 routes = [
   { pattern = "nanobrew.trilok.ai", custom_domain = true }
 ]
+
+[[d1_databases]]
+binding = "TRUST_DB"
+database_name = "nanobrew-trust"
+database_id = "9dcd184a-3065-428b-bd20-4cf747372104"
+migrations_dir = "migrations"
+
+[[ratelimits]]
+name = "TRUST_RATE_LIMIT"
+namespace_id = "317209"
+simple = { limit = 60, period = 60 }
+
+[triggers]
+crons = ["41 4 * * *"]

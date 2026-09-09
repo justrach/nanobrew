@@ -500,3 +500,69 @@ macOS uses a per-user LaunchAgent and writes logs under
 required; Linux timers catch up after a missed run. Keep the executable at the
 path used when enabling the schedule, and re-enable after moving it. The scheduler
 runs with your user's permissions and does not grant permission to update root-owned files.
+
+### Install trust and evidence
+
+`nb info <pkg>` reports checksum, source-review, and install evidence for the
+exact version, platform, and artifact SHA-256. `nb doctor --probe <pkg>` checks
+the installed payload and records local evidence. A probe verifies that an
+executable loads and responds; it does not certify every feature or the absence
+of malicious behavior.
+
+```sh
+nb install --trusted-only jq      # require tier 3, including dependencies
+nb install ripgrep@trusted        # newest signed passing artifact for this platform
+nb info ripgrep
+nb trust attest ripgrep --output registry/attestations/ripgrep-linux.json
+nb trust verify registry/trust-evidence.json
+```
+
+To require trust on subsequent installs, put `min_trust = 3` in
+`/opt/nanobrew/config/config.toml`. Values 0 through 3 are accepted;
+`NANOBREW_CONFIG` selects another file and `NANOBREW_MIN_TRUST` overrides the
+setting. Tier 2 requires a matching source-reviewed artifact. Local Ruby and
+APT/deb installs reject nonzero trust requirements because they do not yet
+produce compatible evidence. Normal installs retain their existing policy,
+except that fresh failure evidence selects a known working version when one
+is available. Explicit version pins are not silently replaced.
+
+Published evidence is an Ed25519-signed envelope containing a JSON payload and
+hex signature. It is cached for six hours under the API cache directory and
+expires after 30 days. Invalid signatures, changed checksums, other platforms,
+and incompatible probe schemas cannot confer trust. An unavailable feed falls
+back to still-valid cached evidence; without evidence, `@trusted` fails and
+ordinary installs continue. Upstream revocations take precedence over install
+success. Set `NANOBREW_TRUST_EVIDENCE_URL`, `NANOBREW_TRUST_EVIDENCE_CACHE`, and
+`NANOBREW_TRUST_PUBLIC_KEY` only when deliberately choosing a different evidence
+publisher. The public-key override changes who is trusted to approve artifacts.
+
+The weekly **Trust evidence** workflow installs the packages in
+`registry/trust-seeds.json` plus the top ten Homebrew analytics packages on
+native macOS arm64/x86_64 and Linux aarch64/x86_64 runners. It opens a PR with
+fresh signed observations. Maintainer attestations run the same probe, require
+metadata to match the installed bytes, and produce reviewable records; they do
+not publish themselves. Add reviewed records under `registry/attestations/`
+and run the workflow to include them in the signed feed. The signing key lives
+in the repository's `TRUST_SIGNING_KEY` Actions secret.
+
+Install outcome telemetry requires explicit `nb telemetry on` (or
+`NANOBREW_TELEMETRY=1`), even though legacy download telemetry defaults on.
+`nb telemetry off` and `NANOBREW_NO_TELEMETRY=1` disable both. Outcomes contain
+package, version, platform, checksum, install/probe results, probe schema, and
+an artifact-specific hash derived from a random local secret. They contain no
+hostname, username, filesystem paths, or identifier shared across packages.
+The server uses the connection IP transiently for rate limiting; the outcome
+database stores no IP addresses. Opted-in installs allow up to one second for
+best-effort reports to finish before exit; disabled reporting adds no wait.
+Records expire after 30 days. The public
+aggregate exposes only counts, never reporter identifiers.
+
+Field evidence requires at least 25 distinct successful reporters and a failure
+rate below 2%. A failure rate of at least 2% among 25 or more reporters is failure
+evidence. Repeated reports from one installation count once per artifact, with
+failure winning conflicting reports during the retention window. Anonymous
+reports are a reliability signal, not Sybil-resistant proof: resetting the local
+secret can create another reporter. Field data can only promote artifacts whose
+metadata was already collected by CI or reviewed by a maintainer; it cannot
+supply new download URLs. Provenance remains visible as `ci`, `attested`, or
+`field` in the signed feed.

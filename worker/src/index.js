@@ -1,3 +1,4 @@
+import { handleOutcomes, aggregateOutcomes } from "./outcomes.js";
 const REPO = "justrach/nanobrew";
 
 const INSTALL_SCRIPT = `#!/bin/bash
@@ -2613,8 +2614,13 @@ function releasePage(version) {
 }
 
 export default {
-  async fetch(request) {
+  async scheduled(_event,env) {
+    if (env?.TRUST_DB) await env.TRUST_DB.prepare("DELETE FROM install_outcomes WHERE observed_at < ?").bind(Math.floor(Date.now()/1000)-30*86400).run();
+  },
+  async fetch(request, env) {
     const url = new URL(request.url);
+    if (url.pathname === "/v1/install-outcomes") return handleOutcomes(request,env);
+    if (url.pathname === "/v1/trust-aggregate") return aggregateOutcomes(env);
     const ua = (request.headers.get("user-agent") || "").toLowerCase();
     const isCurl = ua.includes("curl") || ua.includes("wget");
 

@@ -1,0 +1,40 @@
+{
+  "token": "jq",
+  "kind": "formula",
+  "version": "1.8.2",
+  "platform": "linux_x86_64",
+  "sha256": "631787d9b19df5e5557cc83f972080e541f543f8df2d1f212ca4290ff23e9764",
+  "result": "pass",
+  "source": "attested",
+  "observed_at": 1788921066,
+  "probe_schema": 3,
+  "nb_version": "0.1.209",
+  "run": "https://condensation.ai/sandboxes",
+  "source_verified": false,
+  "distinct_successes": 0,
+  "distinct_failures": 0,
+  "formula": {
+    "name": "jq",
+    "version": "1.8.2",
+    "revision": 0,
+    "rebuild": 1,
+    "desc": "Lightweight and flexible command-line JSON processor",
+    "homepage": "https://jqlang.github.io/jq/",
+    "license": "MIT",
+    "dependencies": [
+      "oniguruma"
+    ],
+    "bottle_url": "https://ghcr.io/v2/homebrew/core/jq/blobs/sha256:631787d9b19df5e5557cc83f972080e541f543f8df2d1f212ca4290ff23e9764",
+    "bottle_sha256": "631787d9b19df5e5557cc83f972080e541f543f8df2d1f212ca4290ff23e9764",
+    "source_url": "https://github.com/jqlang/jq/releases/download/jq-1.8.2/jq-1.8.2.tar.gz",
+    "source_sha256": "71b8d6e8f5fe81f6c6d0d110e3892251f6ce76ed095abd315e26e6e1193af3af",
+    "source_nounzip": false,
+    "build_deps": [],
+    "install_binaries": [],
+    "install_bin_renames": [],
+    "caveats": "",
+    "post_install_defined": false,
+    "revoked_fallback": false
+  },
+  "cask": null
+}

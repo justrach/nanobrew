@@ -1,7 +1,5 @@
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-const source = await readFile(new URL('./src/index.js', import.meta.url), 'utf8');
-const { default: worker } = await import('data:text/javascript;base64,' + Buffer.from(source).toString('base64'));
+import worker from './src/index.js';
 globalThis.caches = { default: { match: async () => undefined, put: async () => {} } };
 for (const path of ['/', '/v0.1.198', '/v-0.1.198', '/v0.1.209', '/v-0.1.209']) {
   const response = await worker.fetch(new Request('https://example.test' + path));

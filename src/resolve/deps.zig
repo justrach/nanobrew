@@ -17,6 +17,7 @@ pub const DepResolver = struct {
     formulae: std.StringHashMap(Formula),
     edges: std.StringHashMap([]const []const u8),
     client: ?std.http.Client,
+    evidence: ?@import("../trust/evidence.zig").Feed = null,
 
     pub fn init(alloc: std.mem.Allocator) DepResolver {
         return .{
@@ -127,7 +128,8 @@ pub const DepResolver = struct {
             frontier.clearRetainingCapacity();
             queued_names.clearRetainingCapacity();
             for (results) |maybe_f| {
-                const f = maybe_f orelse continue;
+                const raw = maybe_f orelse continue;
+                const f = if (self.evidence) |feed| try @import("../trust/evidence.zig").chooseFormula(self.alloc, feed, raw) else raw;
                 if (self.formulae.contains(f.name)) {
                     var dup = f;
                     dup.deinit(self.alloc);

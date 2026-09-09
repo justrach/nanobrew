@@ -189,11 +189,15 @@ fn sendPayloadThread(payload: *Payload) void {
 }
 
 fn sendPayload(payload: Payload) !void {
-    const alloc = std.heap.smp_allocator;
     var body_buf: [1024]u8 = undefined;
     const body = try formatPayload(&body_buf, payload);
 
-    const uri = std.Uri.parse(endpoint()) catch return error.TelemetrySendFailed;
+    return sendJson(body, endpoint());
+}
+
+pub fn sendJson(body: []u8, destination: []const u8) !void {
+    const alloc = std.heap.smp_allocator;
+    const uri = std.Uri.parse(destination) catch return error.TelemetrySendFailed;
     var client: std.http.Client = .{
         .allocator = alloc,
         .io = paths.safe_io,
@@ -205,7 +209,7 @@ fn sendPayload(payload: Payload) !void {
         .{ .name = "User-Agent", .value = "nanobrew/telemetry" },
     };
     if (@import("../net/proxy.zig").enabled()) {
-        const result = try @import("../net/proxy.zig").request(alloc, endpoint(), null, &headers, body);
+        const result = try @import("../net/proxy.zig").request(alloc, destination, null, &headers, body);
         defer alloc.free(result);
         return;
     }
@@ -363,4 +367,14 @@ test "live telemetry send smoke" {
     if (std.c.getenv("NANOBREW_TELEMETRY_LIVE_TEST") == null) return error.SkipZigTest;
     var event = DownloadEvent.start(.formula, "nanobrew-smoke");
     event.succeed(1234);
+}
+
+/// Install outcomes require explicit opt-in, including on existing installations.
+pub fn outcomesEnabled() bool {
+    if (std.c.getenv("NANOBREW_NO_TELEMETRY") != null) return false;
+    if (std.c.getenv("NANOBREW_TELEMETRY")) |raw| {
+        const v = std.mem.span(raw);
+        return std.mem.eql(u8, v, "1") or std.ascii.eqlIgnoreCase(v, "on") or std.ascii.eqlIgnoreCase(v, "true");
+    }
+    return readStoredEnabled() orelse false;
 }
