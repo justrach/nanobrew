@@ -2,6 +2,8 @@
 """Install seeded + top-analytics packages and collect real probe outcomes."""
 import argparse
 import json
+import os
+import platform
 from pathlib import Path
 import subprocess
 import urllib.request
@@ -20,6 +22,9 @@ def main():
     p=argparse.ArgumentParser();p.add_argument('--nb',default='./zig-out/bin/nb');p.add_argument('--output',required=True);p.add_argument('--packages',nargs='*');a=p.parse_args()
     out=Path(a.output);out.mkdir(parents=True,exist_ok=True)
     subprocess.run([a.nb,'init'],check=True)
+    if platform.system() == 'Darwin' and Path('/opt/nb').resolve() != Path('/opt/nanobrew/prefix').resolve():
+        raise SystemExit('Runner setup incomplete: run sudo nb init to create /opt/nb before collecting evidence')
+    os.environ['PATH'] = '/opt/nanobrew/prefix/bin:' + os.environ.get('PATH', '')
     for token in a.packages or packages():
         if '/' in token: continue
         print('Collecting',token,flush=True)

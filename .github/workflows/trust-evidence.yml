@@ -39,7 +39,7 @@ jobs:
       - run: zig build -Doptimize=ReleaseFast
       - name: Prepare isolated nanobrew prefix
         run: |
-          sudo mkdir -p /opt/nanobrew
+          sudo env NANOBREW_NO_TELEMETRY=1 ./zig-out/bin/nb init
           sudo chown -R "$(id -u):$(id -g)" /opt/nanobrew
       - name: Collect install evidence
         env:
