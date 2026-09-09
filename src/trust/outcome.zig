@@ -3,6 +3,8 @@ const evidence = @import("evidence.zig");
 const paths = @import("../platform/paths.zig");
 const telemetry = @import("../telemetry/client.zig");
 
+var pending: std.atomic.Value(u32) = .init(0);
+
 pub const Outcome = struct {
     schema: u32 = 1,
     token: []const u8,
@@ -42,12 +44,22 @@ fn send(value: Outcome) !void {
     var hasher = std.crypto.hash.sha2.Sha256.init(.{});
     hasher.update(&seed);
     hasher.update(value.token);
+    hasher.update(&.{0});
+    hasher.update(@tagName(value.kind));
+    hasher.update(&.{0});
+    hasher.update(value.version);
+    hasher.update(&.{0});
     hasher.update(value.platform);
     hasher.update(value.sha256);
     const reporter = std.fmt.bytesToHex(hasher.finalResult(), .lower);
     var payload = value;
     payload.reporter = &reporter;
     const json = try std.json.Stringify.valueAlloc(a, payload, .{});
+    if (pending.fetchAdd(1, .monotonic) >= 32) {
+        _ = pending.fetchSub(1, .release);
+        a.free(json);
+        return;
+    }
     if (evidence.env("NANOBREW_TELEMETRY_SYNC")) |v| {
         if (std.mem.eql(u8, v, "1")) {
             dispatch(json);
@@ -55,12 +67,24 @@ fn send(value: Outcome) !void {
         }
     }
     const thread = std.Thread.spawn(.{}, dispatch, .{json}) catch {
+        _ = pending.fetchSub(1, .release);
         a.free(json);
         return;
     };
     thread.detach();
 }
 fn dispatch(json: []u8) void {
+    defer _ = pending.fetchSub(1, .release);
     defer std.heap.smp_allocator.free(json);
     telemetry.sendJson(json, evidence.env("NANOBREW_OUTCOME_ENDPOINT") orelse "https://nanobrew.trilok.ai/v1/install-outcomes") catch {};
+}
+
+/// Give opted-in reports a bounded opportunity to finish before process exit.
+/// No wait occurs when reporting is disabled or all requests have completed.
+pub fn flush() void {
+    if (pending.load(.acquire) == 0) return;
+    const deadline = std.Io.Timestamp.now(paths.safe_io, .awake).nanoseconds + std.time.ns_per_s;
+    while (pending.load(.acquire) > 0 and std.Io.Timestamp.now(paths.safe_io, .awake).nanoseconds < deadline) {
+        std.Io.sleep(paths.safe_io, .fromMilliseconds(10), .awake) catch return;
+    }
 }

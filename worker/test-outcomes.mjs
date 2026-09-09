@@ -19,7 +19,7 @@ const env={TRUST_DB:db};
 const send=v=>handleOutcomes(new Request('https://example.org/v1/install-outcomes',{method:'POST',body:JSON.stringify(v)}),env);
 assert.equal((await send(event)).status,202);
 assert.equal(calls[0].args[7],1);
-assert(calls[0].sql.includes('MIN(install_outcomes.passed,excluded.passed)'));
+assert(calls[0].sql.includes('MAX(install_outcomes.failed_at,excluded.failed_at)'));
 await send({...event,probe:false}); assert.equal(calls.at(-1).args[7],0);
 const count=calls.length;
 await send({...event,probe:null}); assert.equal(calls.length,count);

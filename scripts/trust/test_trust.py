@@ -54,6 +54,7 @@ class TrustTests(unittest.TestCase):
         row.update(distinct_successes=25,distinct_failures=0)
         records=publish.combine([self.entry],[],[],[row],self.now)
         self.assertEqual(len(records),2);self.assertEqual(records[-1]['source'],'field')
+        self.assertEqual(len(publish.combine(records,[],[],[],self.now)),1)
         row.update(distinct_successes=49,distinct_failures=1)
         self.assertEqual(publish.combine([self.entry],[],[],[row],self.now)[-1]['result'],'fail')
         self.assertEqual(publish.combine([],[],[],[row],self.now),[])

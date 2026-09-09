@@ -49,8 +49,11 @@ jobs:
           python3 scripts/bottles/test_scan.py
           node worker/test.mjs
           node worker/test-outcomes.mjs
+          python3 scripts/trust/test_outcome_store.py
           if [ "$(uname -s)" = Darwin ]; then export PATH="$(brew --prefix openssl@3)/bin:$PATH"; fi
           python3 scripts/trust/test_trust.py ./zig-out/bin/nb
+          zig build-exe -lc src/test_outcome_transport.zig -femit-bin=/tmp/nb-outcome-fixture
+          python3 scripts/trust/test_outcome.py /tmp/nb-outcome-fixture
 
       - name: Shell completion regression tests
         run: bash tests/completions.sh ./zig-out/bin/nb
@@ -102,8 +105,11 @@ jobs:
           python3 scripts/bottles/test_scan.py
           node worker/test.mjs
           node worker/test-outcomes.mjs
+          python3 scripts/trust/test_outcome_store.py
           if [ "$(uname -s)" = Darwin ]; then export PATH="$(brew --prefix openssl@3)/bin:$PATH"; fi
           python3 scripts/trust/test_trust.py ./zig-out/bin/nb
+          zig build-exe -lc src/test_outcome_transport.zig -femit-bin=/tmp/nb-outcome-fixture
+          python3 scripts/trust/test_outcome.py /tmp/nb-outcome-fixture
 
       - name: Test init creates opt/ directory
         run: |

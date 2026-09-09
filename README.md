@@ -552,7 +552,9 @@ package, version, platform, checksum, install/probe results, probe schema, and
 an artifact-specific hash derived from a random local secret. They contain no
 hostname, username, filesystem paths, or identifier shared across packages.
 The server uses the connection IP transiently for rate limiting; the outcome
-database stores no IP addresses. Records expire after 30 days. The public
+database stores no IP addresses. Opted-in installs allow up to one second for
+best-effort reports to finish before exit; disabled reporting adds no wait.
+Records expire after 30 days. The public
 aggregate exposes only counts, never reporter identifiers.
 
 Field evidence requires at least 25 distinct successful reporters and a failure

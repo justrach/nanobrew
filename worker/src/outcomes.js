@@ -1,3 +1,13 @@
+export const UPSERT_OUTCOME = `INSERT INTO install_outcomes
+    (token,kind,version,platform,sha256,probe_schema,reporter,passed,observed_at,failed_at) VALUES (?,?,?,?,?,?,?,?,?,?)
+    ON CONFLICT(token,kind,version,platform,sha256,probe_schema,reporter)
+    DO UPDATE SET passed=excluded.passed,observed_at=excluded.observed_at,
+      failed_at=MAX(install_outcomes.failed_at,excluded.failed_at)`;
+export const AGGREGATE_OUTCOMES = `SELECT token,kind,version,platform,sha256,probe_schema,
+    SUM(CASE WHEN failed_at < ? THEN 1 ELSE 0 END) AS distinct_successes,
+    SUM(CASE WHEN failed_at >= ? THEN 1 ELSE 0 END) AS distinct_failures,MAX(observed_at) AS observed_at
+    FROM install_outcomes WHERE observed_at>=? GROUP BY token,kind,version,platform,sha256,probe_schema
+    HAVING COUNT(*)>=25 ORDER BY token,version,platform LIMIT 50000`;
 const platforms = new Set(['macos_arm64', 'macos_x86_64', 'linux_x86_64', 'linux_aarch64']);
 const keys = new Set(['schema','token','kind','version','platform','sha256','installed','probe','probe_schema','reporter']);
 export function validOutcome(v) {
@@ -36,21 +46,15 @@ export async function handleOutcomes(request, env) {
     if (!result.success) return new Response('Rate limited',{status:429});
   }
   const time = Math.floor(Date.now()/1000);
-  await env.TRUST_DB.prepare(`INSERT INTO install_outcomes
-    (token,kind,version,platform,sha256,probe_schema,reporter,passed,observed_at) VALUES (?,?,?,?,?,?,?,?,?)
-    ON CONFLICT(token,kind,version,platform,sha256,probe_schema,reporter)
-    DO UPDATE SET passed=MIN(install_outcomes.passed,excluded.passed),observed_at=excluded.observed_at`)
+  await env.TRUST_DB.prepare(UPSERT_OUTCOME)
     .bind(event.token,event.kind,event.version,event.platform,event.sha256.toLowerCase(),event.probe_schema,event.reporter,
-      event.installed && event.probe === true ? 1 : 0,time).run();
+      event.installed && event.probe === true ? 1 : 0,time,event.installed && event.probe === true ? 0 : time).run();
   return new Response(null,{status:202,headers:{'cache-control':'no-store'}});
 }
 export async function aggregateOutcomes(env) {
   if (!env?.TRUST_DB) return new Response('Outcome collection unavailable',{status:503});
   const cutoff = Math.floor(Date.now()/1000)-30*86400;
-  const {results} = await env.TRUST_DB.prepare(`SELECT token,kind,version,platform,sha256,probe_schema,
-    SUM(passed) AS distinct_successes,COUNT(*)-SUM(passed) AS distinct_failures,MAX(observed_at) AS observed_at
-    FROM install_outcomes WHERE observed_at>=? GROUP BY token,kind,version,platform,sha256,probe_schema
-    HAVING COUNT(*)>=25 ORDER BY token,version,platform LIMIT 50000`).bind(cutoff).all();
+  const {results} = await env.TRUST_DB.prepare(AGGREGATE_OUTCOMES).bind(cutoff,cutoff,cutoff).all();
   // No reporter identifiers are exposed by the public aggregate.
   return Response.json({schema_version:1,evidence:results},{headers:{'cache-control':'public, max-age=3600'}});
 }

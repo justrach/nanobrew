@@ -40,7 +40,7 @@ def verify_envelope(path, public_key):
     return data['evidence']
 
 def combine(previous, ci, attestations, field, now, run=''):
-    records=[e for e in previous if valid(e,now)]
+    records=[e for e in previous if valid(e,now) and e["source"] != "field"]
     for source, entries in [('ci',ci),('attested',attestations)]:
         for original in entries:
             e={**original,'source':source}

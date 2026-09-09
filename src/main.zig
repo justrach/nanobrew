@@ -1305,6 +1305,8 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         nb.trust_outcome.report(.{ .token = f.name, .kind = .formula, .version = ver, .platform = trust.platform(), .sha256 = formulaArtifactSha(f), .installed = installed, .probe = if (installed) probe_results[i].value() else null });
     }
 
+    nb.trust_outcome.flush();
+
     // Auto-pin version-pinned installs so a later `nb upgrade` won't silently
     // replace the explicitly chosen version. setPinned fails with NotFound when
     // the install never produced a keg record — don't claim "Pinned" then.
@@ -4260,6 +4262,7 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
         stdout.print("==> Installed {s} {s}\n", .{ cask_meta.name, cask_meta.version }) catch {};
     }
 
+    nb.trust_outcome.flush();
     const elapsed_ns: u64 = timer.read();
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
     stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
