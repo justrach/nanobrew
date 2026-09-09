@@ -84,11 +84,12 @@ rm -f "$ZIPFILE"
 echo "==> verify signature fields"
 CS_OUT="$(codesign -dv --verbose=4 "$BIN" 2>&1 || true)"
 echo "$CS_OUT" | grep -E '^(Authority|TeamIdentifier|CodeDirectory v=|flags=)' || true
-if ! echo "$CS_OUT" | grep -q "Authority=Developer ID Application"; then
+# Here-strings avoid a SIGPIPE from echo under pipefail when grep -q exits early.
+if ! grep -q "Authority=Developer ID Application" <<<"$CS_OUT"; then
   echo "notarize-macos.sh: binary is not signed with a Developer ID authority" >&2
   exit 1
 fi
-if ! echo "$CS_OUT" | grep -q "flags=0x10000(runtime)"; then
+if ! grep -q "flags=0x10000(runtime)" <<<"$CS_OUT"; then
   echo "notarize-macos.sh: binary is missing the hardened runtime flag" >&2
   exit 1
 fi

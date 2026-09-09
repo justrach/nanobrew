@@ -70,6 +70,7 @@ comptime {
     _ = ghcr;
     _ = cask;
     _ = cask_installer;
+    _ = source_builder;
     _ = tap;
     _ = database;
     _ = deb_index;

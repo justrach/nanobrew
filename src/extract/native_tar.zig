@@ -350,12 +350,12 @@ pub fn extractToDir(alloc: std.mem.Allocator, io: std.Io, tar_data: []const u8, 
 
         switch (typeflag) {
             TypeFlag.directory => {
-                makeDirRecursive(lib_io, abs_path) catch {};
+                try makeDirRecursive(lib_io, abs_path);
             },
             TypeFlag.regular, TypeFlag.regular_alt => {
                 // Ensure parent directory exists
                 if (std.fs.path.dirname(abs_path)) |parent| {
-                    makeDirRecursive(lib_io, parent) catch {};
+                    try makeDirRecursive(lib_io, parent);
                 }
 
                 const data_end = pos + file_size;
@@ -365,11 +365,7 @@ pub fn extractToDir(alloc: std.mem.Allocator, io: std.Io, tar_data: []const u8, 
                 const mode_val = parseOctal(&header.mode);
                 const mode: std.posix.mode_t = @intCast(mode_val & 0o0777);
 
-                writeFile(lib_io, abs_path, tar_data[pos..data_end], mode) catch {
-                    // Skip files we can't write (permission errors, etc.)
-                    pos += alignToBlock(file_size);
-                    continue;
-                };
+                try writeFile(lib_io, abs_path, tar_data[pos..data_end], mode);
 
                 try files.append(alloc, try alloc.dupe(u8, entry_name));
             },
@@ -379,7 +375,7 @@ pub fn extractToDir(alloc: std.mem.Allocator, io: std.Io, tar_data: []const u8, 
                 }
 
                 if (std.fs.path.dirname(abs_path)) |parent| {
-                    makeDirRecursive(lib_io, parent) catch {};
+                    try makeDirRecursive(lib_io, parent);
                 }
 
                 // Remove existing file/symlink before creating
@@ -394,14 +390,13 @@ pub fn extractToDir(alloc: std.mem.Allocator, io: std.Io, tar_data: []const u8, 
                 lt_buf[lt_len] = 0;
                 const link_target_z: [*:0]const u8 = @ptrCast(&lt_buf);
                 if (std.c.symlink(link_target_z, abs_path_z) != 0) {
-                    pos += alignToBlock(file_size);
-                    continue;
+                    return error.LinkFailed;
                 }
                 try files.append(alloc, try alloc.dupe(u8, entry_name));
             },
             TypeFlag.hardlink => {
                 if (std.fs.path.dirname(abs_path)) |parent| {
-                    makeDirRecursive(lib_io, parent) catch {};
+                    try makeDirRecursive(lib_io, parent);
                 }
 
                 // Resolve the link target relative to dest_dir
@@ -421,8 +416,7 @@ pub fn extractToDir(alloc: std.mem.Allocator, io: std.Io, tar_data: []const u8, 
                 const abs_target_z: [*:0]const u8 = @ptrCast(abs_target.ptr);
                 const abs_path_z2: [*:0]const u8 = @ptrCast(abs_path.ptr);
                 if (std.c.link(abs_target_z, abs_path_z2) != 0) {
-                    pos += alignToBlock(file_size);
-                    continue;
+                    return error.LinkFailed;
                 }
                 try files.append(alloc, try alloc.dupe(u8, entry_name));
             },
@@ -845,4 +839,22 @@ test "extractToDir - hardlink entry creates a link to an earlier regular file (i
     var b_contents: [16]u8 = undefined;
     const n = try b_file.readPositionalAll(lib_io, &b_contents, 0);
     try testing.expectEqualStrings("AAAAA", b_contents[0..n]);
+}
+
+test "extractToDir propagates payload write failures (#367)" {
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = testing.io;
+    // A directory at a regular-file destination fails even when tests run as root.
+    try tmp.dir.createDir(io, "payload", .default_dir);
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &root_buf);
+    var tar_data: [BLOCK_SIZE * 4]u8 = @splat(0);
+    writeHeader(tar_data[0..BLOCK_SIZE], "payload", "0000644", 1, TypeFlag.regular, "");
+    tar_data[BLOCK_SIZE] = 'x';
+    if (extractToDir(testing.allocator, io, &tar_data, root_buf[0..n])) |files| {
+        defer testing.allocator.free(files);
+        for (files) |f| testing.allocator.free(f);
+        return error.TestExpectedError;
+    } else |_| {}
 }

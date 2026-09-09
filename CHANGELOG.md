@@ -4,6 +4,25 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+## [0.1.209] - 2026-09-09
+
+### Fixed
+- Preserve the complete staged package for archive-backed casks, including Codex helpers, package metadata, and runtime resources. Declared binaries link to their original staged paths, and populated versions cannot absorb another archive tree. (#376)
+- Install nested archive binaries such as Android platform-tools from their preserved Caskroom paths. (#373)
+- Install variable fonts with literal bracketed filenames such as `JetBrainsMono[wght].ttf`. (#371)
+- Follow chained symlinks when validating launchd executables, while rejecting missing targets and paths that resolve outside the Cellar. (#374)
+- Parse literal tap `VERSION` constants and interpolate source and bottle URLs. Keep the selected bottle platform and checksum together. (#370)
+- Build OpenSSL sources through Perl `Configure`, `make`, and the software/configuration install targets instead of copying an uncompiled source tree into the Cellar. (#375)
+- Reject non-root Debian installs before fetching packages, propagate extraction write/link failures, and return a failure status for incomplete installs. (#367)
+
+### Validation
+- 303 unit tests passed; two optional tests skipped.
+- Live archive-cask install/remove fixtures passed for gzip, xz, and ZIP, including companion resources, nested executable links, and literal variable-font filenames.
+- Linux container verification confirms non-root Debian installation exits 1 without package state or payload files.
+- The live anylinuxfs tap resolves to its published bottle; OpenSSL 3.6.4 builds and runs from its verified source archive.
+
+The broader published trust-evidence and field-telemetry roadmap in #317 remains open.
+
 ## [0.1.208] - 2026-08-15
 
 ### Added

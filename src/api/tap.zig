@@ -289,6 +289,8 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
     var source_sha256: ?[]const u8 = null;
     var bottle_root_url: ?[]const u8 = null;
     var bottle_sha256: ?[]const u8 = null;
+    var bottle_tag: []const u8 = BOTTLE_TAG;
+    var bottle_rank: usize = std.math.maxInt(usize);
 
     var deps: std.ArrayList([]const u8) = .empty;
     defer deps.deinit(alloc);
@@ -467,12 +469,25 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
         if (in_bottle) {
             if (extractQuotedAfter(line, "root_url")) |val| {
                 bottle_root_url = val;
-            } else if (findBottleSha256(line)) |val| {
-                bottle_sha256 = val;
+            } else if (startsWith(line, "sha256")) {
+                const tags = [_][]const u8{BOTTLE_TAG} ++ BOTTLE_FALLBACKS;
+                for (tags, 0..) |tag, rank| {
+                    if (rank < bottle_rank) {
+                        if (findTagInLine(line, tag)) |val| {
+                            bottle_sha256 = val;
+                            bottle_tag = tag;
+                            bottle_rank = rank;
+                        }
+                    }
+                }
             }
             continue;
         }
 
+        // Support literal VERSION constants without executing Ruby.
+        if (version == null and std.mem.startsWith(u8, line, "VERSION =")) {
+            version = extractQuotedAfter(line, "VERSION =");
+        }
         // --- Top-level fields ---
         if (version == null) {
             if (extractQuotedAfter(line, "version")) |val| {
@@ -555,7 +570,7 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
 
     // Construct bottle URL
     const b_url = if (bottle_root_url != null and bottle_sha256 != null)
-        try constructBottleUrl(alloc, bottle_root_url.?, name, ver)
+        try constructBottleUrlForTag(alloc, bottle_root_url.?, name, ver, bottle_tag)
     else
         try alloc.dupe(u8, "");
 
@@ -591,6 +606,12 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
 }
 
 fn constructBottleUrl(alloc: std.mem.Allocator, root_url: []const u8, name: []const u8, version: []const u8) ![]const u8 {
+    return constructBottleUrlForTag(alloc, root_url, name, version, BOTTLE_TAG);
+}
+
+fn constructBottleUrlForTag(alloc: std.mem.Allocator, raw_root: []const u8, name: []const u8, version: []const u8, tag: []const u8) ![]const u8 {
+    const root_url = try interpolateVersion(alloc, raw_root, version);
+    defer alloc.free(root_url);
     // GHCR URLs use blob digest format
     if (std.mem.indexOf(u8, root_url, "ghcr.io") != null) {
         // For GHCR, bottle URL needs different format — leave as root_url for now,
@@ -602,20 +623,20 @@ fn constructBottleUrl(alloc: std.mem.Allocator, root_url: []const u8, name: []co
         root_url,
         name,
         version,
-        BOTTLE_TAG,
+        tag,
     });
 }
 
 /// Interpolate #{version} references in a string.
 fn interpolateVersion(alloc: std.mem.Allocator, s: []const u8, version: []const u8) ![]const u8 {
     const marker = "\x23{version}"; // #{version}
-    if (std.mem.indexOf(u8, s, marker) == null) {
+    if (std.mem.indexOf(u8, s, marker) == null and std.mem.indexOf(u8, s, "#{VERSION}") == null) {
         return alloc.dupe(u8, s);
     }
     var result: std.ArrayList(u8) = .empty;
     var i: usize = 0;
     while (i < s.len) {
-        if (i + marker.len <= s.len and std.mem.eql(u8, s[i..][0..marker.len], marker)) {
+        if (i + marker.len <= s.len and (std.mem.eql(u8, s[i..][0..marker.len], marker) or std.mem.eql(u8, s[i..][0..marker.len], "#{VERSION}"))) {
             try result.appendSlice(alloc, version);
             i += marker.len;
         } else {
@@ -1414,4 +1435,43 @@ test "parseRubyFormula - extracts install_binaries with rename" {
     try testing.expectEqual(@as(usize, 2), formula.install_binaries.len);
     try testing.expectEqualStrings("crush", formula.install_binaries[0]);
     try testing.expectEqualStrings("crushd", formula.install_binaries[1]);
+}
+
+test "tap VERSION constants interpolate source and selected bottle URL (#370)" {
+    const src =
+        \\class Anylinuxfs < Formula
+        \\  VERSION = "0.19.0".freeze
+        \\  url "https://example.test/v#{VERSION}.tar.gz"
+        \\  sha256 "source"
+        \\  bottle do
+        \\    root_url "https://example.test/releases/v#{VERSION}"
+    ;
+    const full = try std.fmt.allocPrint(testing.allocator, "{s}\n    sha256 {s}: \"bottle\"\n  end\nend\n", .{ src, BOTTLE_TAG });
+    defer testing.allocator.free(full);
+    var f = try parseRubyFormula(testing.allocator, "anylinuxfs", full);
+    defer f.deinit(testing.allocator);
+    try testing.expectEqualStrings("0.19.0", f.version);
+    try testing.expectEqualStrings("https://example.test/v0.19.0.tar.gz", f.source_url);
+    const expected = try std.fmt.allocPrint(testing.allocator, "https://example.test/releases/v0.19.0/anylinuxfs-0.19.0.{s}.bottle.tar.gz", .{BOTTLE_TAG});
+    defer testing.allocator.free(expected);
+    try testing.expectEqualStrings(expected, f.bottle_url);
+    try testing.expectEqualStrings("bottle", f.bottle_sha256);
+}
+
+test "tap bottle digest and URL select the same best platform regardless of order (#370)" {
+    const a = testing.allocator;
+    const fallback = BOTTLE_FALLBACKS[BOTTLE_FALLBACKS.len - 1];
+    const src = try std.fmt.allocPrint(a, "version \"1.0\"\nbottle do\nroot_url \"https://example.test\"\nsha256 {s}: \"primary\"\nsha256 {s}: \"fallback\"\nend\n", .{ BOTTLE_TAG, fallback });
+    defer a.free(src);
+    var f = try parseRubyFormula(a, "demo", src);
+    defer f.deinit(a);
+    try testing.expectEqualStrings("primary", f.bottle_sha256);
+    const fallback_src = try std.fmt.allocPrint(a, "version \"1.0\"\nbottle do\nroot_url \"https://example.test\"\nsha256 {s}: \"fallback\"\nend\n", .{fallback});
+    defer a.free(fallback_src);
+    var g = try parseRubyFormula(a, "demo", fallback_src);
+    defer g.deinit(a);
+    const url = try std.fmt.allocPrint(a, "https://example.test/demo-1.0.{s}.bottle.tar.gz", .{fallback});
+    defer a.free(url);
+    try testing.expectEqualStrings(url, g.bottle_url);
+    try testing.expectEqualStrings("fallback", g.bottle_sha256);
 }
