@@ -4,6 +4,25 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+## [0.1.210] - 2026-09-09
+
+### Added
+- Signed, expiring trust evidence tied to package version, platform, checksum, and probe schema, with weekly native CI collection and maintainer attestations. `nb info` displays published evidence and `nb trust attest`, `record`, and `verify` support the evidence workflow. (#380, #381, #382)
+- `nb install --trusted-only`, `min_trust` configuration, and `pkg@trusted` resolution, including dependency checks and fallback from versions with published failure evidence to eligible trusted versions. (#380)
+- Explicitly opt-in, anonymous install/probe outcome reporting with bounded delivery, deduplication, failure tracking, and expiring field aggregates. (#380)
+- Standard proxy environment support, HTTPS CONNECT, and NO_PROXY handling through curl when proxy settings are present. (#379)
+- Opt-in daily `nb autoupdate` scheduling through user launchd agents or systemd timers, and `--version`, `-v`, and `version` aliases. (#379)
+
+### Fixed
+- Select Homebrew's native `arm64_linux` bottles on Linux ARM64 and never fall back to Intel bottles. Real jq and ripgrep installs and probes pass on both Linux architectures. (#383)
+- Preserve Git template discovery through `GIT_TEMPLATE_DIR` in package shims. (#379)
+- Scan bottles containing absolute symlinks without extracting unsafe links, and include useful diagnostics when bottle scanning fails. (#379)
+
+### Validation
+- Native macOS/Linux, Windows build/smoke, cross-compilation, proxy, scheduler, trust CLI, and outcome reporting checks pass.
+- Real Linux sandbox validation covers active probes, attestations, `jq@trusted`, and `--trusted-only`.
+- The published feed contains eight native CI results and two sandbox attestations. Intel macOS ripgrep 15.2.0 fails its active probe and is correctly recorded as failure evidence, not promoted to trusted.
+
 ## [0.1.209] - 2026-09-09
 
 ### Fixed
