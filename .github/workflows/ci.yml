@@ -48,6 +48,7 @@ jobs:
           python3 scripts/bottles/test_scan.py
           node worker/test.mjs
           node worker/test-outcomes.mjs
+          if [ "$(uname -s)" = Darwin ]; then export PATH="$(brew --prefix openssl@3)/bin:$PATH"; fi
           python3 scripts/trust/test_trust.py ./zig-out/bin/nb
 
       - name: Shell completion regression tests
@@ -100,6 +101,7 @@ jobs:
           python3 scripts/bottles/test_scan.py
           node worker/test.mjs
           node worker/test-outcomes.mjs
+          if [ "$(uname -s)" = Darwin ]; then export PATH="$(brew --prefix openssl@3)/bin:$PATH"; fi
           python3 scripts/trust/test_trust.py ./zig-out/bin/nb
 
       - name: Test init creates opt/ directory
