@@ -138,7 +138,7 @@ pub const Session = struct {
     }
 };
 
-/// Race process exit against the same absolute deadline as fallback arguments.
+/// Bound process exit by the same absolute deadline as fallback arguments.
 /// Waiting only for stdout/stderr is insufficient: a program can close both
 /// streams and then hang. Probe output is intentionally discarded.
 fn runProbe(io: std.Io, path: []const u8, arg: []const u8, cwd: []const u8, deadline: std.Io.Timeout) !std.process.Child.Term {
@@ -149,6 +149,7 @@ fn runProbe(io: std.Io, path: []const u8, arg: []const u8, cwd: []const u8, dead
         .stdout = .ignore,
         .stderr = .ignore,
     });
+    if (builtin.os.tag != .windows) return waitProbePosix(io, &child, deadline);
     defer child.kill(io);
     const Event = union(enum) {
         exited: std.process.Child.WaitError!std.process.Child.Term,
@@ -166,6 +167,39 @@ fn runProbe(io: std.Io, path: []const u8, arg: []const u8, cwd: []const u8, dead
             break :blk error.Timeout;
         },
     };
+}
+
+extern "c" fn waitpid(pid: c_int, status: *c_int, options: c_int) c_int;
+
+fn waitProbePosix(io: std.Io, child: *std.process.Child, deadline: std.Io.Timeout) !std.process.Child.Term {
+    // Zig 0.16's canceled Child.wait clears child.id without killing/reaping it.
+    // Keep sole ownership of the PID and use nonblocking waits instead. No
+    // concurrent waiter can reap and allow PID reuse before timeout cleanup.
+    defer if (child.id) |pid| {
+        // Child.kill uses SIGTERM, which an executable can ignore.
+        std.posix.kill(pid, .KILL) catch {};
+        child.kill(io);
+    };
+    const end = deadline.toTimestamp(io).?;
+    while (true) {
+        var status: c_int = undefined;
+        const result = waitpid(child.id.?, &status, std.posix.W.NOHANG);
+        switch (std.posix.errno(result)) {
+            .SUCCESS => if (result != 0) {
+                child.id = null;
+                const bits: u32 = @bitCast(status);
+                if (std.posix.W.IFEXITED(bits)) return .{ .exited = std.posix.W.EXITSTATUS(bits) };
+                if (std.posix.W.IFSIGNALED(bits)) return .{ .signal = std.posix.W.TERMSIG(bits) };
+                return .{ .unknown = bits };
+            },
+            .INTR => continue,
+            else => return error.ProcessWaitFailed,
+        }
+        const now = std.Io.Clock.Timestamp.now(io, end.clock);
+        if (now.compare(.gte, end)) return error.Timeout;
+        const remaining = now.durationTo(end).raw.toNanoseconds();
+        try std.Io.sleep(io, .fromNanoseconds(@min(remaining, 10 * std.time.ns_per_ms)), end.clock);
+    }
 }
 
 pub fn executableAnswers(alloc: std.mem.Allocator, io: std.Io, path: []const u8) bool {
@@ -409,4 +443,29 @@ test "fallback arguments spend the remaining executable deadline" {
     try std.testing.expect(session.last_elapsed_ms < 5000);
     // The hung fallback has not consumed the next executable's allowance.
     try std.testing.expectEqual(Outcome.answered, session.probe(std.testing.allocator, "/usr/bin/true"));
+}
+
+test "timeout kills and reaps a process that ignores SIGTERM" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const file = try tmp.dir.createFile(io, "ignore-term", .{});
+    try file.writeStreamingAll(io, "#!/bin/sh\ntrap '' TERM\necho $$ > child.pid\nwhile :; do :; done\n");
+    try file.setPermissions(io, .executable_file);
+    file.close(io);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPathFile(io, "ignore-term", &buf);
+    var session = try Session.initCask(io, 1);
+    defer session.deinit();
+    session.per_binary_budget.raw = std.Io.Duration.fromMilliseconds(500);
+    try std.testing.expectEqual(Outcome.timed_out, session.probe(a, buf[0..n]));
+    const pid_path = try std.fs.path.join(a, &.{ session.cwd(), "child.pid" });
+    defer a.free(pid_path);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, pid_path, a, .limited(64));
+    defer a.free(bytes);
+    const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, bytes, "\r\n "), 10);
+    try std.testing.expectError(error.ProcessNotFound, std.posix.kill(pid, @enumFromInt(0)));
+    try std.testing.expect(session.last_elapsed_ms < 1500);
 }

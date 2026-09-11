@@ -13,7 +13,8 @@ All notable changes to nanobrew are documented here.
 ### Fixed
 - Allow a single cask executable up to ten seconds for cold startup, while retaining two-second slices for multi-binary casks. Report timeout, launch, and exit failures distinctly, and bound probes even when a process closes its output streams before hanging. (#386)
 - Keep unsupported cask upgrades outside the actionable plan and restrict `nb upgrade --cask` to casks.
-- Reject oversized transaction journals before publication so every accepted journal remains readable during recovery.
+- Reject oversized transaction journals before publication so every accepted journal remains readable during recovery, and use syncable directory handles on Linux.
+- Kill and reap timed-out probes, including processes that ignore SIGTERM.
 
 ## [0.1.210] - 2026-09-09
 

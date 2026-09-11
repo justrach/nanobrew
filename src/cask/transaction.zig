@@ -36,7 +36,8 @@ pub fn exists(io: std.Io, path: []const u8) !bool {
 }
 
 fn syncParent(io: std.Io, path: []const u8) !void {
-    var dir = try std.Io.Dir.cwd().openDir(io, std.fs.path.dirname(path) orelse ".", .{});
+    // Linux's non-iterable directory handles use O_PATH, which fsync rejects.
+    var dir = try std.Io.Dir.cwd().openDir(io, std.fs.path.dirname(path) orelse ".", .{ .iterate = true });
     defer dir.close(io);
     if (fsync(dir.handle) != 0) return error.DirectorySyncFailed;
 }
