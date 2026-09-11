@@ -50,6 +50,7 @@ pub const DebRecord = struct {
 
 pub const Database = struct {
     alloc: std.mem.Allocator,
+    path: []const u8 = DB_PATH,
     kegs: std.ArrayList(Keg),
     casks: std.ArrayList(CaskRecord),
     debs: std.ArrayList(DebRecord),
@@ -60,8 +61,13 @@ pub const Database = struct {
     pub const MAX_DB_SIZE: usize = 16 * 1024 * 1024;
 
     pub fn open(alloc: std.mem.Allocator) !Database {
+        return openAt(alloc, DB_PATH);
+    }
+
+    pub fn openAt(alloc: std.mem.Allocator, path: []const u8) !Database {
         var db = Database{
             .alloc = alloc,
+            .path = path,
             .kegs = .empty,
             .casks = .empty,
             .debs = .empty,
@@ -69,7 +75,7 @@ pub const Database = struct {
         };
 
         const lib_io = paths.safe_io;
-        const file = std.Io.Dir.openFileAbsolute(lib_io, DB_PATH, .{}) catch return db;
+        const file = std.Io.Dir.openFileAbsolute(lib_io, path, .{}) catch return db;
         defer file.close(lib_io);
 
         const max_state_bytes = MAX_DB_SIZE;
@@ -471,44 +477,22 @@ pub const Database = struct {
     }
 
     pub fn recordCaskInstall(self: *Database, token: []const u8, canonical_token: []const u8, version: []const u8, sha256: []const u8, apps: []const []const u8, binaries: []const []const u8) !void {
+        // Build the replacement first: callers may pass fields borrowed from
+        // the existing record, and allocation failure must preserve that record.
+        const replacement = try dupeCaskRecord(self.alloc, .{ .token = token, .canonical_token = canonical_token, .version = version, .sha256 = sha256, .apps = apps, .binaries = binaries });
+        errdefer freeCaskRecord(self.alloc, replacement);
+        try self.casks.ensureUnusedCapacity(self.alloc, 1);
         var i: usize = 0;
         while (i < self.casks.items.len) {
             const existing = self.casks.items[i];
-            if (std.mem.eql(u8, existing.token, token) or
-                std.mem.eql(u8, existing.canonical_token, canonical_token))
+            if (std.mem.eql(u8, existing.token, replacement.token) or
+                std.mem.eql(u8, existing.canonical_token, replacement.canonical_token))
             {
-                const old_cask = existing;
-                self.alloc.free(old_cask.token);
-                self.alloc.free(old_cask.canonical_token);
-                self.alloc.free(old_cask.version);
-                self.alloc.free(old_cask.sha256);
-                for (old_cask.apps) |a| self.alloc.free(a);
-                self.alloc.free(old_cask.apps);
-                for (old_cask.binaries) |b| self.alloc.free(b);
-                self.alloc.free(old_cask.binaries);
+                freeCaskRecord(self.alloc, existing);
                 _ = self.casks.orderedRemove(i);
-            } else {
-                i += 1;
-            }
+            } else i += 1;
         }
-
-        const dapps = try self.alloc.alloc([]const u8, apps.len);
-        for (apps, 0..) |a, idx| dapps[idx] = try self.alloc.dupe(u8, a);
-        const dbins = try self.alloc.alloc([]const u8, binaries.len);
-        for (binaries, 0..) |b, idx| dbins[idx] = try self.alloc.dupe(u8, b);
-
-        try self.casks.append(self.alloc, .{
-            .token = try self.alloc.dupe(u8, token),
-            .canonical_token = try self.alloc.dupe(u8, canonical_token),
-            .version = try self.alloc.dupe(u8, version),
-            .sha256 = try self.alloc.dupe(u8, sha256),
-            .apps = dapps,
-            .binaries = dbins,
-            .probe_success = false,
-            .probed_at = 0,
-            .probe_schema = 0,
-            .probe_platform = 0,
-        });
+        self.casks.appendAssumeCapacity(replacement);
         self.dirty = true;
     }
 
@@ -699,9 +683,9 @@ pub const Database = struct {
         writeJsonStringFallible(writer, s) catch {};
     }
 
-    fn dbMtimeNs() ?i96 {
+    fn dbMtimeNs(self: *Database) ?i96 {
         const io = paths.safe_io;
-        const file = std.Io.Dir.openFileAbsolute(io, DB_PATH, .{}) catch return null;
+        const file = std.Io.Dir.openFileAbsolute(io, self.path, .{}) catch return null;
         defer file.close(io);
         const st = file.stat(io) catch return null;
         return st.mtime.nanoseconds;
@@ -710,17 +694,43 @@ pub const Database = struct {
     fn save(self: *Database) !void {
         if (!self.dirty) return;
         const lib_io = paths.safe_io;
-        const lock_file = try std.Io.Dir.createFileAbsolute(lib_io, DB_PATH ++ ".lock", .{
+        const lock_path = try std.fmt.allocPrint(self.alloc, "{s}.lock", .{self.path});
+        defer self.alloc.free(lock_path);
+        const lock_file = try std.Io.Dir.createFileAbsolute(lib_io, lock_path, .{
             .truncate = false,
             .lock = .exclusive,
         });
         defer lock_file.close(lib_io);
         var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
         const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}.tmp.{d}.{d}", .{
-            DB_PATH, std.c.getpid(), std.Thread.getCurrentId(),
+            self.path, std.c.getpid(), std.Thread.getCurrentId(),
         }) catch return error.PathTooLong;
-        const file = try std.Io.Dir.createFileAbsolute(lib_io, tmp_path, .{});
+        try self.writeSnapshot(tmp_path);
         errdefer std.Io.Dir.deleteFileAbsolute(lib_io, tmp_path) catch {};
+
+        // Optimistic concurrency guard: never replace state that changed since
+        // this Database snapshot was opened. Process-unique temp paths prevent
+        // concurrent writers from corrupting each other's staging files.
+        const current_mtime = self.dbMtimeNs();
+        const unchanged = if (self.loaded_mtime_ns) |loaded|
+            if (current_mtime) |current| current == loaded else false
+        else
+            current_mtime == null;
+        if (!unchanged) {
+            std.Io.Dir.deleteFileAbsolute(lib_io, tmp_path) catch {};
+            return error.ConcurrentModification;
+        }
+
+        try std.Io.Dir.renameAbsolute(tmp_path, self.path, lib_io);
+        self.loaded_mtime_ns = self.dbMtimeNs();
+        self.dirty = false;
+    }
+    /// Serialize a candidate without publishing it or changing this snapshot's
+    /// persistence state. Cask transactions activate this file with the payload.
+    pub fn writeSnapshot(self: *Database, snapshot_path: []const u8) !void {
+        const lib_io = paths.safe_io;
+        const file = try std.Io.Dir.createFileAbsolute(lib_io, snapshot_path, .{});
+        errdefer std.Io.Dir.deleteFileAbsolute(lib_io, snapshot_path) catch {};
 
         var file_open = true;
         errdefer if (file_open) file.close(lib_io);
@@ -812,23 +822,6 @@ pub const Database = struct {
         try file.sync(lib_io);
         file.close(lib_io);
         file_open = false;
-
-        // Optimistic concurrency guard: never replace state that changed since
-        // this Database snapshot was opened. Process-unique temp paths prevent
-        // concurrent writers from corrupting each other's staging files.
-        const current_mtime = dbMtimeNs();
-        const unchanged = if (self.loaded_mtime_ns) |loaded|
-            if (current_mtime) |current| current == loaded else false
-        else
-            current_mtime == null;
-        if (!unchanged) {
-            std.Io.Dir.deleteFileAbsolute(lib_io, tmp_path) catch {};
-            return error.ConcurrentModification;
-        }
-
-        try std.Io.Dir.renameAbsolute(tmp_path, DB_PATH, lib_io);
-        self.loaded_mtime_ns = dbMtimeNs();
-        self.dirty = false;
     }
 };
 
@@ -989,4 +982,77 @@ test "probe results persist against current package records" {
     try testing.expect(!cask.probe_success);
     try testing.expectEqual(@as(u32, 13), cask.probe_schema);
     try testing.expectEqual(@as(u32, 14), cask.probe_platform);
+}
+
+fn dupeStrings(alloc: std.mem.Allocator, strings: []const []const u8) ![]const []const u8 {
+    const result = try alloc.alloc([]const u8, strings.len);
+    var count: usize = 0;
+    errdefer {
+        for (result[0..count]) |s| alloc.free(s);
+        alloc.free(result);
+    }
+    for (strings, 0..) |s, i| {
+        result[i] = try alloc.dupe(u8, s);
+        count += 1;
+    }
+    return result;
+}
+
+fn dupeCaskRecord(alloc: std.mem.Allocator, c: CaskRecord) !CaskRecord {
+    const token = try alloc.dupe(u8, c.token);
+    errdefer alloc.free(token);
+    const canonical = try alloc.dupe(u8, c.canonical_token);
+    errdefer alloc.free(canonical);
+    const version = try alloc.dupe(u8, c.version);
+    errdefer alloc.free(version);
+    const sha = try alloc.dupe(u8, c.sha256);
+    errdefer alloc.free(sha);
+    const apps = try dupeStrings(alloc, c.apps);
+    errdefer {
+        for (apps) |s| alloc.free(s);
+        alloc.free(apps);
+    }
+    const bins = try dupeStrings(alloc, c.binaries);
+    return .{ .token = token, .canonical_token = canonical, .version = version, .sha256 = sha, .apps = apps, .binaries = bins };
+}
+
+fn freeCaskRecord(alloc: std.mem.Allocator, c: CaskRecord) void {
+    alloc.free(c.token);
+    alloc.free(c.canonical_token);
+    alloc.free(c.version);
+    alloc.free(c.sha256);
+    for (c.apps) |s| alloc.free(s);
+    alloc.free(c.apps);
+    for (c.binaries) |s| alloc.free(s);
+    alloc.free(c.binaries);
+}
+
+test "cask replacement preserves borrowed fields and is allocation atomic" {
+    try testing.checkAllAllocationFailures(testing.allocator, testCaskReplacementAllocation, .{});
+}
+
+fn testCaskReplacementAllocation(alloc: std.mem.Allocator) !void {
+    var db: Database = .{
+        .alloc = alloc,
+        .kegs = .empty,
+        .casks = .empty,
+        .debs = .empty,
+        .history = std.StringHashMap(std.ArrayList(HistoryEntry)).init(alloc),
+    };
+    defer {
+        db.dirty = false;
+        db.close();
+    }
+    try db.recordCaskInstall("alias", "canonical", "1", "old-sha", &.{"App.app"}, &.{"tool"});
+    const old = db.findCask("alias").?;
+    db.recordCaskInstall(old.token, old.canonical_token, "2", "new-sha", old.apps, old.binaries) catch |err| {
+        try testing.expectEqualStrings("1", db.findCask("alias").?.version);
+        try testing.expectEqualStrings("old-sha", db.findCask("alias").?.sha256);
+        return err;
+    };
+    const new = db.findCask("canonical").?;
+    try testing.expectEqualStrings("alias", new.token);
+    try testing.expectEqualStrings("2", new.version);
+    try testing.expectEqualStrings("App.app", new.apps[0]);
+    try testing.expectEqualStrings("tool", new.binaries[0]);
 }

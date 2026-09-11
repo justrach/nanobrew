@@ -7,10 +7,12 @@ const probe_args = [_][]const u8{ "--version", "version", "--help" };
 pub const Outcome = enum {
     /// The binary ran and exited with an accepted status.
     answered,
-    /// The binary ran but never produced an accepted exit within its slice.
+    /// Every fallback exited unsuccessfully or was terminated by a signal.
     unresponsive,
+    timed_out,
+    launch_failed,
     /// The package-wide budget was already spent before this binary got a
-    /// slice — no evidence either way; callers must skip, not fail.
+    /// slice — no evidence either way. A required artifact remains unverified.
     budget_exhausted,
 };
 
@@ -34,6 +36,18 @@ pub const Session = struct {
     per_binary_budget: std.Io.Clock.Duration,
     cwd_buf: [std.fs.max_path_bytes]u8 = undefined,
     cwd_len: usize = 0,
+    last_arg: []const u8 = "--version",
+    last_error: ?anyerror = null,
+    last_term: ?std.process.Child.Term = null,
+    last_elapsed_ms: i64 = 0,
+
+    /// A single declared cask executable may use the cold-start allowance.
+    /// Multiple executables retain slices so a hung command cannot monopolize it.
+    pub fn initCask(io: std.Io, executable_count: usize) !Session {
+        const package: std.Io.Clock.Duration = .{ .raw = std.Io.Duration.fromSeconds(10), .clock = .awake };
+        const slice: std.Io.Clock.Duration = .{ .raw = std.Io.Duration.fromSeconds(if (executable_count == 1) 10 else 2), .clock = .awake };
+        return init(io, package, slice);
+    }
 
     pub fn init(
         io: std.Io,
@@ -95,22 +109,23 @@ pub const Session = struct {
         return self.cwd_buf[0..self.cwd_len];
     }
 
-    pub fn probe(self: *Session, alloc: std.mem.Allocator, path: []const u8) Outcome {
+    pub fn probe(self: *Session, _: std.mem.Allocator, path: []const u8) Outcome {
         if (self.remainingMs() <= 0) return .budget_exhausted;
+        self.last_error = null;
+        self.last_term = null;
+        const started = std.Io.Clock.Timestamp.now(self.io, .awake);
+        defer self.last_elapsed_ms = @intCast(started.durationTo(std.Io.Clock.Timestamp.now(self.io, .awake)).raw.toMilliseconds());
         const deadline = self.timeout();
         const probe_cwd = self.cwd_buf[0..self.cwd_len];
         for (probe_args) |arg| {
-            const result = std.process.run(alloc, self.io, .{
-                .argv = &.{ path, arg },
-                .cwd = .{ .path = probe_cwd },
-                .stdout_limit = .limited(64 * 1024),
-                .stderr_limit = .limited(64 * 1024),
-                .timeout = deadline,
-            }) catch continue;
-            defer alloc.free(result.stdout);
-            defer alloc.free(result.stderr);
-
-            switch (result.term) {
+            self.last_arg = arg;
+            const term = runProbe(self.io, path, arg, probe_cwd, deadline) catch |err| {
+                self.last_error = err;
+                if (err == error.Timeout) return .timed_out;
+                return .launch_failed;
+            };
+            self.last_term = term;
+            switch (term) {
                 .exited => |code| if (code == 0 or code == 1 or code == 2) return .answered,
                 else => {},
             }
@@ -122,6 +137,36 @@ pub const Session = struct {
         return self.probe(alloc, path) == .answered;
     }
 };
+
+/// Race process exit against the same absolute deadline as fallback arguments.
+/// Waiting only for stdout/stderr is insufficient: a program can close both
+/// streams and then hang. Probe output is intentionally discarded.
+fn runProbe(io: std.Io, path: []const u8, arg: []const u8, cwd: []const u8, deadline: std.Io.Timeout) !std.process.Child.Term {
+    var child = try std.process.spawn(io, .{
+        .argv = &.{ path, arg },
+        .cwd = .{ .path = cwd },
+        .stdin = .ignore,
+        .stdout = .ignore,
+        .stderr = .ignore,
+    });
+    defer child.kill(io);
+    const Event = union(enum) {
+        exited: std.process.Child.WaitError!std.process.Child.Term,
+        timed_out: std.Io.Cancelable!void,
+    };
+    var buffer: [2]Event = undefined;
+    var select = std.Io.Select(Event).init(io, &buffer);
+    defer select.cancelDiscard();
+    try select.concurrent(.exited, std.process.Child.wait, .{ &child, io });
+    try select.concurrent(.timed_out, std.Io.Timeout.sleep, .{ deadline, io });
+    return switch (try select.await()) {
+        .exited => |result| try result,
+        .timed_out => |result| blk: {
+            try result;
+            break :blk error.Timeout;
+        },
+    };
+}
 
 pub fn executableAnswers(alloc: std.mem.Allocator, io: std.Io, path: []const u8) bool {
     return executableAnswersWithin(alloc, io, path, .{
@@ -260,7 +305,7 @@ test "per-binary slice keeps one hung binary from starving the package (#317)" {
     while (i < 8) : (i += 1) {
         switch (session.probe(std.testing.allocator, path)) {
             .answered => return error.TestUnexpectedResult,
-            .unresponsive => unresponsive += 1,
+            .unresponsive, .timed_out, .launch_failed => unresponsive += 1,
             .budget_exhausted => exhausted += 1,
         }
     }
@@ -275,4 +320,93 @@ test "per-binary slice keeps one hung binary from starving the package (#317)" {
     try std.testing.expect(exhausted >= 1);
     try std.testing.expect(unresponsive + exhausted == 8);
     try std.testing.expect(elapsed.raw.toMilliseconds() < 3000);
+}
+
+test "single cask executable receives cold-start allowance (#386)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var file = try tmp.dir.createFile(std.testing.io, "cold", .{});
+    try file.writeStreamingAll(std.testing.io,
+        \\#!/bin/sh
+        \\if [ ! -f warmed ]; then sleep 2.2; touch warmed; fi
+        \\exit 0
+        \\
+    );
+    try file.setPermissions(std.testing.io, .executable_file);
+    file.close(std.testing.io);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPathFile(std.testing.io, "cold", &buf);
+    var session = try Session.initCask(std.testing.io, 1);
+    defer session.deinit();
+    try std.testing.expectEqual(Outcome.answered, session.probe(std.testing.allocator, buf[0..n]));
+    try std.testing.expect(session.last_elapsed_ms > 2000);
+    try std.testing.expect(session.last_elapsed_ms < 10000);
+    try std.testing.expectEqual(Outcome.answered, session.probe(std.testing.allocator, buf[0..n]));
+}
+
+test "probe distinguishes timeout launch and exit failures (#386)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var file = try tmp.dir.createFile(std.testing.io, "fail", .{});
+    try file.writeStreamingAll(std.testing.io, "#!/bin/sh\nexit 42\n");
+    try file.setPermissions(std.testing.io, .executable_file);
+    file.close(std.testing.io);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPathFile(std.testing.io, "fail", &buf);
+    var session = try Session.initCask(std.testing.io, 2);
+    defer session.deinit();
+    try std.testing.expectEqual(@as(i64, 2000), session.per_binary_budget.raw.toMilliseconds());
+    try std.testing.expectEqual(Outcome.unresponsive, session.probe(std.testing.allocator, buf[0..n]));
+    try std.testing.expectEqual(@as(u8, 42), session.last_term.?.exited);
+    try std.testing.expectEqualStrings("--help", session.last_arg);
+    try std.testing.expectEqual(Outcome.launch_failed, session.probe(std.testing.allocator, "/nonexistent/nb-probe"));
+    try std.testing.expect(session.last_error != null);
+    file = try tmp.dir.createFile(std.testing.io, "fail", .{});
+    try file.writeStreamingAll(std.testing.io, "#!/bin/sh\nwhile :; do sleep 0.05; done\n");
+    file.close(std.testing.io);
+    session.per_binary_budget.raw = std.Io.Duration.fromMilliseconds(100);
+    try std.testing.expectEqual(Outcome.timed_out, session.probe(std.testing.allocator, buf[0..n]));
+    try std.testing.expectEqualStrings("--version", session.last_arg);
+    try std.testing.expect(session.last_elapsed_ms < 1500);
+}
+
+test "probe deadline bounds a process that closes its output streams" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    var file = try tmp.dir.createFile(io, "closed-streams", .{});
+    try file.writeStreamingAll(io, "#!/bin/sh\nexec 1>&- 2>&-\nwhile :; do sleep 0.05; done\n");
+    try file.setPermissions(io, .executable_file);
+    file.close(io);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPathFile(io, "closed-streams", &buf);
+    var session = try Session.initCask(io, 1);
+    defer session.deinit();
+    session.per_binary_budget.raw = std.Io.Duration.fromMilliseconds(100);
+    try std.testing.expectEqual(Outcome.timed_out, session.probe(std.testing.allocator, buf[0..n]));
+    try std.testing.expect(session.last_elapsed_ms < 1500);
+}
+
+test "fallback arguments spend the remaining executable deadline" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const io = std.testing.io;
+    var file = try tmp.dir.createFile(io, "fallback", .{});
+    try file.writeStreamingAll(io, "#!/bin/sh\ncase \"$1\" in --version) sleep 0.6 ;; version) sleep 3 ;; esac\nexit 42\n");
+    try file.setPermissions(io, .executable_file);
+    file.close(io);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPathFile(io, "fallback", &buf);
+    var session = try Session.initCask(io, 2);
+    defer session.deinit();
+    session.per_binary_budget.raw = std.Io.Duration.fromMilliseconds(3300);
+    try std.testing.expectEqual(Outcome.timed_out, session.probe(std.testing.allocator, buf[0..n]));
+    try std.testing.expectEqualStrings("version", session.last_arg);
+    try std.testing.expect(session.last_elapsed_ms < 5000);
+    // The hung fallback has not consumed the next executable's allowance.
+    try std.testing.expectEqual(Outcome.answered, session.probe(std.testing.allocator, "/usr/bin/true"));
 }

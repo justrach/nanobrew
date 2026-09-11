@@ -558,6 +558,52 @@ pub fn installCask(alloc: std.mem.Allocator, io: std.Io, cask: Cask) !void {
     if (any_artifact_failed) return error.ArtifactFailed;
 }
 
+/// Stage a rollback-capable replacement without touching active destinations.
+/// The complete archive tree remains intact, including runtime companions.
+pub fn stageUpgrade(alloc: std.mem.Allocator, io: std.Io, cask: Cask, directory: []const u8, download: []const u8) !void {
+    _ = try downloadArtifact(alloc, io, cask.url, download, cask);
+    try stageUpgradeArchive(alloc, io, cask, directory, download);
+}
+
+pub fn stageUpgradeArchive(alloc: std.mem.Allocator, io: std.Io, cask: Cask, directory: []const u8, download: []const u8) !void {
+    // Also verify cache hits: cached bytes must not bypass artifact integrity.
+    if (cask.sha256.len > 0 and !std.mem.eql(u8, cask.sha256, "no_check")) {
+        var expected: [32]u8 = undefined;
+        _ = std.fmt.hexToBytes(&expected, cask.sha256) catch return error.InvalidChecksum;
+        if (cask.sha256.len != 64) return error.InvalidChecksum;
+        const file = try std.Io.Dir.openFileAbsolute(io, download, .{});
+        defer file.close(io);
+        var hash = std.crypto.hash.sha2.Sha256.init(.{});
+        var buffer: [65536]u8 = undefined;
+        var offset: u64 = 0;
+        while (true) {
+            const n = try file.readPositionalAll(io, &buffer, offset);
+            if (n == 0) break;
+            hash.update(buffer[0..n]);
+            offset += n;
+        }
+        if (!std.mem.eql(u8, &hash.finalResult(), &expected)) return error.ChecksumMismatch;
+    }
+    try std.Io.Dir.createDirAbsolute(io, directory, .default_dir);
+    switch (cask.downloadFormat()) {
+        .zip => try extractZip(alloc, io, download, directory),
+        .tar_gz => try extractTarGz(alloc, io, download, directory),
+        .tar_xz => try extractTarXz(alloc, io, download, directory),
+        .binary => {
+            for (cask.artifacts) |art| if (art == .binary) {
+                const target = try std.fs.path.join(alloc, &.{ directory, art.binary.source });
+                defer alloc.free(target);
+                try std.Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(target).?);
+                try std.Io.Dir.copyFileAbsolute(download, target, io, .{ .permissions = .executable_file });
+            };
+        },
+        else => return error.UnsupportedCaskUpgrade,
+    }
+    for (cask.artifacts) |art| if (art == .binary and !std.mem.startsWith(u8, art.binary.source, "$APPDIR/")) {
+        try prepareStagedBinary(io, directory, art.binary.source);
+    };
+}
+
 pub fn removeCask(
     _: std.mem.Allocator,
     io: std.Io,
