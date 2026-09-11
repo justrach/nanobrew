@@ -4,6 +4,20 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+## [0.1.211] - 2026-09-11
+
+### Added
+- Transactional cask upgrades for ZIP, tar.gz, tar.xz, and direct binary downloads containing app or binary artifacts. Preserve companion resources, roll back failed activation, and recover interrupted upgrades before the next state command. DMG, package installers, and script-based upgrades remain explicitly skipped. (#387)
+- `nb outdated [pkg...]` now honors package names and `--cask`/`--deb` filters, with errors for unknown flags, conflicting filters, and missing packages.
+
+### Fixed
+- Allow a single cask executable up to ten seconds for cold startup, while retaining two-second slices for multi-binary casks. Report timeout, launch, and exit failures distinctly, and bound probes even when a process closes its output streams before hanging. (#386)
+- Keep unsupported cask upgrades outside the actionable plan and restrict `nb upgrade --cask` to casks.
+- Reject oversized transaction journals before publication so every accepted journal remains readable during recovery, and use syncable directory handles on Linux.
+- Kill and reap timed-out probes, including processes that ignore SIGTERM.
+- Check recovery-journal existence with filesystem metadata so Linux emulation does not reject state commands on unsupported access-check syscalls.
+- Stream Debian parity setup/install progress and fail immediately on command errors.
+
 ## [0.1.210] - 2026-09-09
 
 ### Added

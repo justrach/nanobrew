@@ -159,7 +159,20 @@ fn milliTimestamp() i64 {
 
 const ROOT = paths.ROOT;
 const PREFIX = paths.PREFIX;
-const VERSION = "0.1.210";
+const VERSION = "0.1.211";
+
+fn acquireCommandLock() !?std.Io.File {
+    const path = paths.DB_PATH ++ ".operation.lock";
+    // Advisory exclusive locks do not require a writable descriptor. Opening
+    // an existing lock read-only keeps list/info usable after a sudo command.
+    return std.Io.Dir.openFileAbsolute(g_io, path, .{ .lock = .exclusive }) catch |err| {
+        if (err != error.FileNotFound) return err;
+        return std.Io.Dir.createFileAbsolute(g_io, path, .{ .truncate = false, .lock = .exclusive }) catch |create_err| {
+            if (create_err == error.FileNotFound) return null; // before nb init
+            return create_err;
+        };
+    };
+}
 
 pub fn main(init: std.process.Init) !void {
     g_io = init.io;
@@ -188,6 +201,22 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
 
+    // Serialize commands that can inspect or mutate installed state while a
+    // multi-path cask activation is in flight. Autoupdate dispatches child nb
+    // processes, which acquire the lock themselves.
+    const command_lock: ?std.Io.File = if (cmd == .help or cmd == .version or cmd == .completions or cmd == .autoupdate)
+        null
+    else
+        try acquireCommandLock();
+    defer if (command_lock) |lock| lock.close(g_io);
+    if (command_lock != null) {
+        _ = nb.cask_upgrade.recover(alloc, g_io, .{}) catch |err| {
+            const stderr = StderrWriter{};
+            stderr.print("nb: interrupted cask upgrade needs recovery ({s}); active state has not been changed further; retry this command after resolving the filesystem error\n", .{@errorName(err)}) catch {};
+            std.process.exit(1);
+        };
+    }
+
     switch (cmd) {
         .init => runInit(),
         .install => runInstall(alloc, args[2..]),
@@ -209,7 +238,7 @@ pub fn main(init: std.process.Init) !void {
         .help => printUsage(),
         .doctor => runDoctor(alloc, args[2..]),
         .cleanup => runCleanup(alloc, args[2..]),
-        .outdated => runOutdated(alloc),
+        .outdated => runOutdated(alloc, args[2..]),
         .pin => runPin(alloc, args[2..], true),
         .unpin => runPin(alloc, args[2..], false),
         .rollback => runRollback(alloc, args[2..]),
@@ -2399,10 +2428,14 @@ fn probeExecutableCommand(
             if (stdout) |out| out.print("  - {s}: package probe budget exhausted; skipped: {s}\n", .{ owner, path }) catch {};
             return .skipped;
         },
-        .unresponsive => {
-            switch (severity) {
-                .fail => if (stdout) |out| out.print("  ✗ {s}: binary did not answer within its 2s probe slice: {s}\n", .{ owner, path }) catch {},
-                .warn => if (stdout) |out| out.print("  ! {s}: discovered binary did not answer (informational): {s}\n", .{ owner, path }) catch {},
+        .unresponsive, .timed_out, .launch_failed => |outcome| {
+            if (stdout) |out| {
+                const mark = if (severity == .fail) "✗" else "!";
+                switch (outcome) {
+                    .timed_out => out.print("  {s} {s}: probe timed out after {d}ms: {s} {s}; runtime health unverified\n", .{ mark, owner, session.last_elapsed_ms, path, session.last_arg }) catch {},
+                    .launch_failed => out.print("  {s} {s}: probe could not run: {s} {s} ({s})\n", .{ mark, owner, path, session.last_arg, @errorName(session.last_error.?) }) catch {},
+                    else => out.print("  {s} {s}: probe unsuccessful: {s} {s} ({any})\n", .{ mark, owner, path, session.last_arg, session.last_term }) catch {},
+                }
             }
             return .unresponsive;
         },
@@ -2482,7 +2515,7 @@ fn probeInstalledCask(
     var ok = true;
     var active_checks: usize = 0;
     var active_session: ?nb.trust_probe.Session = if (mode == .active)
-        nb.trust_probe.Session.init(g_io, PROBE_PACKAGE_BUDGET, PROBE_BINARY_BUDGET) catch return false
+        nb.trust_probe.Session.initCask(g_io, cask.binaries.len) catch return false
     else
         null;
     defer if (active_session) |*session| session.deinit();
@@ -2550,7 +2583,9 @@ fn probeInstalledCask(
                         active_checks += 1;
                         ok = false;
                     },
-                    .skipped => {},
+                    .skipped => {
+                        if (!nb.trust_probe.isInteractiveShellLike(base)) ok = false;
+                    },
                 }
             } else {
                 ok = false;
@@ -3334,6 +3369,23 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
     return result;
 }
 
+fn fetchCaskUpgradeCandidate(alloc: std.mem.Allocator, token: []const u8) !nb.cask.Cask {
+    var candidate = try nb.api_client.fetchCask(alloc, token);
+    errdefer candidate.deinit(alloc);
+    var evidence: ?trust.Document = trust.load(alloc) catch null;
+    defer if (evidence) |*d| d.deinit();
+    if (evidence) |d| candidate = try trust.chooseCask(alloc, d.value, candidate);
+    var tier: u8 = if (trust.validSha(candidate.sha256)) 1 else 0;
+    if (tier == 1 and candidate.metadata_source == .verified_upstream) tier = 2;
+    if (evidence) |d| {
+        if (d.value.latest(candidate.token, .cask, candidate.version, trust.platform(), candidate.sha256, trust.timestamp())) |e| {
+            if (e.result == .pass) tier = 3;
+        }
+    }
+    if (tier < try trust.minTrust(alloc)) return error.InsufficientTrust;
+    return candidate;
+}
+
 fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
@@ -3388,13 +3440,21 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
     }
 
     const check_casks = is_cask or names.items.len == 0;
-    const check_kegs = !is_cask or names.items.len == 0;
+    const check_kegs = !is_cask;
     var outdated = getOutdatedPackages(alloc, &db, names.items, check_casks, check_kegs);
     defer {
         for (outdated.items) |*pkg| pkg.deinit(alloc);
         outdated.deinit(alloc);
     }
 
+    var cask_candidates: std.StringHashMap(nb.cask.Cask) = .init(alloc);
+    defer {
+        var it = cask_candidates.valueIterator();
+        while (it.next()) |c| c.deinit(alloc);
+        cask_candidates.deinit();
+    }
+    var skipped_count: usize = 0;
+    var failed_count: usize = 0;
     // Filter out pinned packages
     var upgradeable: std.ArrayList(Outdated) = .empty;
     defer upgradeable.deinit(alloc);
@@ -3404,12 +3464,39 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
             pinned_count += 1;
             stdout.print("    {s} ({s} -> {s}) [pinned, skipping]\n", .{ pkg.name, pkg.old_ver, pkg.new_ver }) catch {};
         } else {
+            if (pkg.is_cask_pkg) {
+                const candidate = fetchCaskUpgradeCandidate(alloc, pkg.name) catch |err| {
+                    stderr.print("nb: {s}: cannot prepare cask upgrade ({s}); keeping {s}\n", .{ pkg.name, @errorName(err), pkg.old_ver }) catch {};
+                    failed_count += 1;
+                    continue;
+                };
+                if (nb.cask_upgrade.unsupportedReason(candidate)) |reason| {
+                    stdout.print("    {s} ({s} -> {s}) [unsupported, skipping: {s}]\n", .{ pkg.name, pkg.old_ver, candidate.version, reason }) catch {};
+                    candidate.deinit(alloc);
+                    skipped_count += 1;
+                    continue;
+                }
+                if (!std.mem.eql(u8, candidate.version, pkg.new_ver)) {
+                    stderr.print("nb: {s}: candidate changed since outdated check; retry upgrade\n", .{pkg.name}) catch {};
+                    candidate.deinit(alloc);
+                    failed_count += 1;
+                    continue;
+                }
+                cask_candidates.put(pkg.name, candidate) catch {
+                    candidate.deinit(alloc);
+                    failed_count += 1;
+                    continue;
+                };
+            }
             upgradeable.append(alloc, pkg) catch {};
         }
     }
 
     if (upgradeable.items.len == 0) {
-        if (pinned_count > 0) {
+        if (skipped_count > 0 or failed_count > 0) {
+            stdout.print("==> No packages upgraded ({d} unsupported, {d} failed, {d} pinned)\n", .{ skipped_count, failed_count, pinned_count }) catch {};
+            if (failed_count > 0) std.process.exit(1);
+        } else if (pinned_count > 0) {
             stdout.print("==> All packages are up to date ({d} pinned)\n", .{pinned_count}) catch {};
         } else {
             stdout.print("==> All packages are up to date\n", .{}) catch {};
@@ -3424,15 +3511,29 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
         stdout.print("    {s} ({s} -> {s}){s}\n", .{ pkg.name, pkg.old_ver, pkg.new_ver, tag }) catch {};
     }
 
+    var upgraded_count: usize = 0;
     // Execute upgrades
     for (upgradeable.items) |pkg| {
         if (pkg.is_cask_pkg) {
-            // A cask cannot currently be staged while its app/binary destinations
-            // are occupied. Never remove the working version first: a metadata or
-            // install failure would leave the user with nothing (#348). Preserve
-            // it until cask installation supports atomic replacement/rollback.
-            stderr.print("nb: {s}: safe cask upgrade is not available yet; keeping {s}\n", .{ pkg.name, pkg.old_ver }) catch {};
-            continue;
+            const candidate = cask_candidates.get(pkg.name).?;
+            nb.cask_upgrade.upgrade(alloc, g_io, pkg.name, candidate, .{}) catch |err| {
+                stderr.print("nb: {s}: cask upgrade failed ({s}); {s}\n", .{ pkg.name, @errorName(err), if (err == error.CaskRecoveryRequired) "recovery required before further operations" else "previous installation retained" }) catch {};
+                failed_count += 1;
+                if (err == error.CaskRecoveryRequired) std.process.exit(1);
+                continue;
+            };
+            // Reopen committed state, then record probe evidence independently.
+            var upgraded_db = nb.database.Database.open(alloc) catch {
+                failed_count += 1;
+                continue;
+            };
+            defer upgraded_db.close();
+            if (upgraded_db.findCask(pkg.name)) |installed| {
+                const passed = probeInstalledCask(alloc, stdout, installed, .active);
+                upgraded_db.recordCaskProbe(candidate.token, candidate.version, candidate.sha256, passed, LOCAL_PROBE_SCHEMA, LOCAL_PROBE_PLATFORM) catch {};
+                upgraded_db.flush() catch {};
+                if (!passed) stderr.print("nb: {s}: upgrade completed; runtime health unverified; run nb doctor --probe {s}\n", .{ pkg.name, pkg.name }) catch {};
+            }
         } else {
             // Install new keg first; remove old tree only after upgrade succeeds (#153).
             const old_keg = db.findKeg(pkg.name);
@@ -3450,6 +3551,7 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
                     break :blk false;
                 };
                 if (!upgraded) {
+                    failed_count += 1;
                     stderr.print("nb: {s}: upgrade did not install {s}; keeping {s}\n", .{ pkg.name, pkg.new_ver, keg.version }) catch {};
                     continue;
                 }
@@ -3462,12 +3564,14 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
                 nb.cellar.remove(pkg.name, keg.version) catch {};
             }
         }
+        upgraded_count += 1;
         stdout.print("==> Upgraded {s} ({s} -> {s})\n", .{ pkg.name, pkg.old_ver, pkg.new_ver }) catch {};
     }
 
     const elapsed_ns: u64 = timer.read();
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
-    stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
+    stdout.print("==> Upgraded {d}; skipped {d} unsupported, {d} pinned; failed {d}. Done in {d:.1}ms\n", .{ upgraded_count, skipped_count, pinned_count, failed_count, elapsed_ms }) catch {};
+    if (failed_count > 0) std.process.exit(1);
 }
 
 // ── nb update ──
@@ -4250,11 +4354,11 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
             break;
         };
         if (db.findCask(token)) |installed| {
-            const passed = probeInstalledCask(alloc, null, installed, .active);
+            const passed = probeInstalledCask(alloc, stdout, installed, .active);
             nb.trust_outcome.report(.{ .token = cask_meta.token, .kind = .cask, .version = cask_meta.version, .platform = trust.platform(), .sha256 = cask_meta.sha256, .installed = true, .probe = passed });
             db.recordCaskProbe(cask_meta.token, cask_meta.version, cask_meta.sha256, passed, LOCAL_PROBE_SCHEMA, LOCAL_PROBE_PLATFORM) catch {};
             db.flush() catch {};
-            if (!passed) stderr.print("nb: {s}: post-install probe failed; run nb doctor --probe {s}\n", .{ token, token }) catch {};
+            if (!passed) stderr.print("nb: {s}: installation completed; runtime health unverified; run nb doctor --probe {s}\n", .{ token, token }) catch {};
         }
         nb.cask_installer.traceCaskPhase(cask_trace, token, "db_record", phase_timer.read());
         nb.cask_installer.traceCaskPhase(cask_trace, token, "command_total", token_timer.read());
@@ -4348,7 +4452,7 @@ fn printUsage() void {
         \\  version                  Print the installed version
         \\  doctor [--probe [pkg]]   Check installation health / probe installed packages
         \\  cleanup [--dry-run]      Remove stale caches and orphaned files
-        \\  outdated                 List packages with newer versions available
+        \\  outdated [--cask|--deb] [pkg...]  List packages with newer versions available
         \\  pin <package>            Pin a package (skip during upgrade)
         \\  unpin <package>          Unpin a package
         \\  rollback <package>       Rollback to previous version
@@ -5446,9 +5550,33 @@ fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: any
 
 // ── nb outdated ──
 
-fn runOutdated(alloc: std.mem.Allocator) void {
+fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
+
+    var is_cask = false;
+    var is_deb = false;
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(alloc);
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--cask")) {
+            is_cask = true;
+        } else if (std.mem.eql(u8, arg, "--deb")) {
+            is_deb = true;
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            stderr.print("nb: outdated: unknown flag '{s}' (supported: --cask, --deb)\n", .{arg}) catch {};
+            std.process.exit(1);
+        } else {
+            names.append(alloc, arg) catch {
+                stderr.print("nb: outdated: out of memory\n", .{}) catch {};
+                std.process.exit(1);
+            };
+        }
+    }
+    if (is_cask and is_deb) {
+        stderr.print("nb: outdated: --cask and --deb cannot be combined\n", .{}) catch {};
+        std.process.exit(1);
+    }
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: could not open database\n", .{}) catch {};
@@ -5456,8 +5584,16 @@ fn runOutdated(alloc: std.mem.Allocator) void {
     };
     defer db.close();
 
+    for (names.items) |name| {
+        const found = if (is_cask) db.findCask(name) != null else if (is_deb) db.findDeb(name) != null else db.findKeg(name) != null or db.findCask(name) != null or db.findDeb(name) != null;
+        if (!found) {
+            stderr.print("nb: outdated: '{s}' is not installed\n", .{name}) catch {};
+            std.process.exit(1);
+        }
+    }
+
     stdout.print("==> Checking for outdated packages...\n", .{}) catch {};
-    var outdated = getOutdatedPackages(alloc, &db, &.{}, true, true);
+    var outdated = getOutdatedPackages(alloc, &db, names.items, !is_deb, !is_cask and !is_deb);
     defer {
         for (outdated.items) |*pkg| pkg.deinit(alloc);
         outdated.deinit(alloc);
@@ -5468,7 +5604,7 @@ fn runOutdated(alloc: std.mem.Allocator) void {
     const installed_debs = db.listInstalledDebs(alloc) catch &.{};
     defer if (installed_debs.len > 0) alloc.free(installed_debs);
 
-    if (installed_debs.len > 0) deb_check: {
+    if (!is_cask and installed_debs.len > 0) deb_check: {
         // Fetch indices from every configured APT source so we honour custom
         // mirrors and PPAs the user has set up via /etc/apt/sources.list[.d/*].
         const deb_arch = platform.deb_arch;
@@ -5520,6 +5656,13 @@ fn runOutdated(alloc: std.mem.Allocator) void {
         defer idx.deinit();
 
         for (installed_debs) |deb| {
+            if (names.items.len > 0) {
+                var selected = false;
+                for (names.items) |name| {
+                    if (std.mem.eql(u8, name, deb.name)) selected = true;
+                }
+                if (!selected) continue;
+            }
             if (idx.get(deb.name)) |idx_pkg| {
                 if (nb.version.isNewer(idx_pkg.version, deb.version)) {
                     stdout.print("{s} ({s} -> {s}) (deb)\n", .{ deb.name, deb.version, idx_pkg.version }) catch {};

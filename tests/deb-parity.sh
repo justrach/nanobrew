@@ -23,9 +23,15 @@ echo "--- Test 1: nb install --deb curl (32/32 packages) ---"
 INSTALL_OUTPUT=$(docker run --rm --platform "$PLATFORM" \
   --mount type=bind,source="$NB_BIN_ABS",target=/opt/nb \
   "$IMAGE" bash -c "
-  apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq ca-certificates >/dev/null 2>&1
-  /opt/nb init >/dev/null 2>&1
-  /opt/nb install --deb curl 2>&1
+  set -euo pipefail
+  echo 'Preparing APT package lists...' >&2
+  apt-get update -qq
+  echo 'Installing CA certificates...' >&2
+  apt-get install -y -qq ca-certificates >/dev/null
+  echo 'Initializing nanobrew...' >&2
+  /opt/nb init >&2
+  echo 'Installing Debian packages with nanobrew...' >&2
+  /opt/nb install --deb curl 2>&1 | tee /dev/stderr
 ")
 
 INSTALLED=$(echo "$INSTALL_OUTPUT" | sed -n 's/.*Installed \([0-9]*\)\/\([0-9]*\).*/\1/p' | tail -1)
@@ -43,9 +49,15 @@ echo "--- Test 2: curl --version works ---"
 CURL_VER=$(docker run --rm --platform "$PLATFORM" \
   --mount type=bind,source="$NB_BIN_ABS",target=/opt/nb \
   "$IMAGE" bash -c "
-  apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq ca-certificates >/dev/null 2>&1
-  /opt/nb init >/dev/null 2>&1
-  /opt/nb install --deb curl >/dev/null 2>&1
+  set -euo pipefail
+  echo 'Preparing APT package lists...' >&2
+  apt-get update -qq
+  echo 'Installing CA certificates...' >&2
+  apt-get install -y -qq ca-certificates >/dev/null
+  echo 'Initializing nanobrew...' >&2
+  /opt/nb init >&2
+  echo 'Installing Debian packages with nanobrew...' >&2
+  /opt/nb install --deb curl >&2
   curl --version 2>&1 | head -1
 ")
 
@@ -61,9 +73,15 @@ echo "--- Test 3: key files exist ---"
 FILE_CHECK=$(docker run --rm --platform "$PLATFORM" \
   --mount type=bind,source="$NB_BIN_ABS",target=/opt/nb \
   "$IMAGE" bash -c "
-  apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq ca-certificates >/dev/null 2>&1
-  /opt/nb init >/dev/null 2>&1
-  /opt/nb install --deb curl >/dev/null 2>&1
+  set -euo pipefail
+  echo 'Preparing APT package lists...' >&2
+  apt-get update -qq
+  echo 'Installing CA certificates...' >&2
+  apt-get install -y -qq ca-certificates >/dev/null
+  echo 'Initializing nanobrew...' >&2
+  /opt/nb init >&2
+  echo 'Installing Debian packages with nanobrew...' >&2
+  /opt/nb install --deb curl >&2
   for f in /usr/bin/curl \
            /usr/lib/x86_64-linux-gnu/libcurl.so.4 \
            /usr/lib/x86_64-linux-gnu/libssl.so.3 \
@@ -95,9 +113,15 @@ echo "--- Test 4: nb extraction matches dpkg-deb for same .deb ---"
 DEB_COMPARE=$(docker run --rm --platform "$PLATFORM" \
   --mount type=bind,source="$NB_BIN_ABS",target=/opt/nb \
   "$IMAGE" bash -c "
-  apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq ca-certificates >/dev/null 2>&1
-  /opt/nb init >/dev/null 2>&1
-  /opt/nb install --deb curl >/dev/null 2>&1
+  set -euo pipefail
+  echo 'Preparing APT package lists...' >&2
+  apt-get update -qq
+  echo 'Installing CA certificates...' >&2
+  apt-get install -y -qq ca-certificates >/dev/null
+  echo 'Initializing nanobrew...' >&2
+  /opt/nb init >&2
+  echo 'Installing Debian packages with nanobrew...' >&2
+  /opt/nb install --deb curl >&2
 
   # Find the curl .deb in blob cache using dpkg-deb --contents
   CURL_DEB=''
@@ -158,9 +182,15 @@ echo "--- Test 5: nb install --deb wget git ---"
 MULTI_OUTPUT=$(docker run --rm --platform "$PLATFORM" \
   --mount type=bind,source="$NB_BIN_ABS",target=/opt/nb \
   "$IMAGE" bash -c "
-  apt-get update -qq >/dev/null 2>&1; apt-get install -y -qq ca-certificates >/dev/null 2>&1
-  /opt/nb init >/dev/null 2>&1
-  /opt/nb install --deb wget git >/dev/null 2>&1
+  set -euo pipefail
+  echo 'Preparing APT package lists...' >&2
+  apt-get update -qq
+  echo 'Installing CA certificates...' >&2
+  apt-get install -y -qq ca-certificates >/dev/null
+  echo 'Initializing nanobrew...' >&2
+  /opt/nb init >&2
+  echo 'Installing Debian packages with nanobrew...' >&2
+  /opt/nb install --deb wget git >&2
   wget --version 2>&1 | head -1
   echo '---'
   git --version 2>&1

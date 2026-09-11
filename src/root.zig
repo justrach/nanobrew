@@ -33,6 +33,7 @@ pub const linker = @import("linker/linker.zig");
 pub const purge = @import("platform/purge.zig");
 pub const database = @import("db/database.zig");
 pub const cask = @import("api/cask.zig");
+pub const cask_upgrade = @import("cask/upgrade.zig");
 pub const cask_installer = @import("cask/install.zig");
 pub const source_builder = @import("build/source.zig");
 pub const postinstall = @import("build/postinstall.zig");
@@ -74,6 +75,8 @@ comptime {
     _ = ghcr;
     _ = cask;
     _ = cask_installer;
+    _ = cask_upgrade;
+    _ = cask_upgrade.transaction;
     _ = source_builder;
     _ = tap;
     _ = database;

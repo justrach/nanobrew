@@ -55,6 +55,12 @@ jobs:
           zig build-exe -lc src/test_outcome_transport.zig -femit-bin=/tmp/nb-outcome-fixture
           python3 scripts/trust/test_outcome.py /tmp/nb-outcome-fixture
 
+      - name: Transactional cask upgrade regression tests
+        run: |
+          zig build-exe -lc src/test_cask_upgrade.zig -femit-bin=/tmp/nb-cask-upgrade-fixture
+          python3 tests/cask-upgrade.py /tmp/nb-cask-upgrade-fixture
+          sudo python3 tests/cask-upgrade-cli.py ./zig-out/bin/nb
+
       - name: Shell completion regression tests
         run: bash tests/completions.sh ./zig-out/bin/nb
 

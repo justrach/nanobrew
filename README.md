@@ -186,6 +186,18 @@ nb remove --cask firefox      # uninstall it
 nb upgrade --cask             # upgrade all casks
 ```
 
+Cask upgrades currently support ZIP/tar archives and direct binaries with app
+or binary artifacts. The replacement is staged with all companion files before
+activation. App destinations, binary links, and installed state commit together.
+Failures roll back immediately; interrupted upgrades recover on the next command.
+Old payloads are removed only after commit. Disk images, `.pkg`/script installers,
+and other artifact rules are reported separately as unsupported and kept intact.
+
+Cask executable probes share a ten-second package budget. A cask declaring one
+binary can use the remaining budget for cold startup; multiple binaries retain
+two-second slices. Timeouts leave runtime health unverified and include the
+command and elapsed time in both installation and `nb doctor --probe` output.
+
 As of v0.1.192, the top 100 casks install through nanobrew's native pipeline — no `brew` subprocess, no Homebrew prefix, no Ruby. Native cask support covers apps, `.pkg`, fonts, binaries, suites, copied artifacts, installer scripts, `.tar.xz`, and extensionless vendor URLs. Casks outside the top 100 still fall back to the verified Homebrew path.
 
 ### Linux / Docker (deb packages)
@@ -447,7 +459,7 @@ License: [Apache 2.0](./LICENSE)
 | `nb search <query>` | `nb s` | Search formulas and casks |
 | `nb upgrade [pkg]` | | Upgrade packages |
 | `nb upgrade --deb` | | Upgrade all installed .deb packages |
-| `nb outdated` | | List outdated packages (brew + deb) |
+| `nb outdated [pkg...]` | `--cask`, `--deb` | List outdated packages, optionally filtered by name or type |
 | `nb pin <pkg>` | | Prevent upgrades |
 | `nb unpin <pkg>` | | Allow upgrades |
 | `nb rollback <pkg>` | `nb rb` | Revert to previous version |

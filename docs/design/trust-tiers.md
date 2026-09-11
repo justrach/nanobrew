@@ -69,9 +69,13 @@ Three producers, one format:
 Cheap, uniform, no package-specific scripting:
 
 - formula: every declared binary in `prefix/bin` for the keg exists, is
-  executable, and the dynamic loader can resolve it (run with a 2s timeout:
+  executable, and the dynamic loader can resolve it (run within a bounded package budget:
   `<bin> --version` || `<bin> version` || `<bin> --help`; accept exit 0/1/2 —
-  the probe asserts "loads and runs", not CLI semantics).
+  the probe asserts "loads and runs", not CLI semantics). Executable attempts
+  share one absolute deadline, within a ten-second package cap. Casks declaring
+  one executable can spend the remaining package budget on cold startup; other
+  executable probes retain two-second slices. Timeout, launch failure, and
+  unsuccessful exit status are distinct diagnostics; a timeout never passes.
 - cask: declared artifacts exist (`.app` bundle present, binaries symlinked),
   quarantine cleared, `codesign --verify` passes where applicable.
 - both: the DB entry exists *and* the Cellar/Caskroom path exists (the #302/
