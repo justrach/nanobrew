@@ -159,7 +159,7 @@ fn milliTimestamp() i64 {
 
 const ROOT = paths.ROOT;
 const PREFIX = paths.PREFIX;
-const VERSION = "0.1.210";
+const VERSION = "0.1.211";
 
 fn acquireCommandLock() !?std.Io.File {
     const path = paths.DB_PATH ++ ".operation.lock";
@@ -238,7 +238,7 @@ pub fn main(init: std.process.Init) !void {
         .help => printUsage(),
         .doctor => runDoctor(alloc, args[2..]),
         .cleanup => runCleanup(alloc, args[2..]),
-        .outdated => runOutdated(alloc),
+        .outdated => runOutdated(alloc, args[2..]),
         .pin => runPin(alloc, args[2..], true),
         .unpin => runPin(alloc, args[2..], false),
         .rollback => runRollback(alloc, args[2..]),
@@ -4452,7 +4452,7 @@ fn printUsage() void {
         \\  version                  Print the installed version
         \\  doctor [--probe [pkg]]   Check installation health / probe installed packages
         \\  cleanup [--dry-run]      Remove stale caches and orphaned files
-        \\  outdated                 List packages with newer versions available
+        \\  outdated [--cask|--deb] [pkg...]  List packages with newer versions available
         \\  pin <package>            Pin a package (skip during upgrade)
         \\  unpin <package>          Unpin a package
         \\  rollback <package>       Rollback to previous version
@@ -5550,9 +5550,33 @@ fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: any
 
 // ── nb outdated ──
 
-fn runOutdated(alloc: std.mem.Allocator) void {
+fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
+
+    var is_cask = false;
+    var is_deb = false;
+    var names: std.ArrayList([]const u8) = .empty;
+    defer names.deinit(alloc);
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--cask")) {
+            is_cask = true;
+        } else if (std.mem.eql(u8, arg, "--deb")) {
+            is_deb = true;
+        } else if (std.mem.startsWith(u8, arg, "-")) {
+            stderr.print("nb: outdated: unknown flag '{s}' (supported: --cask, --deb)\n", .{arg}) catch {};
+            std.process.exit(1);
+        } else {
+            names.append(alloc, arg) catch {
+                stderr.print("nb: outdated: out of memory\n", .{}) catch {};
+                std.process.exit(1);
+            };
+        }
+    }
+    if (is_cask and is_deb) {
+        stderr.print("nb: outdated: --cask and --deb cannot be combined\n", .{}) catch {};
+        std.process.exit(1);
+    }
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: could not open database\n", .{}) catch {};
@@ -5560,8 +5584,16 @@ fn runOutdated(alloc: std.mem.Allocator) void {
     };
     defer db.close();
 
+    for (names.items) |name| {
+        const found = if (is_cask) db.findCask(name) != null else if (is_deb) db.findDeb(name) != null else db.findKeg(name) != null or db.findCask(name) != null or db.findDeb(name) != null;
+        if (!found) {
+            stderr.print("nb: outdated: '{s}' is not installed\n", .{name}) catch {};
+            std.process.exit(1);
+        }
+    }
+
     stdout.print("==> Checking for outdated packages...\n", .{}) catch {};
-    var outdated = getOutdatedPackages(alloc, &db, &.{}, true, true);
+    var outdated = getOutdatedPackages(alloc, &db, names.items, !is_deb, !is_cask and !is_deb);
     defer {
         for (outdated.items) |*pkg| pkg.deinit(alloc);
         outdated.deinit(alloc);
@@ -5572,7 +5604,7 @@ fn runOutdated(alloc: std.mem.Allocator) void {
     const installed_debs = db.listInstalledDebs(alloc) catch &.{};
     defer if (installed_debs.len > 0) alloc.free(installed_debs);
 
-    if (installed_debs.len > 0) deb_check: {
+    if (!is_cask and installed_debs.len > 0) deb_check: {
         // Fetch indices from every configured APT source so we honour custom
         // mirrors and PPAs the user has set up via /etc/apt/sources.list[.d/*].
         const deb_arch = platform.deb_arch;
@@ -5624,6 +5656,13 @@ fn runOutdated(alloc: std.mem.Allocator) void {
         defer idx.deinit();
 
         for (installed_debs) |deb| {
+            if (names.items.len > 0) {
+                var selected = false;
+                for (names.items) |name| {
+                    if (std.mem.eql(u8, name, deb.name)) selected = true;
+                }
+                if (!selected) continue;
+            }
             if (idx.get(deb.name)) |idx_pkg| {
                 if (nb.version.isNewer(idx_pkg.version, deb.version)) {
                     stdout.print("{s} ({s} -> {s}) (deb)\n", .{ deb.name, deb.version, idx_pkg.version }) catch {};

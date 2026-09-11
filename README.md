@@ -459,7 +459,7 @@ License: [Apache 2.0](./LICENSE)
 | `nb search <query>` | `nb s` | Search formulas and casks |
 | `nb upgrade [pkg]` | | Upgrade packages |
 | `nb upgrade --deb` | | Upgrade all installed .deb packages |
-| `nb outdated` | | List outdated packages (brew + deb) |
+| `nb outdated [pkg...]` | `--cask`, `--deb` | List outdated packages, optionally filtered by name or type |
 | `nb pin <pkg>` | | Prevent upgrades |
 | `nb unpin <pkg>` | | Allow upgrades |
 | `nb rollback <pkg>` | `nb rb` | Revert to previous version |

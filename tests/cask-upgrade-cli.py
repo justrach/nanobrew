@@ -67,13 +67,18 @@ with tempfile.TemporaryDirectory(prefix="nb-cask-cli-") as temp:
         assert "cask probe passed" in output
         candidate = metadata("2.0", healthy)
         output = run("outdated", "--cask", token)
-        assert token in output and "2.0" in output
+        assert token in output and "2.0" in output and "==> 1 outdated package(s)" in output
+        assert "==> 1 outdated package(s)" in run("outdated", token)
+        assert "unknown flag" in run("outdated", "--bogus", expected=1)
+        assert "cannot be combined" in run("outdated", "--cask", "--deb", expected=1)
+        assert "is not installed" in run("outdated", "--cask", token + "-missing", expected=1)
+        assert "is not installed" in run("outdated", "--deb", token, expected=1)
         output = run("upgrade", "--cask", token)
         assert "Upgraded " + token in output and "cask probe passed" in output
         assert record()["version"] == "2.0" and record()["sha256"] == candidate["sha256"]
         assert not (root / "prefix/Caskroom" / token / "1.0").exists()
         assert (root / "prefix/bin" / token).resolve() == root / "prefix/Caskroom" / token / "2.0/dist" / token
-        assert token not in run("outdated", "--cask", token)
+        assert "All packages are up to date." in run("outdated", "--cask", token)
         # Unsupported candidates are skipped outside the actionable plan.
         candidate["version"] = "3.0"
         candidate["artifacts"] = [{"pkg": ["Installer.pkg"]}]

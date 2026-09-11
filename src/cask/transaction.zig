@@ -5,6 +5,8 @@
 const std = @import("std");
 const builtin = @import("builtin");
 
+const max_journal_bytes = 1024 * 1024;
+
 pub const Step = struct {
     destination: []const u8,
     staged: []const u8,
@@ -76,6 +78,8 @@ pub fn save(alloc: std.mem.Allocator, io: std.Io, directory: []const u8, journal
     defer alloc.free(temp);
     const bytes = try std.json.Stringify.valueAlloc(alloc, journal, .{});
     defer alloc.free(bytes);
+    // Never publish a journal that recovery cannot read.
+    if (bytes.len > max_journal_bytes) return error.JournalTooLarge;
     const file = try std.Io.Dir.createFileAbsolute(io, temp, .{});
     {
         defer file.close(io);
@@ -130,7 +134,7 @@ pub fn cleanup(io: std.Io, journal: Journal) !void {
 pub fn recover(alloc: std.mem.Allocator, io: std.Io, directory: []const u8) !bool {
     const path = try std.fs.path.join(alloc, &.{ directory, "journal.json" });
     defer alloc.free(path);
-    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(1024 * 1024)) catch |err| switch (err) {
+    const bytes = std.Io.Dir.cwd().readFileAlloc(io, path, alloc, .limited(max_journal_bytes)) catch |err| switch (err) {
         error.FileNotFound => {
             // Directory creation or initial journal write was interrupted;
             // staging cannot have begun before publication of journal.json.
@@ -150,4 +154,26 @@ pub fn recover(alloc: std.mem.Allocator, io: std.Io, directory: []const u8) !boo
     try cleanup(io, parsed.value);
     try remove(io, directory);
     return true;
+}
+
+test "oversized journal cannot replace a recoverable journal" {
+    const a = std.testing.allocator;
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &buf);
+    const directory = buf[0..n];
+    const original: Journal = .{ .steps = &.{}, .old_payload = "" };
+    try save(a, io, directory, original);
+    const large = try a.alloc(u8, max_journal_bytes);
+    defer a.free(large);
+    @memset(large, 'x');
+    try std.testing.expectError(error.JournalTooLarge, save(a, io, directory, .{ .steps = &.{}, .old_payload = large }));
+    const bytes = try tmp.dir.readFileAlloc(io, "journal.json", a, .limited(max_journal_bytes));
+    defer a.free(bytes);
+    const parsed = try std.json.parseFromSlice(Journal, a, bytes, .{});
+    defer parsed.deinit();
+    try std.testing.expectEqualStrings("", parsed.value.old_payload);
+    try std.testing.expectEqual(@as(usize, 0), parsed.value.steps.len);
 }

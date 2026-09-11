@@ -76,6 +76,7 @@ comptime {
     _ = cask;
     _ = cask_installer;
     _ = cask_upgrade;
+    _ = cask_upgrade.transaction;
     _ = source_builder;
     _ = tap;
     _ = database;
