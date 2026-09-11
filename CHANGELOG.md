@@ -15,6 +15,8 @@ All notable changes to nanobrew are documented here.
 - Keep unsupported cask upgrades outside the actionable plan and restrict `nb upgrade --cask` to casks.
 - Reject oversized transaction journals before publication so every accepted journal remains readable during recovery, and use syncable directory handles on Linux.
 - Kill and reap timed-out probes, including processes that ignore SIGTERM.
+- Check recovery-journal existence with filesystem metadata so Linux emulation does not reject state commands on unsupported access-check syscalls.
+- Stream Debian parity setup/install progress and fail immediately on command errors.
 
 ## [0.1.210] - 2026-09-09
 

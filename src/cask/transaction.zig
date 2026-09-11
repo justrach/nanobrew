@@ -28,7 +28,7 @@ extern "c" fn fsync(fd: c_int) c_int;
 extern "c" fn renamex_np(from: [*:0]const u8, to: [*:0]const u8, flags: c_uint) c_int;
 
 pub fn exists(io: std.Io, path: []const u8) !bool {
-    std.Io.Dir.cwd().access(io, path, .{ .follow_symlinks = false }) catch |err| switch (err) {
+    _ = std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false }) catch |err| switch (err) {
         error.FileNotFound => return false,
         else => return err,
     };
@@ -177,4 +177,18 @@ test "oversized journal cannot replace a recoverable journal" {
     defer parsed.deinit();
     try std.testing.expectEqualStrings("", parsed.value.old_payload);
     try std.testing.expectEqual(@as(usize, 0), parsed.value.steps.len);
+}
+
+test "path existence includes dangling links and distinguishes missing entries" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(io, &buf);
+    const path = try std.fs.path.join(std.testing.allocator, &.{ buf[0..n], "entry" });
+    defer std.testing.allocator.free(path);
+    try std.testing.expect(!try exists(io, path));
+    try std.Io.Dir.symLinkAbsolute(io, "/nonexistent/nb-transaction-fixture", path, .{});
+    try std.testing.expect(try exists(io, path));
+    try std.testing.expect(try exists(io, buf[0..n]));
 }
