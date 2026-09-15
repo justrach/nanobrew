@@ -73,6 +73,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/bottle-scan"
           tar -xzf dist/zlib-1.3.2.macos-x86_64.source.tar.gz -C "$RUNNER_TEMP/bottle-scan"
           "$RUNNER_TEMP/tools/syft" scan "dir:$RUNNER_TEMP/bottle-scan" -o spdx-json=dist/zlib.spdx.json
+          python3 scripts/bottles/source_bottle_release.py annotate-sbom
           "$RUNNER_TEMP/tools/grype" sbom:dist/zlib.spdx.json --fail-on high -o json > dist/zlib.grype.json
       - uses: actions/upload-artifact@v4
         with:

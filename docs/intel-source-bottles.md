@@ -7,6 +7,12 @@ archive before publication. No Homebrew compiler or build dependencies are used
 by the zlib recipe. The deployment target is macOS 12; execution is currently
 tested on macOS 15 Intel only.
 
+Syft supplies the file inventory. Because it does not identify zlib from this
+C library's binaries, the workflow adds an explicit SPDX package with the
+recipe's verified source checksum, version, package URL and CPE before Grype
+matches vulnerabilities. This avoids accepting an empty package inventory as
+a meaningful scan.
+
 Successful non-PR runs publish to `ghcr.io/justrach/nb-bottles/zlib`, verify a
 public anonymous pull by checksum, and create a GitHub prerelease containing
 the tarball, checksum, source/toolchain evidence, SBOM, scan report and complete

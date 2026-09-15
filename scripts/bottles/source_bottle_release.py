@@ -14,6 +14,31 @@ BOTTLE = DIST / "zlib-1.3.2.macos-x86_64.source.tar.gz"
 EVIDENCE = BOTTLE.with_suffix(".json")
 
 
+def add_recipe_identity(sbom, evidence):
+    # Syft does not currently discover zlib from this C library's Mach-O files.
+    # Add the identity established by the checksum-pinned recipe, preserving
+    # the scanner's file inventory. Grype can match this explicit CPE.
+    package_id = "SPDXRef-nanobrew-zlib"
+    package = {"SPDXID": package_id, "name": "zlib", "versionInfo": evidence["version"],
+               "downloadLocation": evidence["source_url"], "filesAnalyzed": False,
+               "licenseConcluded": "NOASSERTION", "licenseDeclared": "Zlib",
+               "copyrightText": "NOASSERTION",
+               "sourceInfo": "Identity from the checksum-verified Nanobrew source recipe",
+               "checksums": [{"algorithm": "SHA256", "checksumValue": evidence["source_sha256"]}],
+               "externalRefs": [
+                   {"referenceCategory": "SECURITY", "referenceType": "cpe23Type",
+                    "referenceLocator": f"cpe:2.3:a:zlib:zlib:{evidence['version']}:*:*:*:*:*:*:*"},
+                   {"referenceCategory": "PACKAGE-MANAGER", "referenceType": "purl",
+                    "referenceLocator": f"pkg:generic/zlib@{evidence['version']}"}]}
+    sbom["packages"] = [p for p in sbom.get("packages", []) if p["SPDXID"] != package_id] + [package]
+    relation = {"spdxElementId": sbom["SPDXID"], "relationshipType": "DESCRIBES",
+                "relatedSpdxElement": package_id}
+    relations = sbom.setdefault("relationships", [])
+    if relation not in relations:
+        relations.append(relation)
+    return sbom
+
+
 def prepare_registry(registry, evidence, url):
     records = registry["records"]
     record = next((r for r in records if r["token"] == "zlib" and r["kind"] == "formula"), None)
@@ -34,13 +59,18 @@ def prepare_registry(registry, evidence, url):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["prepare", "publish"])
+    parser.add_argument("command", choices=["prepare", "publish", "annotate-sbom"])
     args = parser.parse_args()
     evidence = json.loads(EVIDENCE.read_text())
     digest = hashlib.sha256(BOTTLE.read_bytes()).hexdigest()
     if (digest != evidence["bottle_sha256"] or evidence["package"] != "zlib"
             or evidence["version"] != "1.3.2" or evidence["platform"] != "macos-x86_64"):
         raise ValueError("Bottle/evidence identity mismatch")
+    if args.command == "annotate-sbom":
+        sbom_path = DIST / "zlib.spdx.json"
+        sbom = add_recipe_identity(json.loads(sbom_path.read_text()), evidence)
+        sbom_path.write_text(json.dumps(sbom, indent=2) + "\n")
+        return
     repo = bottles.mirror_repo("zlib")
     url = f"https://ghcr.io/v2/{repo}/blobs/sha256:{digest}"
     registry = json.loads(bottles.REGISTRY_JSON.read_text())

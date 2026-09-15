@@ -2,7 +2,7 @@
 import copy
 import unittest
 
-from source_bottle_release import prepare_registry
+from source_bottle_release import prepare_registry, add_recipe_identity
 
 
 class RegistryTests(unittest.TestCase):
@@ -34,6 +34,17 @@ class RegistryTests(unittest.TestCase):
         result = prepare_registry({"schema_version": 1, "records": []}, self.evidence, "new")
         self.assertEqual(result["records"][0]["token"], "zlib")
         self.assertEqual(list(result["records"][0]["resolved"]["assets"]), ["macos-x86_64"])
+
+    def test_explicit_scan_identity_is_idempotent(self):
+        evidence = {**self.evidence, "source_url": "https://zlib.net/source", "source_sha256": "b" * 64}
+        sbom = {"SPDXID": "SPDXRef-DOCUMENT", "packages": [{"SPDXID": "SPDXRef-root"}]}
+        add_recipe_identity(sbom, evidence)
+        add_recipe_identity(sbom, evidence)
+        self.assertEqual(len(sbom["packages"]), 2)
+        self.assertEqual(len(sbom["relationships"]), 1)
+        package = sbom["packages"][1]
+        self.assertEqual(package["versionInfo"], "1.3.2")
+        self.assertIn("cpe:2.3:a:zlib:zlib:1.3.2:", package["externalRefs"][0]["referenceLocator"])
 
 
 if __name__ == "__main__":
