@@ -287,6 +287,17 @@ def upstream_repo_from_url(url):
 # ── subcommands ──────────────────────────────────────────────────────────────
 
 
+def bottle_manifest_tag(rec, platform):
+    """Homebrew revisions/rebuilds have distinct bytes at the same version."""
+    resolved = rec["resolved"]
+    version = resolved["version"]
+    revision = resolved.get("revision", rec.get("revision", 0))
+    rebuild = resolved.get("rebuild", rec.get("rebuild", 0))
+    if revision or rebuild:
+        return f"{version}.r{revision}.b{rebuild}.{platform}"
+    return f"{version}.{platform}"
+
+
 def mirror_one(rec, args, src_token_cache):
     name, ver = rec["token"], rec["resolved"]["version"]
     repo = mirror_repo(name)
@@ -335,7 +346,7 @@ def mirror_one(rec, args, src_token_cache):
             _, h, _ = http("HEAD", f"{GHCR}/v2/{repo}/blobs/{digest}",
                            {"Authorization": f"Bearer {dst_token}"})
             blob_size = int(h.get("Content-Length", "0"))
-        push_manifest(repo, f"{ver}.{platform}", digest, blob_size, platform,
+        push_manifest(repo, bottle_manifest_tag(rec, platform), digest, blob_size, platform,
                       dst_token, {"sh.brew.bottle.upstream": src_repo})
         log(f"  {name} {ver} {platform}: {how}")
 
@@ -557,7 +568,7 @@ def cmd_pin(args):
                     _, how = push_blob(repo, data, token)
             _, h, _ = http("HEAD", f"{GHCR}/v2/{repo}/blobs/{digest}",
                            {"Authorization": f"Bearer {token}"})
-            push_manifest(repo, f"{version}.{platform}", digest,
+            push_manifest(repo, bottle_manifest_tag(record, platform), digest,
                           int(h.get("Content-Length", "0")), platform, token,
                           {"sh.brew.bottle.upstream": f"{UPSTREAM_REPO}/{record['token']}"})
             log(f"  {record['token']} {version} {platform}: {how}")
@@ -976,7 +987,7 @@ def _push_evidence_for(rec, platforms=None):
     for platform in sorted(rec["resolved"]["assets"]):
         if platforms and platform not in platforms:
             continue
-        subject = _manifest_descriptor(repo, f"{ver}.{platform}", token)
+        subject = _manifest_descriptor(repo, bottle_manifest_tag(rec, platform), token)
         if not subject:
             log(f"  {name} {ver} {platform}: no bottle manifest on GHCR — skipped")
             continue

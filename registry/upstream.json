@@ -5949,43 +5949,38 @@
       "kind": "formula",
       "homepage": "https://openssl-library.org",
       "desc": "Cryptography and SSL/TLS Toolkit",
-      "revision": 0,
-      "rebuild": 0,
       "dependencies": [
         "ca-certificates"
       ],
-      "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
         "verified": true
       },
-      "analytics": {
-        "install_on_request_30d_rank": 19,
-        "install_on_request_30d_count": "77,050"
-      },
-      "resolved": {
-        "version": "3.6.2",
-        "assets": {
-          "macos-arm64": {
-            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:6f3029073c7e53fcf8f777bed99f25dd2992c5deed3662d739d052e6b594ba60",
-            "sha256": "6f3029073c7e53fcf8f777bed99f25dd2992c5deed3662d739d052e6b594ba60"
-          },
-          "macos-x86_64": {
-            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:cd84b6d838d68506a8e75dfb94d3d528624ba5b37b3a51000da981a1662eb2b6",
-            "sha256": "cd84b6d838d68506a8e75dfb94d3d528624ba5b37b3a51000da981a1662eb2b6"
-          },
-          "linux-x86_64": {
-            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:3a0921a100c10db526e51889e874eb963ca6c450ef8bb08af3f0d714c598d983",
-            "sha256": "3a0921a100c10db526e51889e874eb963ca6c450ef8bb08af3f0d714c598d983"
-          },
-          "linux-aarch64": {
-            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:00604552976a76cb23daac747aae0ef790d3332f08ef69b043c35850f6b00304",
-            "sha256": "00604552976a76cb23daac747aae0ef790d3332f08ef69b043c35850f6b00304"
-          }
-        }
-      },
       "verification": {
         "sha256": "required"
+      },
+      "resolved": {
+        "version": "3.6.4",
+        "revision": 0,
+        "rebuild": 0,
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:01887accd1964e9940ba516509e948eed9850d58d55cc02ca52c503435750685",
+            "sha256": "01887accd1964e9940ba516509e948eed9850d58d55cc02ca52c503435750685"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:73c4159878b98d82e6f4e343ef34a79b74ca2224927d38c0956ce3ea781d6d20",
+            "sha256": "73c4159878b98d82e6f4e343ef34a79b74ca2224927d38c0956ce3ea781d6d20"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:e0f84cb8ab776813a17750423a6ce1b75b870df3ab2c21c54df9ce02646c1e1c",
+            "sha256": "e0f84cb8ab776813a17750423a6ce1b75b870df3ab2c21c54df9ce02646c1e1c"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/justrach/nb-bottles/openssl/3/blobs/sha256:20d0d7b1790b59187f9aeae1ae718db6880b729eee8478ec4cc281b318cc96a6",
+            "sha256": "20d0d7b1790b59187f9aeae1ae718db6880b729eee8478ec4cc281b318cc96a6"
+          }
+        }
       }
     },
     {
@@ -7535,41 +7530,36 @@
       "kind": "formula",
       "homepage": "https://tukaani.org/xz/",
       "desc": "General-purpose data compression with high compression ratio",
-      "revision": 0,
-      "rebuild": 0,
       "dependencies": [],
-      "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
         "verified": true
       },
-      "analytics": {
-        "install_on_request_30d_rank": 13,
-        "install_on_request_30d_count": "89,307"
-      },
-      "resolved": {
-        "version": "5.8.3",
-        "assets": {
-          "macos-arm64": {
-            "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:55c891f5d47142fe923c87df0e3343d7ef2bc7d368c67892b4ad2c80e53069d5",
-            "sha256": "55c891f5d47142fe923c87df0e3343d7ef2bc7d368c67892b4ad2c80e53069d5"
-          },
-          "macos-x86_64": {
-            "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:df5011c2bf8ce426cd62fcd0b849268511cfdbf71331f7eaa07bf790bcf93a0f",
-            "sha256": "df5011c2bf8ce426cd62fcd0b849268511cfdbf71331f7eaa07bf790bcf93a0f"
-          },
-          "linux-x86_64": {
-            "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:61032fd340234974371a87c9908c998d9a52bebdf056b83e629ebf7aa038840f",
-            "sha256": "61032fd340234974371a87c9908c998d9a52bebdf056b83e629ebf7aa038840f"
-          },
-          "linux-aarch64": {
-            "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:18d983dde14681d8403f46f7fc1a5b743b98b0fa84e3cf4b07153709847a71f9",
-            "sha256": "18d983dde14681d8403f46f7fc1a5b743b98b0fa84e3cf4b07153709847a71f9"
-          }
-        }
-      },
       "verification": {
         "sha256": "required"
+      },
+      "resolved": {
+        "version": "5.8.4",
+        "revision": 0,
+        "rebuild": 0,
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:c2724c0db0398134694b8366d30d14f4de376115fb54c559c331d5fd0474af76",
+            "sha256": "c2724c0db0398134694b8366d30d14f4de376115fb54c559c331d5fd0474af76"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:aa3b18af4d682e52746cd73dca60cec5422bfe1dc8bf4fff3c38a63fe4d516f5",
+            "sha256": "aa3b18af4d682e52746cd73dca60cec5422bfe1dc8bf4fff3c38a63fe4d516f5"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:fd4f4c75678cc31e474931ff9798f0ca9aeb137b401faec2f6339891f2b40f94",
+            "sha256": "fd4f4c75678cc31e474931ff9798f0ca9aeb137b401faec2f6339891f2b40f94"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/justrach/nb-bottles/xz/blobs/sha256:57bbcf70f34adf4e45dd3dd7f3e91a931eab1a4a3d80a819e838dd28a36915de",
+            "sha256": "57bbcf70f34adf4e45dd3dd7f3e91a931eab1a4a3d80a819e838dd28a36915de"
+          }
+        }
       }
     },
     {
@@ -8129,41 +8119,36 @@
       "kind": "formula",
       "homepage": "https://curl.se/docs/caextract.html",
       "desc": "Mozilla CA certificate store",
-      "revision": 0,
-      "rebuild": 0,
       "dependencies": [],
-      "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
         "verified": true
       },
-      "analytics": {
-        "install_on_request_30d_rank": 164,
-        "install_on_request_30d_count": "11,103"
-      },
-      "resolved": {
-        "version": "2026-03-19",
-        "assets": {
-          "macos-arm64": {
-            "url": "https://ghcr.io/v2/homebrew/core/ca-certificates/blobs/sha256:4df487bca3b0ad9a1b311e59d2da8925b42ad870c74a7426713b0a9291a53bb3",
-            "sha256": "4df487bca3b0ad9a1b311e59d2da8925b42ad870c74a7426713b0a9291a53bb3"
-          },
-          "macos-x86_64": {
-            "url": "https://ghcr.io/v2/homebrew/core/ca-certificates/blobs/sha256:4df487bca3b0ad9a1b311e59d2da8925b42ad870c74a7426713b0a9291a53bb3",
-            "sha256": "4df487bca3b0ad9a1b311e59d2da8925b42ad870c74a7426713b0a9291a53bb3"
-          },
-          "linux-x86_64": {
-            "url": "https://ghcr.io/v2/homebrew/core/ca-certificates/blobs/sha256:4df487bca3b0ad9a1b311e59d2da8925b42ad870c74a7426713b0a9291a53bb3",
-            "sha256": "4df487bca3b0ad9a1b311e59d2da8925b42ad870c74a7426713b0a9291a53bb3"
-          },
-          "linux-aarch64": {
-            "url": "https://ghcr.io/v2/homebrew/core/ca-certificates/blobs/sha256:4df487bca3b0ad9a1b311e59d2da8925b42ad870c74a7426713b0a9291a53bb3",
-            "sha256": "4df487bca3b0ad9a1b311e59d2da8925b42ad870c74a7426713b0a9291a53bb3"
-          }
-        }
-      },
       "verification": {
         "sha256": "required"
+      },
+      "resolved": {
+        "version": "2026-08-13",
+        "revision": 0,
+        "rebuild": 1,
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/ca-certificates/blobs/sha256:37f5c1413f65c05d86e1279d76699f5d27ad77f8126f5776db13f3d64ee3d010",
+            "sha256": "37f5c1413f65c05d86e1279d76699f5d27ad77f8126f5776db13f3d64ee3d010"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/ca-certificates/blobs/sha256:37f5c1413f65c05d86e1279d76699f5d27ad77f8126f5776db13f3d64ee3d010",
+            "sha256": "37f5c1413f65c05d86e1279d76699f5d27ad77f8126f5776db13f3d64ee3d010"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/ca-certificates/blobs/sha256:37f5c1413f65c05d86e1279d76699f5d27ad77f8126f5776db13f3d64ee3d010",
+            "sha256": "37f5c1413f65c05d86e1279d76699f5d27ad77f8126f5776db13f3d64ee3d010"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/ca-certificates/blobs/sha256:37f5c1413f65c05d86e1279d76699f5d27ad77f8126f5776db13f3d64ee3d010",
+            "sha256": "37f5c1413f65c05d86e1279d76699f5d27ad77f8126f5776db13f3d64ee3d010"
+          }
+        }
       }
     },
     {
@@ -12344,41 +12329,36 @@
       "kind": "formula",
       "homepage": "https://lz4.github.io/lz4/",
       "desc": "Extremely Fast Compression algorithm",
-      "revision": 0,
-      "rebuild": 1,
       "dependencies": [],
-      "build_dependencies": [],
       "upstream": {
         "type": "homebrew_bottle",
         "verified": true
       },
-      "analytics": {
-        "install_on_request_30d_rank": 1013,
-        "install_on_request_30d_count": "825"
+      "verification": {
+        "sha256": "required"
       },
       "resolved": {
         "version": "1.10.0",
+        "revision": 0,
+        "rebuild": 2,
         "assets": {
           "macos-arm64": {
-            "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:caf14ac1b6c922611db94615341ed6dc97f5601664280bc1d397e10f62e37222",
-            "sha256": "caf14ac1b6c922611db94615341ed6dc97f5601664280bc1d397e10f62e37222"
-          },
-          "macos-x86_64": {
-            "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:c30d8dad4decfc0f129c4593a304fd2e3fa854058f24310ee9900d6230730e94",
-            "sha256": "c30d8dad4decfc0f129c4593a304fd2e3fa854058f24310ee9900d6230730e94"
+            "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:bad7f434a13146990b5a021a020583b19d0fa9b082d5b8e36b31f517d512572b",
+            "sha256": "bad7f434a13146990b5a021a020583b19d0fa9b082d5b8e36b31f517d512572b"
           },
           "linux-x86_64": {
-            "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:a8082c2e40dc6d63850f43ea8fa095e55adf18fb0f25ec66bcaee2c4b4438205",
-            "sha256": "a8082c2e40dc6d63850f43ea8fa095e55adf18fb0f25ec66bcaee2c4b4438205"
+            "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:cbfa3337697c4585b2f0cbe679af7802046c36cd9162f519af89b33c3d52b4e0",
+            "sha256": "cbfa3337697c4585b2f0cbe679af7802046c36cd9162f519af89b33c3d52b4e0"
           },
           "linux-aarch64": {
-            "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:e1d4b1bd9069ee0a313d2813d59b3e9217a893aba519707da2ba0b848bc1f727",
-            "sha256": "e1d4b1bd9069ee0a313d2813d59b3e9217a893aba519707da2ba0b848bc1f727"
+            "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:87855c40ff71978c66a39cfcb19d407a8fa83a302d42a57eb2941728e9922009",
+            "sha256": "87855c40ff71978c66a39cfcb19d407a8fa83a302d42a57eb2941728e9922009"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/justrach/nb-bottles/lz4/blobs/sha256:d9edd3ea8b155e178cf8860024727eead7075378cbb9e81a7150854cf7724d8b",
+            "sha256": "d9edd3ea8b155e178cf8860024727eead7075378cbb9e81a7150854cf7724d8b"
           }
         }
-      },
-      "verification": {
-        "sha256": "required"
       }
     },
     {
@@ -20057,6 +20037,42 @@
       },
       "verification": {
         "sha256": "asset_digest"
+      }
+    },
+    {
+      "token": "zlib",
+      "name": "zlib",
+      "kind": "formula",
+      "homepage": "https://zlib.net/",
+      "desc": "General-purpose lossless data-compression library",
+      "dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "resolved": {
+        "version": "1.3.2",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:ca032109db39a64b5eeb8d90a179c7d873f2de3f8b298f9546430d7b8cddc09f",
+            "sha256": "ca032109db39a64b5eeb8d90a179c7d873f2de3f8b298f9546430d7b8cddc09f"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/justrach/nb-bottles/zlib/blobs/sha256:2ec483b704d996d4f5edc7f79454fc2b00576ec471ef80cd4502a87059267615",
+            "sha256": "2ec483b704d996d4f5edc7f79454fc2b00576ec471ef80cd4502a87059267615"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:352c7d94d5b64b31b636b3d0b3252a1a8ca82e1020a5b71c7be829667e278dcf",
+            "sha256": "352c7d94d5b64b31b636b3d0b3252a1a8ca82e1020a5b71c7be829667e278dcf"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:1e606565d4ae9f860a4d15992140a8cb48fc33408d65d4e5d061d5ef2715069e",
+            "sha256": "1e606565d4ae9f860a4d15992140a8cb48fc33408d65d4e5d061d5ef2715069e"
+          }
+        }
+      },
+      "verification": {
+        "sha256": "required"
       }
     }
   ]

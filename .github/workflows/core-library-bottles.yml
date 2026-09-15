@@ -1,0 +1,82 @@
+name: Core library bottles
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, codex/arm-bottle-refresh]
+    paths:
+      - registry/upstream.json
+      - src/upstream/registry_default.json
+      - scripts/bottles/verify_core_libraries.py
+      - scripts/bottles/nb_bottles.py
+      - scripts/bottles/test_mirror_tags.py
+      - .github/workflows/core-library-bottles.yml
+  pull_request:
+    paths:
+      - registry/upstream.json
+      - src/upstream/registry_default.json
+      - scripts/bottles/verify_core_libraries.py
+      - scripts/bottles/nb_bottles.py
+      - scripts/bottles/test_mirror_tags.py
+      - .github/workflows/core-library-bottles.yml
+
+permissions:
+  contents: read
+concurrency:
+  group: core-library-bottles-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  mirror:
+    if: github.event_name != 'pull_request' && github.repository == 'justrach/nanobrew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+    env:
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GHCR_USER: ${{ github.repository_owner }}
+    steps:
+      - uses: actions/checkout@v4
+      - run: python3 scripts/bottles/test_mirror_tags.py
+      - name: Mirror all companion platforms without changing digests
+        run: python3 scripts/bottles/nb_bottles.py mirror --only zlib,xz,lz4,openssl@3,ca-certificates
+
+  install:
+    needs: mirror
+    if: always() && (needs.mirror.result == 'success' || needs.mirror.result == 'skipped')
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    env:
+      NANOBREW_NO_TELEMETRY: '1'
+      NANOBREW_DISABLE_UPSTREAM_REGISTRY_REMOTE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Verify all platform mirrors anonymously
+        run: |
+          for package in zlib xz lz4 openssl@3 ca-certificates; do
+            python3 scripts/bottles/nb_bottles.py verify "$package"
+          done
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build Nanobrew
+        run: zig build -Doptimize=ReleaseFast
+      - name: Install pinned libraries on disposable runner
+        run: |
+          sudo ./zig-out/bin/nb init
+          sudo chown -R "$(id -un)" /opt/nanobrew
+          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./zig-out/bin/nb install zlib xz lz4 openssl@3 ca-certificates
+          python3 scripts/bottles/verify_core_libraries.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-libraries-${{ matrix.runner }}
+          path: dist/core-libraries-*.json
