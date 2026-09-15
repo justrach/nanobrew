@@ -8,12 +8,16 @@ on:
       - registry/upstream.json
       - src/upstream/registry_default.json
       - scripts/bottles/verify_core_libraries.py
+      - scripts/bottles/nb_bottles.py
+      - scripts/bottles/test_mirror_tags.py
       - .github/workflows/core-library-bottles.yml
   pull_request:
     paths:
       - registry/upstream.json
       - src/upstream/registry_default.json
       - scripts/bottles/verify_core_libraries.py
+      - scripts/bottles/nb_bottles.py
+      - scripts/bottles/test_mirror_tags.py
       - .github/workflows/core-library-bottles.yml
 
 permissions:
@@ -35,6 +39,7 @@ jobs:
       GHCR_USER: ${{ github.repository_owner }}
     steps:
       - uses: actions/checkout@v4
+      - run: python3 scripts/bottles/test_mirror_tags.py
       - name: Mirror all companion platforms without changing digests
         run: python3 scripts/bottles/nb_bottles.py mirror --only zlib,xz,lz4,openssl@3,ca-certificates
 
