@@ -1,0 +1,140 @@
+name: Intel core libraries
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, codex/intel-core-libraries]
+    paths:
+      - .github/workflows/intel-core-libraries.yml
+      - scripts/bottles/build_intel_library.py
+      - scripts/bottles/intel-library-recipes.json
+      - scripts/bottles/source_bottle_release.py
+      - scripts/bottles/test_source_bottle_release.py
+  pull_request:
+    paths:
+      - .github/workflows/intel-core-libraries.yml
+      - scripts/bottles/build_intel_library.py
+      - scripts/bottles/intel-library-recipes.json
+      - scripts/bottles/source_bottle_release.py
+      - scripts/bottles/test_source_bottle_release.py
+
+permissions:
+  contents: read
+concurrency:
+  group: intel-core-libraries-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        package: [zlib, xz, lz4, 'openssl@3']
+    runs-on: macos-15-intel
+    timeout-minutes: 60
+    env:
+      PACKAGE: ${{ matrix.package }}
+      NANOBREW_NO_TELEMETRY: '1'
+      NANOBREW_DISABLE_UPSTREAM_REGISTRY_REMOTE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 scripts/bottles/test_source_bottle_release.py
+      - name: Build and test pinned source on Intel
+        run: |
+          test "$(uname -m)" = x86_64
+          python3 scripts/bottles/build_intel_library.py "$PACKAGE"
+          python3 scripts/bottles/source_bottle_release.py prepare --package "$PACKAGE"
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build Nanobrew
+        run: zig build -Doptimize=ReleaseFast
+      - name: Install and test the exact bottle on the disposable runner
+        run: |
+          sudo ./zig-out/bin/nb init
+          sudo chown -R "$(id -un)" /opt/nanobrew
+          python3 - <<'PY'
+          import json, os, shutil
+          from pathlib import Path
+          name = os.environ['PACKAGE']
+          evidence = next(Path('dist').glob(f'{name}-*.macos-x86_64.source.tar.json'))
+          record = json.loads(evidence.read_text())
+          bottle = evidence.with_suffix('.gz')
+          shutil.copyfile(bottle, '/opt/nanobrew/cache/blobs/' + record['bottle_sha256'])
+          PY
+          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/dist/registry-intel.json" ./zig-out/bin/nb install "$PACKAGE"
+          python3 scripts/bottles/build_intel_library.py "$PACKAGE" --verify-install
+      - name: Scan identified source package before publication
+        run: |
+          curl -sSfL https://get.anchore.io/syft | sh -s -- -b "$RUNNER_TEMP/tools"
+          curl -sSfL https://get.anchore.io/grype | sh -s -- -b "$RUNNER_TEMP/tools"
+          mkdir -p "$RUNNER_TEMP/bottle-scan"
+          tar -xzf dist/*.macos-x86_64.source.tar.gz -C "$RUNNER_TEMP/bottle-scan"
+          "$RUNNER_TEMP/tools/syft" scan "dir:$RUNNER_TEMP/bottle-scan" -o "spdx-json=dist/$PACKAGE.spdx.json"
+          python3 scripts/bottles/source_bottle_release.py annotate-sbom --package "$PACKAGE"
+          "$RUNNER_TEMP/tools/grype" "sbom:dist/$PACKAGE.spdx.json" --fail-on high -o json > "dist/$PACKAGE.grype.json"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: intel-library-${{ matrix.package }}
+          path: dist/
+          if-no-files-found: warn
+
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request' && github.repository == 'justrach/nanobrew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GHCR_USER: ${{ github.repository_owner }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: intel-library-*
+          merge-multiple: true
+          path: dist
+      - name: Assemble reviewed registry and publish immutable bottles
+        run: |
+          python3 scripts/bottles/source_bottle_release.py prepare --package zlib
+          for package in xz lz4 openssl@3; do
+            python3 scripts/bottles/source_bottle_release.py prepare --package "$package" --merge
+          done
+          for package in zlib xz lz4 openssl@3; do
+            python3 scripts/bottles/source_bottle_release.py publish --package "$package" --merge
+          done
+      - name: Host source, bottles, registry and evidence on GitHub
+        env:
+          RELEASE_TAG: intel-libraries-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          cat > dist/release-notes.md <<'EOF'
+          Intel source library catalog: zlib, xz, lz4 and OpenSSL 3.
+
+          Built from pinned source on macos-15-intel, with upstream tests,
+          exact-bottle Nanobrew installs, dynamic consumer tests, identified
+          package SBOMs and a high-severity vulnerability gate. Published GHCR
+          blobs were pulled anonymously and checked against their build digests.
+
+          The xz, lz4 and OpenSSL source archives and license notices accompany
+          the binaries. Build recipes and flags are in the release commit and
+          each build evidence JSON.
+
+          Opt in using this release's registry-intel.json URL as
+          NANOBREW_UPSTREAM_REGISTRY_URL, then run nb update-registry.
+          Use a fresh Intel test installation for this pilot. The default
+          registry remains unchanged. Target macOS 12+, tested on Intel macOS 15.
+          Matching-version ARM/Linux companion pins come from reviewed Homebrew
+          metadata; this run tests only the Intel source bottles.
+          EOF
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Intel source library catalog" --notes-file dist/release-notes.md \
+            dist/*.tar.gz dist/*.json dist/SHA256SUMS
+          echo "Published: https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
