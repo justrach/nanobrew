@@ -1,0 +1,82 @@
+name: Popular package coverage
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, codex/popular-package-coverage]
+    paths:
+      - scripts/popularity-plan.py
+      - scripts/test-popularity-plan.py
+      - registry/upstream.json
+      - src/upstream/registry_default.json
+      - .github/workflows/popular-package-coverage.yml
+  pull_request:
+    paths:
+      - scripts/popularity-plan.py
+      - scripts/test-popularity-plan.py
+      - registry/upstream.json
+      - src/upstream/registry_default.json
+      - .github/workflows/popular-package-coverage.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: popular-package-coverage-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  rank:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 scripts/test-popularity-plan.py
+      - name: Rank demand and assess packaging metadata
+        run: |
+          python3 scripts/popularity-plan.py --top 100
+          cat dist/popularity/plan.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: popularity-plan
+          path: dist/popularity/
+
+  install:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15-intel, macos-26]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      NANOBREW_NO_TELEMETRY: '1'
+      NANOBREW_DISABLE_UPSTREAM_REGISTRY_REMOTE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build Nanobrew with the proposed registry
+        run: zig build -Doptimize=ReleaseFast
+      - name: Install gh, uv and oras on disposable runner
+        run: |
+          sudo ./zig-out/bin/nb init
+          sudo chown -R "$(id -un)" /opt/nanobrew
+          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./zig-out/bin/nb install gh uv oras
+      - name: Check installed versions against the pins
+        run: |
+          python3 - <<'PY'
+          import json, subprocess
+          from pathlib import Path
+          registry = json.loads(Path('registry/upstream.json').read_text())
+          records = {r['token']: r for r in registry['records'] if r['kind'] == 'formula'}
+          checks = {'gh': ['--version'], 'uv': ['--version'], 'oras': ['version']}
+          for name, args in checks.items():
+              version = records[name]['resolved']['version']
+              output = subprocess.check_output(['/opt/nanobrew/prefix/bin/' + name, *args], text=True)
+              assert version in output, (name, version, output)
+              print(output)
+          PY
