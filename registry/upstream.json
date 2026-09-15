@@ -231,7 +231,7 @@
       },
       "analytics": {
         "install_on_request_30d_rank": 1,
-        "install_on_request_30d_count": "317,849"
+        "install_on_request_30d_count": "226,143"
       },
       "assets": {
         "macos-arm64": {
@@ -254,24 +254,24 @@
         }
       ],
       "resolved": {
-        "tag": "v2.93.0",
-        "version": "2.93.0",
+        "tag": "v2.101.0",
+        "version": "2.101.0",
         "assets": {
           "macos-arm64": {
-            "url": "https://github.com/cli/cli/releases/download/v2.93.0/gh_2.93.0_macOS_arm64.zip",
-            "sha256": "a86be4e0a86c26456cf71177d6572d6f1165cf1679e532b72f7f15918ee51fd2"
+            "url": "https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_macOS_arm64.zip",
+            "sha256": "e4303e39d8f07141c4bad4b99b01079f05029c59b27076e8fbc825c985ecdd8b"
           },
           "macos-x86_64": {
-            "url": "https://github.com/cli/cli/releases/download/v2.93.0/gh_2.93.0_macOS_amd64.zip",
-            "sha256": "009425b9d175c482037fe25181817fd6b1ea3ae1f51cfae0e18f29f33d3152ac"
+            "url": "https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_macOS_amd64.zip",
+            "sha256": "a6fd66c88e2f07d6e4e058173db341d07dd74d58cf8f19ae668293d2bb614ca3"
           },
           "linux-x86_64": {
-            "url": "https://github.com/cli/cli/releases/download/v2.93.0/gh_2.93.0_linux_amd64.tar.gz",
-            "sha256": "02d1290eba130e0b896f3709ffff22e1c75a51475ddb70476a85abc6b5807af0"
+            "url": "https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_amd64.tar.gz",
+            "sha256": "9bca2d1c16825f109907a23307628a2f0698fbf99662b73a5cf0b020293072b8"
           },
           "linux-aarch64": {
-            "url": "https://github.com/cli/cli/releases/download/v2.93.0/gh_2.93.0_linux_arm64.tar.gz",
-            "sha256": "c55feb33684abba57e9909737340d5b39282257c0363e1edde6785ac4a413be7"
+            "url": "https://github.com/cli/cli/releases/download/v2.101.0/gh_2.101.0_linux_arm64.tar.gz",
+            "sha256": "b57e8063f18862647c9d22727c32e9da1b963f8bf9db648fe123a6975695640f"
           }
         }
       },
@@ -474,8 +474,8 @@
         "verified": true
       },
       "analytics": {
-        "install_on_request_30d_rank": 4,
-        "install_on_request_30d_count": "171,149"
+        "install_on_request_30d_rank": 2,
+        "install_on_request_30d_count": "156,367"
       },
       "assets": {
         "macos-arm64": {
@@ -502,24 +502,24 @@
         }
       ],
       "resolved": {
-        "tag": "0.11.7",
-        "version": "0.11.7",
+        "tag": "0.12.15",
+        "version": "0.12.15",
         "assets": {
           "macos-arm64": {
-            "url": "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-aarch64-apple-darwin.tar.gz",
-            "sha256": "66e37d91f839e12481d7b932a1eccbfe732560f42c1cfb89faddfa2454534ba8"
+            "url": "https://github.com/astral-sh/uv/releases/download/0.12.15/uv-aarch64-apple-darwin.tar.gz",
+            "sha256": "dc304b9ed1b24174572290fba60ac3f6fe63c73a671f0439e62a91375841964d"
           },
           "macos-x86_64": {
-            "url": "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-x86_64-apple-darwin.tar.gz",
-            "sha256": "0a4bc8fcde4974ea3560be21772aeecab600a6f43fa6e58169f9fa7b3b71d302"
+            "url": "https://github.com/astral-sh/uv/releases/download/0.12.15/uv-x86_64-apple-darwin.tar.gz",
+            "sha256": "e9ca61775532368fe518ab03e7a354c7ecab8ccb3c7d941c775fcc4a362b801b"
           },
           "linux-x86_64": {
-            "url": "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-x86_64-unknown-linux-gnu.tar.gz",
-            "sha256": "6681d691eb7f9c00ac6a3af54252f7ab29ae72f0c8f95bdc7f9d1401c23ea868"
+            "url": "https://github.com/astral-sh/uv/releases/download/0.12.15/uv-x86_64-unknown-linux-gnu.tar.gz",
+            "sha256": "f97935763c04be3e692460a7aaeaaab8fc3b78fcf8b389da820b38ae7423a638"
           },
           "linux-aarch64": {
-            "url": "https://github.com/astral-sh/uv/releases/download/0.11.7/uv-aarch64-unknown-linux-gnu.tar.gz",
-            "sha256": "f2ee1cde9aabb4c6e43bd3f341dadaf42189a54e001e521346dc31547310e284"
+            "url": "https://github.com/astral-sh/uv/releases/download/0.12.15/uv-aarch64-unknown-linux-gnu.tar.gz",
+            "sha256": "0e9a3499b0587d449c9ff684c0160da607826e4af1cee220bc87f378702d3e08"
           }
         }
       },
@@ -19996,6 +19996,67 @@
             "sha256": "bd1c65e7ce1a5208cc86e45b192f1da56bc5936813ade80cdb8bb456c64d9dfc"
           }
         }
+      }
+    },
+    {
+      "token": "oras",
+      "name": "oras",
+      "kind": "formula",
+      "homepage": "https://oras.land",
+      "desc": "OCI Registry As Storage",
+      "upstream": {
+        "type": "github_release",
+        "repo": "oras-project/oras",
+        "verified": true
+      },
+      "analytics": {
+        "install_on_request_30d_rank": 98,
+        "install_on_request_30d_count": "13,172"
+      },
+      "assets": {
+        "macos-arm64": {
+          "pattern": "oras_{version}_darwin_arm64.tar.gz"
+        },
+        "macos-x86_64": {
+          "pattern": "oras_{version}_darwin_amd64.tar.gz"
+        },
+        "linux-x86_64": {
+          "pattern": "oras_{version}_linux_amd64.tar.gz"
+        },
+        "linux-aarch64": {
+          "pattern": "oras_{version}_linux_arm64.tar.gz"
+        }
+      },
+      "artifacts": [
+        {
+          "type": "binary",
+          "path": "oras"
+        }
+      ],
+      "resolved": {
+        "tag": "v1.3.4",
+        "version": "1.3.4",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://github.com/oras-project/oras/releases/download/v1.3.4/oras_1.3.4_darwin_arm64.tar.gz",
+            "sha256": "217761a9500242ff473de8656b5aca21136ff39e17e9e61fd8936bbfd902704c"
+          },
+          "macos-x86_64": {
+            "url": "https://github.com/oras-project/oras/releases/download/v1.3.4/oras_1.3.4_darwin_amd64.tar.gz",
+            "sha256": "5e964f3d5a36eb9499a9d3e252a86b09e7adf3e6f6447eec56fd249c6702af7e"
+          },
+          "linux-x86_64": {
+            "url": "https://github.com/oras-project/oras/releases/download/v1.3.4/oras_1.3.4_linux_amd64.tar.gz",
+            "sha256": "f27adb935022d94df8dc77719c322dda592c78a0d57a6f7dcdd8d900b248c454"
+          },
+          "linux-aarch64": {
+            "url": "https://github.com/oras-project/oras/releases/download/v1.3.4/oras_1.3.4_linux_arm64.tar.gz",
+            "sha256": "15702c6e3a4a56a8bd8ac5c17efdbcab56d9bada661ccbcf017f5b10c1d89399"
+          }
+        }
+      },
+      "verification": {
+        "sha256": "asset_digest"
       }
     }
   ]
