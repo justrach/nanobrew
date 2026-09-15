@@ -1,0 +1,126 @@
+name: Intel source bottles
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, codex/intel-source-bottles]
+    paths:
+      - .github/workflows/intel-source-bottles.yml
+      - scripts/bottles/build_zlib_intel.py
+      - scripts/bottles/source_bottle_release.py
+      - scripts/bottles/test_source_bottle_release.py
+  pull_request:
+    paths:
+      - .github/workflows/intel-source-bottles.yml
+      - scripts/bottles/build_zlib_intel.py
+      - scripts/bottles/source_bottle_release.py
+      - scripts/bottles/test_source_bottle_release.py
+
+permissions:
+  contents: read
+
+concurrency:
+  group: intel-source-bottles-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: macos-15-intel
+    timeout-minutes: 30
+    env:
+      NANOBREW_NO_TELEMETRY: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Check registry generation
+        run: python3 scripts/bottles/test_source_bottle_release.py
+      - name: Build and test from pinned source
+        run: |
+          test "$(uname -m)" = x86_64
+          python3 scripts/bottles/build_zlib_intel.py
+          python3 scripts/bottles/source_bottle_release.py prepare
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build Nanobrew
+        run: zig build -Doptimize=ReleaseFast
+      - name: Install exact bottle with Nanobrew on disposable runner
+        env:
+          NANOBREW_DISABLE_UPSTREAM_REGISTRY_REMOTE: '1'
+        run: |
+          sudo ./zig-out/bin/nb init
+          sudo chown -R "$(id -un)" /opt/nanobrew
+          DIGEST=$(awk '{print $1}' dist/SHA256SUMS)
+          cp dist/zlib-1.3.2.macos-x86_64.source.tar.gz "/opt/nanobrew/cache/blobs/$DIGEST"
+          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/dist/registry-intel.json" ./zig-out/bin/nb install zlib
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          digest = Path('dist/SHA256SUMS').read_text().split()[0]
+          state = json.loads(Path('/opt/nanobrew/db/state.json').read_text())
+          assert digest in json.dumps(state), 'nb did not install our exact source bottle'
+          PY
+          printf '#include <zlib.h>\n#include <string.h>\nint main(void){return strcmp(zlibVersion(),ZLIB_VERSION);}\n' > dist/consumer.c
+          /usr/bin/clang -arch x86_64 -I/opt/nanobrew/prefix/include dist/consumer.c /opt/nanobrew/prefix/lib/libz.1.dylib -o dist/consumer
+          /usr/bin/otool -L dist/consumer
+          ./dist/consumer
+      - name: Scan the actual source bottle before publication
+        run: |
+          curl -sSfL https://get.anchore.io/syft | sh -s -- -b "$RUNNER_TEMP/tools"
+          curl -sSfL https://get.anchore.io/grype | sh -s -- -b "$RUNNER_TEMP/tools"
+          mkdir -p "$RUNNER_TEMP/bottle-scan"
+          tar -xzf dist/zlib-1.3.2.macos-x86_64.source.tar.gz -C "$RUNNER_TEMP/bottle-scan"
+          "$RUNNER_TEMP/tools/syft" scan "dir:$RUNNER_TEMP/bottle-scan" -o spdx-json=dist/zlib.spdx.json
+          python3 scripts/bottles/source_bottle_release.py annotate-sbom
+          "$RUNNER_TEMP/tools/grype" sbom:dist/zlib.spdx.json --fail-on high -o json > dist/zlib.grype.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: intel-source-bottle
+          path: |
+            dist/*.tar.gz
+            dist/*.json
+            dist/SHA256SUMS
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    if: github.event_name != 'pull_request' && github.repository == 'justrach/nanobrew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GHCR_USER: ${{ github.repository_owner }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: intel-source-bottle
+          path: dist
+      - name: Publish GHCR bottle and verify anonymous download
+        run: python3 scripts/bottles/source_bottle_release.py publish
+      - name: Host opt-in registry, bottle and evidence on GitHub Releases
+        env:
+          RELEASE_TAG: intel-zlib-1.3.2-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          cat > dist/release-notes.md <<'EOF'
+          Intel macOS source bottle pilot: zlib 1.3.2, built on macos-15-intel.
+
+          Passed upstream tests, architecture checks, a Nanobrew install and
+          dynamic consumer test, and a high-severity vulnerability scan gate.
+          GHCR download was checked anonymously against the source-bottle digest.
+
+          Opt in with NANOBREW_UPSTREAM_REGISTRY_URL set to this release's
+          registry-intel.json download URL, then run nb update-registry and
+          nb install zlib. This pilot does not change the default registry.
+          Target: macOS 12+; execution tested on macOS 15 Intel only.
+          EOF
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Intel source bottle: zlib 1.3.2" --notes-file dist/release-notes.md \
+            dist/*.tar.gz dist/*.json dist/SHA256SUMS
+          echo "Published: https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"
