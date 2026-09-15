@@ -1,8 +1,9 @@
 """Registry publication must not drop or relabel other platforms."""
 import copy
 import unittest
+from unittest.mock import patch
 
-from source_bottle_release import prepare_registry, add_recipe_identity
+from source_bottle_release import prepare_registry, add_recipe_identity, recipe_for
 
 
 class RegistryTests(unittest.TestCase):
@@ -45,6 +46,35 @@ class RegistryTests(unittest.TestCase):
         package = sbom["packages"][1]
         self.assertEqual(package["versionInfo"], "1.3.2")
         self.assertIn("cpe:2.3:a:zlib:zlib:1.3.2:", package["externalRefs"][0]["referenceLocator"])
+
+    def test_library_upgrade_replaces_old_companion_assets(self):
+        recipe = recipe_for("xz")
+        evidence = {"package": "xz", "version": recipe["version"], "bottle_sha256": "a" * 64}
+        registry = {"records": [{"token": "xz", "kind": "formula", "resolved": {
+            "version": "old", "assets": {"macos-arm64": {"url": "old-arm", "sha256": "b" * 64}}}}]}
+        prepare_registry(registry, evidence, "intel")
+        resolved = registry["records"][0]["resolved"]
+        self.assertEqual(resolved["version"], recipe["version"])
+        self.assertNotEqual(resolved["assets"]["macos-arm64"]["url"], "old-arm")
+        self.assertEqual(resolved["assets"]["macos-x86_64"]["url"], "intel")
+
+    def test_missing_new_companion_fails_without_mutation(self):
+        recipe = copy.deepcopy(recipe_for("xz"))
+        recipe["metadata"]["bottle"]["stable"]["files"] = {}
+        registry = {"records": [{"token": "xz", "kind": "formula", "resolved": {
+            "version": "old", "assets": {"linux-x86_64": {"url": "old"}}}}]}
+        before = copy.deepcopy(registry)
+        with patch("source_bottle_release.recipe_for", return_value=recipe):
+            with self.assertRaises(ValueError):
+                prepare_registry(registry, {"package": "xz", "version": recipe["version"], "bottle_sha256": "a" * 64}, "intel")
+        self.assertEqual(registry, before)
+
+    def test_openssl_scan_identity_uses_product_name(self):
+        recipe = recipe_for("openssl@3")
+        evidence = {"package": "openssl@3", **recipe}
+        sbom = add_recipe_identity({"SPDXID": "SPDXRef-DOCUMENT"}, evidence)
+        self.assertEqual(sbom["packages"][0]["name"], "openssl")
+        self.assertIn(":openssl:openssl:", sbom["packages"][0]["externalRefs"][0]["referenceLocator"])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,167 @@
+{
+  "xz": {
+    "version": "5.8.4",
+    "source_url": "https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4.tar.gz",
+    "source_sha256": "0014c7886930454fe8bd4228665b51af55eeae560ea135c9c4cd33f55b2591d9",
+    "source_license": "0BSD AND GPL-2.0-or-later",
+    "metadata": {
+      "name": "xz",
+      "desc": "General-purpose data compression with high compression ratio",
+      "homepage": "https://tukaani.org/xz/",
+      "versions": {
+        "stable": "5.8.4",
+        "head": null,
+        "bottle": true
+      },
+      "revision": 0,
+      "dependencies": [],
+      "bottle": {
+        "stable": {
+          "rebuild": 0,
+          "root_url": "https://ghcr.io/v2/homebrew/core",
+          "files": {
+            "arm64_golden_gate": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:b2b5d6523153be05c20bcc51cd358ea3dd1f4bf893748fdedb779ab508ea63ce",
+              "sha256": "b2b5d6523153be05c20bcc51cd358ea3dd1f4bf893748fdedb779ab508ea63ce"
+            },
+            "arm64_tahoe": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:d291ad2277682238329b0e4d249e5e2c948c4b10cd64dba1963d897330ad88dd",
+              "sha256": "d291ad2277682238329b0e4d249e5e2c948c4b10cd64dba1963d897330ad88dd"
+            },
+            "arm64_sequoia": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:c2724c0db0398134694b8366d30d14f4de376115fb54c559c331d5fd0474af76",
+              "sha256": "c2724c0db0398134694b8366d30d14f4de376115fb54c559c331d5fd0474af76"
+            },
+            "arm64_linux": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:fd4f4c75678cc31e474931ff9798f0ca9aeb137b401faec2f6339891f2b40f94",
+              "sha256": "fd4f4c75678cc31e474931ff9798f0ca9aeb137b401faec2f6339891f2b40f94"
+            },
+            "x86_64_linux": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/xz/blobs/sha256:aa3b18af4d682e52746cd73dca60cec5422bfe1dc8bf4fff3c38a63fe4d516f5",
+              "sha256": "aa3b18af4d682e52746cd73dca60cec5422bfe1dc8bf4fff3c38a63fe4d516f5"
+            }
+          }
+        }
+      }
+    }
+  },
+  "openssl@3": {
+    "version": "3.6.4",
+    "source_url": "https://github.com/openssl/openssl/releases/download/openssl-3.6.4/openssl-3.6.4.tar.gz",
+    "source_sha256": "9bffaa1ad1e07b354c21bd3324ec02fa15579f45a7d0494b3e74bc449b7333ef",
+    "source_license": "Apache-2.0",
+    "metadata": {
+      "name": "openssl@3",
+      "desc": "Cryptography and SSL/TLS Toolkit",
+      "homepage": "https://openssl-library.org",
+      "versions": {
+        "stable": "3.6.4",
+        "head": null,
+        "bottle": true
+      },
+      "revision": 0,
+      "dependencies": [
+        "ca-certificates"
+      ],
+      "bottle": {
+        "stable": {
+          "rebuild": 0,
+          "root_url": "https://ghcr.io/v2/homebrew/core",
+          "files": {
+            "arm64_golden_gate": {
+              "cellar": "/opt/homebrew/Cellar",
+              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:51eb22ee51d7b6e678ef5dc2be234adb46f9f541ac1d98e5ed08c9a7535789dc",
+              "sha256": "51eb22ee51d7b6e678ef5dc2be234adb46f9f541ac1d98e5ed08c9a7535789dc"
+            },
+            "arm64_tahoe": {
+              "cellar": "/opt/homebrew/Cellar",
+              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:8c7dab98311d025fda379dba80eaf985af1ceca26c403c66318b3c7d43a028b9",
+              "sha256": "8c7dab98311d025fda379dba80eaf985af1ceca26c403c66318b3c7d43a028b9"
+            },
+            "arm64_sequoia": {
+              "cellar": "/opt/homebrew/Cellar",
+              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:b7139450ed389be82f807daaadffa778d9c4753a3b2d8f784da1cf7383994ee2",
+              "sha256": "b7139450ed389be82f807daaadffa778d9c4753a3b2d8f784da1cf7383994ee2"
+            },
+            "arm64_sonoma": {
+              "cellar": "/opt/homebrew/Cellar",
+              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:01887accd1964e9940ba516509e948eed9850d58d55cc02ca52c503435750685",
+              "sha256": "01887accd1964e9940ba516509e948eed9850d58d55cc02ca52c503435750685"
+            },
+            "arm64_linux": {
+              "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:e0f84cb8ab776813a17750423a6ce1b75b870df3ab2c21c54df9ce02646c1e1c",
+              "sha256": "e0f84cb8ab776813a17750423a6ce1b75b870df3ab2c21c54df9ce02646c1e1c"
+            },
+            "x86_64_linux": {
+              "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
+              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:73c4159878b98d82e6f4e343ef34a79b74ca2224927d38c0956ce3ea781d6d20",
+              "sha256": "73c4159878b98d82e6f4e343ef34a79b74ca2224927d38c0956ce3ea781d6d20"
+            }
+          }
+        }
+      }
+    }
+  },
+  "lz4": {
+    "version": "1.10.0",
+    "source_url": "https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.tar.gz",
+    "source_sha256": "537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b",
+    "source_license": "BSD-2-Clause AND GPL-2.0-or-later",
+    "metadata": {
+      "name": "lz4",
+      "desc": "Extremely Fast Compression algorithm",
+      "homepage": "https://lz4.github.io/lz4/",
+      "versions": {
+        "stable": "1.10.0",
+        "head": "HEAD",
+        "bottle": true
+      },
+      "revision": 0,
+      "dependencies": [],
+      "bottle": {
+        "stable": {
+          "rebuild": 2,
+          "root_url": "https://ghcr.io/v2/homebrew/core",
+          "files": {
+            "arm64_golden_gate": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:5dcf512afe9a65da27e9ef33ab6b8069b9bd2950290da3d61a670b4bebb03e83",
+              "sha256": "5dcf512afe9a65da27e9ef33ab6b8069b9bd2950290da3d61a670b4bebb03e83"
+            },
+            "arm64_tahoe": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:538e2d6b920b663fcad6b99c1eb294c1157ea9a35d7a50bf0c632df4f427bdf5",
+              "sha256": "538e2d6b920b663fcad6b99c1eb294c1157ea9a35d7a50bf0c632df4f427bdf5"
+            },
+            "arm64_sequoia": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:97e9c430fd82ccaaf619accc534157e9adfe2f2742ee7c47bfc481b3660b5d3f",
+              "sha256": "97e9c430fd82ccaaf619accc534157e9adfe2f2742ee7c47bfc481b3660b5d3f"
+            },
+            "arm64_sonoma": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:bad7f434a13146990b5a021a020583b19d0fa9b082d5b8e36b31f517d512572b",
+              "sha256": "bad7f434a13146990b5a021a020583b19d0fa9b082d5b8e36b31f517d512572b"
+            },
+            "arm64_linux": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:87855c40ff71978c66a39cfcb19d407a8fa83a302d42a57eb2941728e9922009",
+              "sha256": "87855c40ff71978c66a39cfcb19d407a8fa83a302d42a57eb2941728e9922009"
+            },
+            "x86_64_linux": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/lz4/blobs/sha256:cbfa3337697c4585b2f0cbe679af7802046c36cd9162f519af89b33c3d52b4e0",
+              "sha256": "cbfa3337697c4585b2f0cbe679af7802046c36cd9162f519af89b33c3d52b4e0"
+            }
+          }
+        }
+      }
+    }
+  }
+}
