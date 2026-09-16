@@ -20081,6 +20081,99 @@
       "verification": {
         "sha256": "required"
       }
+    },
+    {
+      "token": "codegraff",
+      "name": "codegraff",
+      "kind": "formula",
+      "homepage": "https://github.com/justrach/codegraff",
+      "desc": "Agentic coding harness with multi-provider and MCP support",
+      "upstream": {
+        "type": "github_release",
+        "repo": "justrach/codegraff",
+        "verified": true
+      },
+      "assets": {
+        "linux-x86_64": {
+          "pattern": "graff-x86_64-linux.tar.gz"
+        },
+        "macos-arm64": {
+          "pattern": "graff-aarch64-macos.tar.gz"
+        },
+        "linux-aarch64": {
+          "pattern": "graff-aarch64-linux.tar.gz"
+        },
+        "macos-x86_64": {
+          "pattern": "graff-x86_64-macos.tar.gz"
+        }
+      },
+      "artifacts": [
+        {
+          "type": "binary",
+          "path": "graff"
+        }
+      ],
+      "resolved": {
+        "tag": "v0.0.298",
+        "version": "0.0.298",
+        "assets": {
+          "linux-x86_64": {
+            "url": "https://github.com/justrach/codegraff/releases/download/v0.0.298/graff-x86_64-linux.tar.gz",
+            "sha256": "56a2c7305a4e3fb4d3aaec7db8667840a82f6d3d2a02efa3bc460fee12744032"
+          },
+          "macos-arm64": {
+            "url": "https://github.com/justrach/codegraff/releases/download/v0.0.298/graff-aarch64-macos.tar.gz",
+            "sha256": "a602b3def70282ecdb3066c754d74c541df16b0c33031c24bdc2b0bae5ed2069"
+          },
+          "linux-aarch64": {
+            "url": "https://github.com/justrach/codegraff/releases/download/v0.0.298/graff-aarch64-linux.tar.gz",
+            "sha256": "5bff51a10ffd9e5147a2970e537dc81c4991f9d6914ed4543047c3c059d8fbc7"
+          },
+          "macos-x86_64": {
+            "url": "https://github.com/justrach/codegraff/releases/download/v0.0.298/graff-x86_64-macos.tar.gz",
+            "sha256": "4515fedf8d81124f432402f159deb072b544f82d594497f19494ff48f969dba5"
+          }
+        }
+      },
+      "verification": {
+        "sha256": "asset_digest"
+      }
+    },
+    {
+      "token": "codedb",
+      "name": "codedb",
+      "kind": "formula",
+      "homepage": "https://github.com/justrach/codedb",
+      "desc": "Code intelligence CLI and MCP server",
+      "dependencies": [],
+      "upstream": {
+        "type": "homebrew_bottle",
+        "verified": true
+      },
+      "resolved": {
+        "version": "0.2.5855",
+        "assets": {
+          "macos-arm64": {
+            "url": "https://ghcr.io/v2/justrach/nb-bottles/codedb/blobs/sha256:01140058be9b3f7b21266ff5a347deb9120bf358ef7c949d3506355bcaa2b773",
+            "sha256": "01140058be9b3f7b21266ff5a347deb9120bf358ef7c949d3506355bcaa2b773"
+          },
+          "macos-x86_64": {
+            "url": "https://ghcr.io/v2/justrach/nb-bottles/codedb/blobs/sha256:90f52c79e7e529eab48917b12221de15084b46b5468ded9b5688388ba39bc1db",
+            "sha256": "90f52c79e7e529eab48917b12221de15084b46b5468ded9b5688388ba39bc1db"
+          },
+          "linux-aarch64": {
+            "url": "https://ghcr.io/v2/justrach/nb-bottles/codedb/blobs/sha256:b6d44fad2c186e3c162763f8811ade07fb20d10558e0394f5762e4403ce50777",
+            "sha256": "b6d44fad2c186e3c162763f8811ade07fb20d10558e0394f5762e4403ce50777"
+          },
+          "linux-x86_64": {
+            "url": "https://ghcr.io/v2/justrach/nb-bottles/codedb/blobs/sha256:8c05474d71c818557838b5513bd8d5cc31361cf345560cc44fc93d991653503d",
+            "sha256": "8c05474d71c818557838b5513bd8d5cc31361cf345560cc44fc93d991653503d"
+          }
+        }
+      },
+      "verification": {
+        "sha256": "required"
+      }
     }
   ]
 }

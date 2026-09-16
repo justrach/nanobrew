@@ -1,0 +1,26 @@
+{
+  "version": "0.2.5855",
+  "tag": "v0.2.5855",
+  "assets": {
+    "macos-arm64": {
+      "url": "https://github.com/justrach/codedb/releases/download/v0.2.5855/codedb-darwin-arm64",
+      "sha256": "fc45213d1157802bd46a5751a0f6181a873b0bd8dc44f99ff3595897aa0e938d"
+    },
+    "macos-x86_64": {
+      "url": "https://github.com/justrach/codedb/releases/download/v0.2.5855/codedb-darwin-x86_64",
+      "sha256": "bdcf4feab1c989165ecf867b4be4ece02cd7d2ce588228525e33365122cb5da2"
+    },
+    "linux-aarch64": {
+      "url": "https://github.com/justrach/codedb/releases/download/v0.2.5855/codedb-linux-arm64",
+      "sha256": "509930fcebf50bfefe4dbd7c6c596607d452964e1da20e4c83dcaf69498a52a9"
+    },
+    "linux-x86_64": {
+      "url": "https://github.com/justrach/codedb/releases/download/v0.2.5855/codedb-linux-x86_64",
+      "sha256": "2031d07271dc08fc3279959e2eb0fbac7cc2653749d9b720f42550c971020abe"
+    }
+  },
+  "license": {
+    "url": "https://raw.githubusercontent.com/justrach/codedb/v0.2.5855/LICENSE",
+    "sha256": "5f4f3b4d4698acb3e86a31812a18391146e667a3afd682de4494a8f0e55bd83b"
+  }
+}

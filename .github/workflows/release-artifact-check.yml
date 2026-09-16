@@ -6,7 +6,7 @@ on:
       tag:
         description: Release tag to validate
         required: true
-        default: v0.1.212-rc.1
+        default: v0.1.212
   pull_request:
     paths:
       - .github/workflows/release-artifact-check.yml
@@ -27,7 +27,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     env:
-      RELEASE_TAG: ${{ inputs.tag || 'v0.1.212-rc.1' }}
+      RELEASE_TAG: ${{ inputs.tag || 'v0.1.212' }}
       NANOBREW_UPSTREAM_REGISTRY_CACHE: ${{ github.workspace }}/registry/upstream.json
       GH_TOKEN: ${{ github.token }}
       NANOBREW_NO_TELEMETRY: '1'
@@ -57,8 +57,8 @@ jobs:
         run: |
           sudo ./dist/release-check/nb init
           sudo chown -R "$(id -un)" /opt/nanobrew
-          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./dist/release-check/nb install gh uv oras ripgrep just fd git-lfs
-          for package in ripgrep just fd git-lfs; do
+          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./dist/release-check/nb install gh uv oras ripgrep just fd git-lfs codedb codegraff
+          for package in ripgrep just fd git-lfs codedb codegraff; do
             ./dist/release-check/nb info "$package"
           done
           NB_TEST_RESOLUTION=default python3 scripts/verify-popular-packages.py
