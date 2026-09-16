@@ -4,6 +4,16 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+## [0.1.212] - 2026-09-17
+
+### Added
+- Native Intel and Apple Silicon catalog updates for ripgrep 15.2.0, just 1.58.0, fd 10.5.0, and Git LFS 3.8.0, including fd's missing Intel entry. Expanded install checks cover seven tools, exact checksums, native architecture, and functional probes. (#396)
+- Updated core-library catalog and GitHub-hosted Intel source bottles, plus current gh, uv, and oras pins. (#392, #393, #394, #395)
+
+### Fixed
+- Preserve declared upstream binaries across Homebrew-only packaging revisions and rebuilds. Previously, a same-version Homebrew ripgrep rebuild could replace the working upstream Intel executable with a bottle that failed to load PCRE2. Actual newer software versions still trigger freshness fallback. (#396)
+
+
 ## [0.1.211] - 2026-09-11
 
 ### Added
