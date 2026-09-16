@@ -1,0 +1,62 @@
+name: Release artifact check
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - .github/workflows/release-artifact-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  signed-macos:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-26
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x86_64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    env:
+      GH_TOKEN: ${{ github.token }}
+      NANOBREW_NO_TELEMETRY: '1'
+      NANOBREW_DISABLE_UPSTREAM_REGISTRY_REMOTE: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - name: Download and verify signed release artifact
+        env:
+          ARCH: ${{ matrix.arch }}
+        run: |
+          version=$(sed -n 's/^const VERSION = "\([^"]*\)";.*/\1/p' src/main.zig)
+          test -n "$version"
+          mkdir -p dist/release-check
+          cd dist/release-check
+          archive="nb-$ARCH-apple-darwin.tar.gz"
+          gh release download "v$version" --repo "$GITHUB_REPOSITORY" --pattern "$archive" --pattern "$archive.sha256"
+          shasum -a 256 -c "$archive.sha256"
+          tar -xzf "$archive"
+          codesign --verify --strict nb
+          codesign -dv --verbose=4 nb 2> signature.txt
+          grep -q 'Authority=Developer ID Application' signature.txt
+          grep -q 'flags=0x10000(runtime)' signature.txt
+          lipo nb -verify_arch "$ARCH"
+          ./nb version | tee version.txt
+          grep -F "$version" version.txt
+      - name: Install and exercise the default package selection
+        run: |
+          sudo ./dist/release-check/nb init
+          sudo chown -R "$(id -un)" /opt/nanobrew
+          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./dist/release-check/nb install gh uv oras ripgrep just fd git-lfs
+          NB_TEST_RESOLUTION=default python3 scripts/verify-popular-packages.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signed-release-${{ matrix.arch }}
+          path: |
+            dist/release-check/signature.txt
+            dist/release-check/version.txt
+            dist/release-check/*.sha256
+            dist/popular-packages-*.json
