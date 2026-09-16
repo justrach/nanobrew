@@ -74,7 +74,7 @@ jobs:
           if [ "$NB_TEST_RESOLUTION" = pinned ]; then
             export NANOBREW_DISABLE_UPSTREAM_FRESHNESS=1
           fi
-          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./zig-out/bin/nb install gh uv oras ripgrep just fd git-lfs
+          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./zig-out/bin/nb install gh uv oras ripgrep just fd git-lfs codedb codegraff
       - name: Check exact pins, native architecture and tool behavior
         run: python3 scripts/verify-popular-packages.py
       - uses: actions/upload-artifact@v4

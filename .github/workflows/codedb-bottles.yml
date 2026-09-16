@@ -1,0 +1,56 @@
+name: CodeDB bottles
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, codex/codedb-codegraff]
+    paths:
+      - scripts/bottles/package_codedb.py
+      - scripts/bottles/test_package_codedb.py
+      - scripts/bottles/codedb-recipe.json
+      - .github/workflows/codedb-bottles.yml
+  pull_request:
+    paths:
+      - scripts/bottles/package_codedb.py
+      - scripts/bottles/test_package_codedb.py
+      - scripts/bottles/codedb-recipe.json
+      - .github/workflows/codedb-bottles.yml
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 scripts/bottles/test_package_codedb.py
+      - name: Build reproducible bottles and publish on trusted pushes
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+          GHCR_USER: ${{ github.repository_owner }}
+          PUBLISH: ${{ github.event_name != 'pull_request' && github.repository == 'justrach/nanobrew' }}
+        run: |
+          if [ "$PUBLISH" = true ]; then
+            python3 scripts/bottles/package_codedb.py --publish
+          else
+            python3 scripts/bottles/package_codedb.py
+          fi
+          python3 - <<'PY'
+          import json
+          generated = json.load(open('dist/codedb/record.json'))
+          for path in ['registry/upstream.json', 'src/upstream/registry_default.json']:
+              actual = next(r for r in json.load(open(path))['records'] if r['token'] == 'codedb')
+              assert actual == generated, path
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: codedb-bottles
+          path: dist/codedb/

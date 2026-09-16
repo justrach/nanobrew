@@ -18,6 +18,8 @@ CHECKS = {
     'just': ('just', '--version'),
     'fd': ('fd', '--version'),
     'git-lfs': ('git-lfs', 'version'),
+    'codedb': ('codedb', '--version'),
+    'codegraff': ('graff', '--version'),
 }
 
 
@@ -32,16 +34,20 @@ def main():
     installed = {r['name']: r for r in json.loads(Path('/opt/nanobrew/db/state.json').read_text())['kegs']}
     prefix = Path('/opt/nanobrew/prefix/bin')
     evidence = []
-    with tempfile.TemporaryDirectory(prefix='nb-tools-') as td:
-        work = Path(td)
-        env = {'HOME': td, 'PATH': str(prefix) + ':/usr/bin:/bin:/usr/sbin:/sbin',
-               'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}
+    (ROOT / 'dist').mkdir(exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix='nb-tools-', dir=ROOT / 'dist') as td:
+        work = Path(td) / 'project'
+        work.mkdir()
+        home = Path(td) / 'home'
+        home.mkdir()
+        env = {'HOME': str(home), 'PATH': str(prefix) + ':/usr/bin:/bin:/usr/sbin:/sbin',
+               'CODEDB_NO_TELEMETRY': '1', 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}
         if 'TMPDIR' in os.environ:
             env['TMPDIR'] = os.environ['TMPDIR']
 
         def run(*args, input=None):
             print('+', ' '.join(map(str, args)), flush=True)
-            return subprocess.check_output(list(map(str, args)), cwd=work, env=env, input=input, text=True)
+            return subprocess.check_output(list(map(str, args)), cwd=work, env=env, input=input, text=True, timeout=60)
 
         for name, (binary, flag) in CHECKS.items():
             pin = records[name]['resolved']
@@ -60,6 +66,13 @@ def main():
         assert run(prefix / 'fd', '--color', 'never', '--type', 'f', '^needle[.]txt$', '.').strip() == './needle.txt'
         (work / 'justfile').write_text('check:\n    @printf "nanobrew recipe ok\\n"\n')
         assert run(prefix / 'just', '--justfile', 'justfile', 'check').strip() == 'nanobrew recipe ok'
+        (work / 'fixture.py').write_text('def nanobrew_probe():\n    return "indexed marker"\n')
+        run(prefix / 'codedb', work, 'reindex')
+        assert 'fixture.py' in run(prefix / 'codedb', work, 'search', 'nanobrew_probe')
+        assert 'nanobrew_probe' in run(prefix / 'codedb', work, 'outline', 'fixture.py')
+        schema = json.loads(run(prefix / 'graff', '--schema'))
+        assert isinstance(schema, dict) and schema, schema
+        assert 'usage:' in run(prefix / 'graff', '--help').lower()
         run('/usr/bin/git', 'init', '--quiet', '.')
         payload = 'Nanobrew LFS round trip\n' * 100
         pointer = run(prefix / 'git-lfs', 'clean', '--', 'sample.bin', input=payload)
@@ -70,7 +83,7 @@ def main():
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps({'platform': target, 'resolution': mode, 'macos': platform.mac_ver()[0], 'packages': evidence,
                               'functional_checks': ['ripgrep text search', 'fd file search', 'just recipe execution',
-                                                    'git-lfs clean/smudge round trip']}, indent=2) + '\n')
+                                                    'git-lfs clean/smudge round trip', 'codedb indexing/search/outline', 'graff schema/help']}, indent=2) + '\n')
     print(out.read_text())
 
 

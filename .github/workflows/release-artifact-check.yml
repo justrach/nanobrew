@@ -57,7 +57,7 @@ jobs:
         run: |
           sudo ./dist/release-check/nb init
           sudo chown -R "$(id -un)" /opt/nanobrew
-          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./dist/release-check/nb install gh uv oras ripgrep just fd git-lfs
+          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./dist/release-check/nb install gh uv oras ripgrep just fd git-lfs codedb codegraff
           for package in ripgrep just fd git-lfs; do
             ./dist/release-check/nb info "$package"
           done

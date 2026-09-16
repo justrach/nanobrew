@@ -66,3 +66,25 @@ Existing users can fetch the catalog with `nb update-registry`, then run
 The resolver fix ships in Nanobrew v0.1.212. Updating only the registry
 on v0.1.211 can still select a Homebrew rebuild; use the updated client for
 the verified default installation behavior.
+
+## CodeDB and Codegraff
+
+The curated CLI list also includes `codedb` 0.2.5855 from `justrach/codedb`
+and `codegraff` 0.0.298 from `justrach/codegraff`. Install with
+`nb update-registry` followed by `nb install codedb codegraff` on v0.1.212.
+The executable names are `codedb` and `graff`, respectively. This installs the
+CLIs; MCP client registration and provider login remain explicit setup steps.
+
+Codegraff uses checksum-pinned upstream CLI archives for Intel/Apple Silicon
+macOS and x86_64/aarch64 Linux. CodeDB publishes bare executables, so
+`scripts/bottles/package_codedb.py` wraps the pinned bytes and upstream BSD
+license into reproducible bottles. `codedb-recipe.json` records every source
+URL and checksum. The `CodeDB bottles` workflow publishes them to Nanobrew's
+GitHub Container Registry and verifies anonymous downloads before promotion.
+No source build or new Nanobrew client release is needed for these two entries.
+
+Native package checks now cover nine tools, including CodeDB indexing,
+search, and symbol outlining in a disposable fixture project, plus Codegraff's
+schema and help commands without provider credentials or model calls. CodeDB's
+telemetry is disabled in these tests. Linux companion bytes are verified;
+the native CLI execution checks cover Intel macOS 15 and Apple Silicon macOS 26.
