@@ -28,7 +28,7 @@ info = {"date":time.strftime("%Y-%m-%dT%H:%M:%SZ",time.gmtime()), "arch":platfor
         "os":run(["sw_vers"])[1], "cpu":run(["sysctl","-n","machdep.cpu.brand_string"])[1].strip(),
         "homebrew":run(["brew","--version"])[1].strip(), "nanobrew":run([nb,"--version"])[1].strip(),
         "iterations":3,"rows":rows,
-        "method":"Alternating manager order. Cold: package absent and manager cache empty. Warm: remove target after cold install, retain cache/store, install again. Existing Homebrew dependencies retained. Initialization and Homebrew auto-update excluded. Network and OS filesystem caches uncontrolled. Different upstream/bottle routes allowed. Only successful installs with functional smoke checks count. This is a package-manager end-to-end comparison, not extraction-only."}
+        "method":"Alternating manager order. Cold package downloads: target absent, fresh Homebrew download cache and fresh Nanobrew root. Homebrew uninstall primes API metadata before timing; Nanobrew init is also outside timing. Warm: remove target after cold install, retain cache/store, install again. Existing Homebrew dependencies retained. Initialization and Homebrew auto-update excluded. Network and OS filesystem caches uncontrolled. Different upstream/bottle routes allowed. Only successful installs with functional smoke checks count. This is a package-manager end-to-end comparison, not extraction-only."}
 assert info["homebrew"].startswith("Homebrew 7.0.2"), info["homebrew"]
 assert "0.1.212" in info["nanobrew"], info["nanobrew"]
 fixtures=out.resolve()/"fixture"; fixtures.mkdir(exist_ok=True)
