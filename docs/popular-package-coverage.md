@@ -45,15 +45,17 @@ Git LFS 3.8.0 from their official GitHub release archives. It also adds the
 missing Intel asset rule for fd. Both Mac architectures and both Linux
 architectures have matching version pins; every archive was downloaded and
 its SHA-256 compared with the upstream GitHub asset digest before promotion.
-These records use upstream GitHub hosting directly. Default resolution can
-prefer a newer Homebrew bottle rebuild of the same version (currently ripgrep
-and just); this does not require a new Nanobrew application release.
+These records use upstream GitHub hosting directly.
 
 The native macOS jobs cover exact upstream pins with freshness disabled, and
-normal installs with the default freshness check enabled. For a same-version
-Homebrew rebuild selected by normal resolution, the installed digest must match
-the live Homebrew metadata for that architecture; otherwise it must match the
-registry pin. Each job checks the exact version and archive digest, verifies the executable architecture, and runs version probes. It also
+normal installs with the default freshness check enabled. Both paths must
+install the exact registry digest and version and verify the executable
+architecture. The resolver ignores Homebrew packaging revisions/rebuilds when
+comparing a declared upstream binary; an actual newer upstream version still
+triggers the freshness fallback. This prevents an unrelated Homebrew rebuild
+from replacing a working upstream binary with different library dependencies.
+
+The workflow also
 searches text with ripgrep, finds a file with fd, executes a just recipe, and
 round-trips a local Git LFS object through clean/smudge. Evidence is uploaded
 per architecture. Linux archives receive download/checksum verification;
@@ -61,4 +63,6 @@ these macOS jobs do not establish Linux execution compatibility.
 
 Existing users can fetch the catalog with `nb update-registry`, then run
 `nb install ripgrep just fd git-lfs` (or `nb upgrade` for existing installs).
-No Nanobrew application release is required for this registry-only update.
+The resolver fix ships in Nanobrew v0.1.212. Updating only the registry
+on v0.1.211 can still select a Homebrew rebuild; use the updated client for
+the verified default installation behavior.

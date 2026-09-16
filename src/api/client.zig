@@ -383,6 +383,12 @@ fn fetchFormulaLive(alloc: std.mem.Allocator, client: ?*std.http.Client, name: [
 }
 
 fn formulaMetadataIsNewer(candidate: Formula, current: Formula) bool {
+    // Homebrew revisions/rebuilds describe its packaging, not the upstream
+    // executable archive. Only an actual version update can supersede a
+    // declared upstream binary (e.g. ripgrep without Homebrew's PCRE2 linkage).
+    if (current.bottle_url.len == 0 and current.install_binaries.len > 0) {
+        return version_cmp.isNewer(candidate.version, current.version);
+    }
     var candidate_buf: [256]u8 = undefined;
     var current_buf: [256]u8 = undefined;
     const candidate_version = candidate.effectiveVersion(&candidate_buf);
@@ -1197,6 +1203,18 @@ fn isVersionTokenChar(c: u8) bool {
 }
 
 const testing = std.testing;
+
+test "Homebrew packaging updates do not supersede an upstream binary" {
+    const upstream = Formula{ .name = "ripgrep", .version = "15.2.0", .install_binaries = &.{"rg"} };
+    const rebuilt = Formula{ .name = "ripgrep", .version = "15.2.0", .rebuild = 1 };
+    const revised = Formula{ .name = "ripgrep", .version = "15.2.0", .revision = 1 };
+    const newer = Formula{ .name = "ripgrep", .version = "15.3.0" };
+    const older = Formula{ .name = "ripgrep", .version = "15.1.0", .revision = 9 };
+    try testing.expect(!formulaMetadataIsNewer(rebuilt, upstream));
+    try testing.expect(!formulaMetadataIsNewer(revised, upstream));
+    try testing.expect(formulaMetadataIsNewer(newer, upstream));
+    try testing.expect(!formulaMetadataIsNewer(older, upstream));
+}
 
 test "formulaMetadataIsNewer compares revisions before bottle rebuilds" {
     const revision_update = Formula{ .name = "tool", .version = "1.0", .revision = 2 };

@@ -8,7 +8,6 @@ import platform
 import re
 import subprocess
 import tempfile
-import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 CHECKS = {
@@ -47,27 +46,14 @@ def main():
         for name, (binary, flag) in CHECKS.items():
             pin = records[name]['resolved']
             assert installed[name]['version'] == pin['version'], (name, installed[name])
-            source = 'upstream pin'
-            if installed[name]['sha256'] != pin['assets'][target]['sha256']:
-                assert mode == 'default', (name, installed[name])
-                with urllib.request.urlopen('https://formulae.brew.sh/api/formula/' + name + '.json', timeout=30) as response:
-                    live = json.load(response)
-                assert live['versions']['stable'] == pin['version'] and live['revision'] == 0
-                assert live['bottle']['stable']['rebuild'] > 0
-                bottles = live['bottle']['stable']['files']
-                allowed = {v['sha256'] for k, v in bottles.items()
-                           if (k.startswith('arm64_') if arch == 'arm64'
-                               else k in ('tahoe', 'sequoia', 'sonoma', 'ventura', 'monterey', 'big_sur', 'catalina'))}
-                assert installed[name]['sha256'] in allowed, (name, installed[name])
-                source = 'current Homebrew rebuild'
-
+            assert installed[name]['sha256'] == pin['assets'][target]['sha256'], (name, installed[name])
             path = prefix / binary
             run('/usr/bin/lipo', path, '-verify_arch', arch)
             output = run(path, flag)
             assert re.search(r'(?<![0-9.])' + re.escape(pin['version']) + r'(?![0-9.])', output), output
             print(output)
             evidence.append({'package': name, 'version': pin['version'],
-                             'sha256': installed[name]['sha256'], 'native_arch': arch, 'source': source})
+                             'sha256': installed[name]['sha256'], 'native_arch': arch})
 
         (work / 'needle.txt').write_text('nanobrew native search\n')
         assert run(prefix / 'rg', '--no-config', '--fixed-strings', 'native', 'needle.txt').strip() == 'nanobrew native search'

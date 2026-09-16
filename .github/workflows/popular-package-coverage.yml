@@ -8,6 +8,7 @@ on:
       - scripts/popularity-plan.py
       - scripts/test-popularity-plan.py
       - scripts/verify-popular-packages.py
+      - src/api/client.zig
       - registry/upstream.json
       - src/upstream/registry_default.json
       - .github/workflows/popular-package-coverage.yml
@@ -16,6 +17,7 @@ on:
       - scripts/popularity-plan.py
       - scripts/test-popularity-plan.py
       - scripts/verify-popular-packages.py
+      - src/api/client.zig
       - registry/upstream.json
       - src/upstream/registry_default.json
       - .github/workflows/popular-package-coverage.yml
