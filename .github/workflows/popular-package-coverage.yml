@@ -51,10 +51,12 @@ jobs:
       fail-fast: false
       matrix:
         runner: [macos-15-intel, macos-26]
+        resolution: [pinned, default]
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 20
     env:
       NANOBREW_NO_TELEMETRY: '1'
+      NB_TEST_RESOLUTION: ${{ matrix.resolution }}
       NANOBREW_DISABLE_UPSTREAM_REGISTRY_REMOTE: '1'
     steps:
       - uses: actions/checkout@v4
@@ -67,10 +69,13 @@ jobs:
         run: |
           sudo ./zig-out/bin/nb init
           sudo chown -R "$(id -un)" /opt/nanobrew
+          if [ "$NB_TEST_RESOLUTION" = pinned ]; then
+            export NANOBREW_DISABLE_UPSTREAM_FRESHNESS=1
+          fi
           NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./zig-out/bin/nb install gh uv oras ripgrep just fd git-lfs
       - name: Check exact pins, native architecture and tool behavior
         run: python3 scripts/verify-popular-packages.py
       - uses: actions/upload-artifact@v4
         with:
-          name: popular-packages-${{ matrix.runner }}
+          name: popular-packages-${{ matrix.runner }}-${{ matrix.resolution }}
           path: dist/popular-packages-*.json
