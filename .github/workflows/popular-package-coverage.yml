@@ -7,6 +7,7 @@ on:
     paths:
       - scripts/popularity-plan.py
       - scripts/test-popularity-plan.py
+      - scripts/verify-popular-packages.py
       - registry/upstream.json
       - src/upstream/registry_default.json
       - .github/workflows/popular-package-coverage.yml
@@ -14,6 +15,7 @@ on:
     paths:
       - scripts/popularity-plan.py
       - scripts/test-popularity-plan.py
+      - scripts/verify-popular-packages.py
       - registry/upstream.json
       - src/upstream/registry_default.json
       - .github/workflows/popular-package-coverage.yml
@@ -61,22 +63,14 @@ jobs:
           version: 0.16.0
       - name: Build Nanobrew with the proposed registry
         run: zig build -Doptimize=ReleaseFast
-      - name: Install gh, uv and oras on disposable runner
+      - name: Install popular tools on disposable runner
         run: |
           sudo ./zig-out/bin/nb init
           sudo chown -R "$(id -un)" /opt/nanobrew
-          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./zig-out/bin/nb install gh uv oras
-      - name: Check installed versions against the pins
-        run: |
-          python3 - <<'PY'
-          import json, subprocess
-          from pathlib import Path
-          registry = json.loads(Path('registry/upstream.json').read_text())
-          records = {r['token']: r for r in registry['records'] if r['kind'] == 'formula'}
-          checks = {'gh': ['--version'], 'uv': ['--version'], 'oras': ['version']}
-          for name, args in checks.items():
-              version = records[name]['resolved']['version']
-              output = subprocess.check_output(['/opt/nanobrew/prefix/bin/' + name, *args], text=True)
-              assert version in output, (name, version, output)
-              print(output)
-          PY
+          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./zig-out/bin/nb install gh uv oras ripgrep just fd git-lfs
+      - name: Check exact pins, native architecture and tool behavior
+        run: python3 scripts/verify-popular-packages.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: popular-packages-${{ matrix.runner }}
+          path: dist/popular-packages-*.json

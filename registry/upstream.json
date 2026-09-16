@@ -315,24 +315,24 @@
         }
       ],
       "resolved": {
-        "tag": "1.50.0",
-        "version": "1.50.0",
+        "tag": "1.58.0",
+        "version": "1.58.0",
         "assets": {
-          "macos-arm64": {
-            "url": "https://github.com/casey/just/releases/download/1.50.0/just-1.50.0-aarch64-apple-darwin.tar.gz",
-            "sha256": "891262207663bff1aa422dbe799a76deae4064eaa445f14eb28aef7a388222cd"
-          },
-          "macos-x86_64": {
-            "url": "https://github.com/casey/just/releases/download/1.50.0/just-1.50.0-x86_64-apple-darwin.tar.gz",
-            "sha256": "e4fa28fe63381ca32fad101e86d4a1da7cd2d34d1b080985a37ec9dc951922fe"
+          "linux-aarch64": {
+            "url": "https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-aarch64-unknown-linux-musl.tar.gz",
+            "sha256": "748237128c4c40cbdabc65e841d05ceba13cc23a91eaba395495894c1d9764df"
           },
           "linux-x86_64": {
-            "url": "https://github.com/casey/just/releases/download/1.50.0/just-1.50.0-x86_64-unknown-linux-musl.tar.gz",
-            "sha256": "27e011cd6328fadd632e59233d2cf5f18460b8a8c4269acd324c1a8669f34db0"
+            "url": "https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-unknown-linux-musl.tar.gz",
+            "sha256": "4a5cc2f53e6f0f8c59092a6cc38291eb729d46a7dd95d3ae582008881b84931d"
           },
-          "linux-aarch64": {
-            "url": "https://github.com/casey/just/releases/download/1.50.0/just-1.50.0-aarch64-unknown-linux-musl.tar.gz",
-            "sha256": "3beb4967ce05883cf09ac12d6d128166eb4c6d0b03eff74b61018a6880655d7d"
+          "macos-arm64": {
+            "url": "https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-aarch64-apple-darwin.tar.gz",
+            "sha256": "50ae3e996c974a0bf32ea7d10f495070df33f1b43e0616b2769e3d4821ed8f48"
+          },
+          "macos-x86_64": {
+            "url": "https://github.com/casey/just/releases/download/1.58.0/just-1.58.0-x86_64-apple-darwin.tar.gz",
+            "sha256": "9a09cfef66aaa79da58203970103a0684307716caaabd3e9844cacc4dc0f4023"
           }
         }
       },
@@ -437,24 +437,24 @@
         }
       ],
       "resolved": {
-        "tag": "15.1.0",
-        "version": "15.1.0",
+        "tag": "15.2.0",
+        "version": "15.2.0",
         "assets": {
-          "macos-arm64": {
-            "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-aarch64-apple-darwin.tar.gz",
-            "sha256": "378e973289176ca0c6054054ee7f631a065874a352bf43f0fa60ef079b6ba715"
-          },
-          "macos-x86_64": {
-            "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-apple-darwin.tar.gz",
-            "sha256": "64811cb24e77cac3057d6c40b63ac9becf9082eedd54ca411b475b755d334882"
+          "linux-aarch64": {
+            "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-unknown-linux-gnu.tar.gz",
+            "sha256": "a740b91c82eaf9914cfedd353572f2791cbe0162c84101ee0951058f4dcbc90d"
           },
           "linux-x86_64": {
-            "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-x86_64-unknown-linux-musl.tar.gz",
-            "sha256": "1c9297be4a084eea7ecaedf93eb03d058d6faae29bbc57ecdaf5063921491599"
+            "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-unknown-linux-musl.tar.gz",
+            "sha256": "33e15bcf1624b25cdd2a55813a47a2f95dbe126268203e76aa6a585d1e7b149c"
           },
-          "linux-aarch64": {
-            "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.1.0/ripgrep-15.1.0-aarch64-unknown-linux-gnu.tar.gz",
-            "sha256": "2b661c6ef508e902f388e9098d9c4c5aca72c87b55922d94abdba830b4dc885e"
+          "macos-arm64": {
+            "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-aarch64-apple-darwin.tar.gz",
+            "sha256": "3750b2e93f37e0c692657da574d7019a101c0084da05a790c83fd335bad973e4"
+          },
+          "macos-x86_64": {
+            "url": "https://github.com/BurntSushi/ripgrep/releases/download/15.2.0/ripgrep-15.2.0-x86_64-apple-darwin.tar.gz",
+            "sha256": "af7825fcc69a2afc7a7aea55fc9af90e26421d8f20fe59df32e233c0b8a231c1"
           }
         }
       },
@@ -666,6 +666,9 @@
         },
         "linux-aarch64": {
           "pattern": "fd-{tag}-aarch64-unknown-linux-gnu.tar.gz"
+        },
+        "macos-x86_64": {
+          "pattern": "fd-{tag}-x86_64-apple-darwin.tar.gz"
         }
       },
       "artifacts": [
@@ -675,20 +678,24 @@
         }
       ],
       "resolved": {
-        "tag": "v10.4.2",
-        "version": "10.4.2",
+        "tag": "v10.5.0",
+        "version": "10.5.0",
         "assets": {
-          "macos-arm64": {
-            "url": "https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-aarch64-apple-darwin.tar.gz",
-            "sha256": "623dc0afc81b92e4d4606b380d7bc91916ba7b97814263e554d50923a39e480a"
+          "linux-aarch64": {
+            "url": "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-aarch64-unknown-linux-gnu.tar.gz",
+            "sha256": "c0ee43802e3313a317c5af2f4eabd6ba13eeedd595af9775f05e18a13ac4f52c"
           },
           "linux-x86_64": {
-            "url": "https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-x86_64-unknown-linux-gnu.tar.gz",
-            "sha256": "def59805cd14b5651b68990855f426ad087f3b96881296d963910431ba3143c8"
+            "url": "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-x86_64-unknown-linux-gnu.tar.gz",
+            "sha256": "a1259cd129636efbc3fef123525c1b49e88fe5088c012630983c310e52fdfa95"
           },
-          "linux-aarch64": {
-            "url": "https://github.com/sharkdp/fd/releases/download/v10.4.2/fd-v10.4.2-aarch64-unknown-linux-gnu.tar.gz",
-            "sha256": "6c51f7c5446b3338b1e401ff15dc194c590bb2fa64fd43ff3278300f073adec5"
+          "macos-arm64": {
+            "url": "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-aarch64-apple-darwin.tar.gz",
+            "sha256": "b67e1836c468e42e411984b56e52fa7abec08c2bd22c867398e7cc134aac5e12"
+          },
+          "macos-x86_64": {
+            "url": "https://github.com/sharkdp/fd/releases/download/v10.5.0/fd-v10.5.0-x86_64-apple-darwin.tar.gz",
+            "sha256": "7e31028c62c6955877735d0406807aa484c2a5e6f86235a59e26c29c301da590"
           }
         }
       },
@@ -1583,24 +1590,24 @@
         }
       ],
       "resolved": {
-        "tag": "v3.7.1",
-        "version": "3.7.1",
+        "tag": "v3.8.0",
+        "version": "3.8.0",
         "assets": {
-          "macos-arm64": {
-            "url": "https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-darwin-arm64-v3.7.1.zip",
-            "sha256": "76260fb34f4ee622ff0a66b857e5954aa49c7e343a92e57a1ec4a760618c94b2"
-          },
-          "macos-x86_64": {
-            "url": "https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-darwin-amd64-v3.7.1.zip",
-            "sha256": "b5b1b641c0648c83661fa9eda991cd3eff945264dabc2cdf411a80dfe7ec0970"
+          "linux-aarch64": {
+            "url": "https://github.com/git-lfs/git-lfs/releases/download/v3.8.0/git-lfs-linux-arm64-v3.8.0.tar.gz",
+            "sha256": "ac9c8efac980bb0505ead384d087e2acb6486fd8498691a2165fa174ec6118c2"
           },
           "linux-x86_64": {
-            "url": "https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-linux-amd64-v3.7.1.tar.gz",
-            "sha256": "1c0b6ee5200ca708c5cebebb18fdeb0e1c98f1af5c1a9cba205a4c0ab5a5ec08"
+            "url": "https://github.com/git-lfs/git-lfs/releases/download/v3.8.0/git-lfs-linux-amd64-v3.8.0.tar.gz",
+            "sha256": "e455e00f15d9b95661b8d53498ffb0c3367962cf1ec73c31ab7369516cd6ab8d"
           },
-          "linux-aarch64": {
-            "url": "https://github.com/git-lfs/git-lfs/releases/download/v3.7.1/git-lfs-linux-arm64-v3.7.1.tar.gz",
-            "sha256": "73a9c90eeb4312133a63c3eaee0c38c019ea7bfa0953d174809d25b18588dd8d"
+          "macos-arm64": {
+            "url": "https://github.com/git-lfs/git-lfs/releases/download/v3.8.0/git-lfs-darwin-arm64-v3.8.0.zip",
+            "sha256": "caff76a7d070d8160c89bc39b6e85d98f24135b6fed038a3b4de2590d25102d8"
+          },
+          "macos-x86_64": {
+            "url": "https://github.com/git-lfs/git-lfs/releases/download/v3.8.0/git-lfs-darwin-amd64-v3.8.0.zip",
+            "sha256": "f1c17aeca0b4eaab9ea606226477dbed3b84b56fe0811a9f967d2ea2b2393c53"
           }
         }
       },
