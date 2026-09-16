@@ -36,6 +36,33 @@ Homebrew API. Never blindly downgrade a pin to make versions match. Source-build
 candidates may still have usable older mirrored bottles.
 
 The `Popular package coverage` workflow refreshes this report on relevant changes
-and manual dispatch. Its separate install job validates the first selected batch
-(`gh`, `uv`, `oras`) on native Intel and Apple Silicon. Ranking does not install
+and manual dispatch. Its separate install job validates the selected batches
+(`gh`, `uv`, `oras`, `ripgrep`, `just`, `fd`, `git-lfs`) on native Intel and Apple Silicon. Ranking does not install
 the top 100 packages automatically. Other packages remain untested by this job.
+
+The second batch refreshes ripgrep 15.2.0, just 1.58.0, fd 10.5.0, and
+Git LFS 3.8.0 from their official GitHub release archives. It also adds the
+missing Intel asset rule for fd. Both Mac architectures and both Linux
+architectures have matching version pins; every archive was downloaded and
+its SHA-256 compared with the upstream GitHub asset digest before promotion.
+These records use upstream GitHub hosting directly.
+
+The native macOS jobs cover exact upstream pins with freshness disabled, and
+normal installs with the default freshness check enabled. Both paths must
+install the exact registry digest and version and verify the executable
+architecture. The resolver ignores Homebrew packaging revisions/rebuilds when
+comparing a declared upstream binary; an actual newer upstream version still
+triggers the freshness fallback. This prevents an unrelated Homebrew rebuild
+from replacing a working upstream binary with different library dependencies.
+
+The workflow also
+searches text with ripgrep, finds a file with fd, executes a just recipe, and
+round-trips a local Git LFS object through clean/smudge. Evidence is uploaded
+per architecture. Linux archives receive download/checksum verification;
+these macOS jobs do not establish Linux execution compatibility.
+
+Existing users can fetch the catalog with `nb update-registry`, then run
+`nb install ripgrep just fd git-lfs` (or `nb upgrade` for existing installs).
+The resolver fix ships in Nanobrew v0.1.212. Updating only the registry
+on v0.1.211 can still select a Homebrew rebuild; use the updated client for
+the verified default installation behavior.
