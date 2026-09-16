@@ -1,256 +1,47 @@
 name: Benchmark
-
 on:
   workflow_dispatch:
-  schedule:
-    - cron: "0 6 * * 1"  # weekly Monday 6am UTC
-
 permissions:
-  contents: write
-
+  contents: read
 jobs:
-  benchmark:
-    runs-on: macos-14
+  comparison:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-26, macos-15-intel]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
+      - name: Pin Homebrew 7.0.2 and released Nanobrew
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+        run: |
+          brew_repo=$(brew --repository)
+          git -C "$brew_repo" fetch --depth=1 origin tag 7.0.2
+          git -C "$brew_repo" checkout --detach 7.0.2
+          brew --version
+          mkdir -p "$RUNNER_TEMP/nb-release"
+          cd "$RUNNER_TEMP/nb-release"
+          arch=$(uname -m)
+          archive="nb-${arch}-apple-darwin.tar.gz"
+          gh release download v0.1.212 --repo justrach/nanobrew --pattern "$archive" --pattern "$archive.sha256"
+          shasum -a 256 -c "$archive.sha256"
+          tar -xzf "$archive"
+          chmod +x nb
+          ./nb --version
+          echo "NB_BENCH_BINARY=$RUNNER_TEMP/nb-release/nb" >> "$GITHUB_ENV"
+      - name: Run repeated cold and warm comparisons
+        env:
+          NANOBREW_NO_TELEMETRY: '1'
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_ANALYTICS: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
+          HOMEBREW_NO_ENV_HINTS: '1'
+        run: python3 scripts/bench-homebrew-current.py
+      - uses: actions/upload-artifact@v4
+        if: always()
         with:
-          version: 0.16.0
-
-      - name: Build nanobrew
-        run: zig build -Doptimize=ReleaseFast
-
-      - name: Init nanobrew
-        run: |
-          sudo mkdir -p /opt/nanobrew
-          sudo chown -R $USER /opt/nanobrew
-          ./zig-out/bin/nb init
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Build zerobrew
-        run: |
-          git clone https://github.com/lucasgelfond/zerobrew.git /tmp/zerobrew
-          cd /tmp/zerobrew && cargo build --release
-          sudo mkdir -p /opt/zerobrew
-          sudo chown -R $USER /opt/zerobrew
-          /tmp/zerobrew/target/release/zb init
-
-      - name: Benchmark tree
-        id: tree
-        run: |
-          ZB=/tmp/zerobrew/target/release/zb
-          NB=./zig-out/bin/nb
-
-          # nanobrew cold
-          NB_COLD=$(TIMEFORMAT='%R'; { time $NB install tree 2>&1; } 2>&1 | tail -1)
-          $NB remove tree
-
-          # nanobrew warm
-          NB_WARM=$(TIMEFORMAT='%R'; { time $NB install tree 2>&1; } 2>&1 | tail -1)
-          $NB remove tree
-
-          # zerobrew cold
-          ZB_COLD=$(TIMEFORMAT='%R'; { time $ZB install tree 2>&1; } 2>&1 | tail -1)
-          $ZB uninstall tree
-
-          # zerobrew warm
-          ZB_WARM=$(TIMEFORMAT='%R'; { time $ZB install tree 2>&1; } 2>&1 | tail -1)
-          $ZB uninstall tree
-
-          # homebrew
-          brew uninstall tree 2>/dev/null || true
-          BREW_TIME=$(TIMEFORMAT='%R'; { time brew install tree 2>&1; } 2>&1 | tail -1)
-          brew uninstall tree 2>/dev/null || true
-
-          echo "brew=${BREW_TIME}s" >> "$GITHUB_OUTPUT"
-          echo "zb_cold=${ZB_COLD}s" >> "$GITHUB_OUTPUT"
-          echo "zb_warm=${ZB_WARM}s" >> "$GITHUB_OUTPUT"
-          echo "nb_cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
-          echo "nb_warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
-
-      - name: Benchmark wget
-        id: wget
-        run: |
-          ZB=/tmp/zerobrew/target/release/zb
-          NB=./zig-out/bin/nb
-
-          NB_COLD=$(TIMEFORMAT='%R'; { time $NB install wget 2>&1; } 2>&1 | tail -1)
-          $NB remove wget
-          NB_WARM=$(TIMEFORMAT='%R'; { time $NB install wget 2>&1; } 2>&1 | tail -1)
-          $NB remove wget
-
-          ZB_COLD=$(TIMEFORMAT='%R'; { time $ZB install wget 2>&1; } 2>&1 | tail -1)
-          $ZB uninstall wget
-          ZB_WARM=$(TIMEFORMAT='%R'; { time $ZB install wget 2>&1; } 2>&1 | tail -1)
-          $ZB uninstall wget
-
-          brew uninstall wget 2>/dev/null || true
-          BREW_TIME=$(TIMEFORMAT='%R'; { time brew install wget 2>&1; } 2>&1 | tail -1)
-          brew uninstall wget 2>/dev/null || true
-
-          echo "brew=${BREW_TIME}s" >> "$GITHUB_OUTPUT"
-          echo "zb_cold=${ZB_COLD}s" >> "$GITHUB_OUTPUT"
-          echo "zb_warm=${ZB_WARM}s" >> "$GITHUB_OUTPUT"
-          echo "nb_cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
-          echo "nb_warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
-
-      - name: Benchmark ffmpeg
-        id: ffmpeg
-        run: |
-          ZB=/tmp/zerobrew/target/release/zb
-          NB=./zig-out/bin/nb
-
-          NB_COLD=$(TIMEFORMAT='%R'; { time $NB install ffmpeg 2>&1; } 2>&1 | tail -1)
-          $NB remove ffmpeg
-          NB_WARM=$(TIMEFORMAT='%R'; { time $NB install ffmpeg 2>&1; } 2>&1 | tail -1)
-          $NB remove ffmpeg
-
-          ZB_COLD=$(TIMEFORMAT='%R'; { time $ZB install ffmpeg 2>&1; } 2>&1 | tail -1)
-          $ZB uninstall ffmpeg
-          ZB_WARM=$(TIMEFORMAT='%R'; { time $ZB install ffmpeg 2>&1; } 2>&1 | tail -1)
-          $ZB uninstall ffmpeg
-
-          brew uninstall ffmpeg 2>/dev/null || true
-          BREW_TIME=$(TIMEFORMAT='%R'; { time brew install ffmpeg 2>&1; } 2>&1 | tail -1)
-          brew uninstall ffmpeg 2>/dev/null || true
-
-          echo "brew=${BREW_TIME}s" >> "$GITHUB_OUTPUT"
-          echo "zb_cold=${ZB_COLD}s" >> "$GITHUB_OUTPUT"
-          echo "zb_warm=${ZB_WARM}s" >> "$GITHUB_OUTPUT"
-          echo "nb_cold=${NB_COLD}s" >> "$GITHUB_OUTPUT"
-          echo "nb_warm=${NB_WARM}s" >> "$GITHUB_OUTPUT"
-
-      - name: Update README (macOS)
-        run: |
-          TREE_DEPS="0 deps"
-          WGET_DEPS="6 deps"
-          FFMPEG_DEPS="11 deps"
-
-          TABLE="| Package | Homebrew | zerobrew (cold) | zerobrew (warm) | nanobrew (cold) | nanobrew (warm) |
-          |---------|----------|-----------------|-----------------|-----------------|-----------------|
-          | **tree** ($TREE_DEPS) | ${{ steps.tree.outputs.brew }} | ${{ steps.tree.outputs.zb_cold }} | ${{ steps.tree.outputs.zb_warm }} | **${{ steps.tree.outputs.nb_cold }}** | **${{ steps.tree.outputs.nb_warm }}** |
-          | **ffmpeg** ($FFMPEG_DEPS) | ${{ steps.ffmpeg.outputs.brew }} | ${{ steps.ffmpeg.outputs.zb_cold }} | ${{ steps.ffmpeg.outputs.zb_warm }} | **${{ steps.ffmpeg.outputs.nb_cold }}** | **${{ steps.ffmpeg.outputs.nb_warm }}** |
-          | **wget** ($WGET_DEPS) | ${{ steps.wget.outputs.brew }} | ${{ steps.wget.outputs.zb_cold }} | ${{ steps.wget.outputs.zb_warm }} | **${{ steps.wget.outputs.nb_cold }}** | **${{ steps.wget.outputs.nb_warm }}** |"
-
-          python3 -c "
-          import re
-          readme = open('README.md').read()
-          pattern = r'\| Package \| Homebrew.*?\| \*\*wget\*\*.*?\|'
-          replacement = '''$TABLE'''
-          readme = re.sub(pattern, replacement, readme, flags=re.DOTALL)
-          open('README.md', 'w').write(readme)
-          "
-
-          DATE=$(date -u +"%Y-%m-%d")
-          sed -i '' "s/> Benchmarks on Apple Silicon.*/> Benchmarks on Apple Silicon (GitHub Actions macos-14), $DATE. Auto-updated weekly./" README.md
-
-      - name: Upload README
-        uses: actions/upload-artifact@v4
-        with:
-          name: readme-macos
-          path: README.md
-
-  benchmark-deb:
-    runs-on: ubuntu-latest
-    needs: benchmark
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Download README from macOS benchmark
-        uses: actions/download-artifact@v4
-        with:
-          name: readme-macos
-
-      - name: Install Zig
-        uses: mlugg/setup-zig@v2
-        with:
-          version: 0.16.0
-
-      - name: Build Linux binary
-        run: zig build linux
-
-      - name: Benchmark deb curl
-        id: deb_curl
-        run: |
-          NB_ABS=$(pwd)/zig-out/bin/nb
-
-          # nb install --deb curl
-          NB_TIME=$(TIMEFORMAT='%R'; { time docker run --rm \
-            -v "$NB_ABS:/opt/nb:ro" \
-            ubuntu:24.04 bash -c "
-              /opt/nb init >/dev/null 2>&1
-              /opt/nb install --deb curl 2>&1
-            " ; } 2>&1 | tail -1)
-
-          # apt-get install curl
-          APT_TIME=$(TIMEFORMAT='%R'; { time docker run --rm \
-            ubuntu:24.04 bash -c "
-              apt-get update >/dev/null 2>&1
-              apt-get install -y curl >/dev/null 2>&1
-            " ; } 2>&1 | tail -1)
-
-          echo "nb=${NB_TIME}s" >> "$GITHUB_OUTPUT"
-          echo "apt=${APT_TIME}s" >> "$GITHUB_OUTPUT"
-
-      - name: Benchmark deb curl wget git
-        id: deb_multi
-        run: |
-          NB_ABS=$(pwd)/zig-out/bin/nb
-
-          # nb install --deb curl wget git
-          NB_TIME=$(TIMEFORMAT='%R'; { time docker run --rm \
-            -v "$NB_ABS:/opt/nb:ro" \
-            ubuntu:24.04 bash -c "
-              /opt/nb init >/dev/null 2>&1
-              /opt/nb install --deb curl wget git 2>&1
-            " ; } 2>&1 | tail -1)
-
-          # apt-get install curl wget git
-          APT_TIME=$(TIMEFORMAT='%R'; { time docker run --rm \
-            ubuntu:24.04 bash -c "
-              apt-get update >/dev/null 2>&1
-              apt-get install -y curl wget git >/dev/null 2>&1
-            " ; } 2>&1 | tail -1)
-
-          echo "nb=${NB_TIME}s" >> "$GITHUB_OUTPUT"
-          echo "apt=${APT_TIME}s" >> "$GITHUB_OUTPUT"
-
-      - name: Update README (deb benchmarks)
-        run: |
-          # Calculate speedups
-          NB_CURL=${{ steps.deb_curl.outputs.nb }}
-          APT_CURL=${{ steps.deb_curl.outputs.apt }}
-          NB_MULTI=${{ steps.deb_multi.outputs.nb }}
-          APT_MULTI=${{ steps.deb_multi.outputs.apt }}
-
-          SPEEDUP_CURL=$(python3 -c "print(f'{float(\"${APT_CURL%s}\") / float(\"${NB_CURL%s}\"):.1f}')")
-          SPEEDUP_MULTI=$(python3 -c "print(f'{float(\"${APT_MULTI%s}\") / float(\"${NB_MULTI%s}\"):.1f}')")
-
-          TABLE="| Command | apt-get | nanobrew --deb | Speedup |
-          |---------|---------|----------------|---------|
-          | **curl** (32 deps) | ${APT_CURL} | ${NB_CURL} | **${SPEEDUP_CURL}x** |
-          | **curl wget git** (60+ deps) | ${APT_MULTI} | ${NB_MULTI} | **${SPEEDUP_MULTI}x** |"
-
-          python3 -c "
-          import re
-          readme = open('README.md').read()
-          pattern = r'\| Command \| apt-get.*?\| \*\*curl wget git\*\*.*?\|'
-          replacement = '''$TABLE'''
-          readme = re.sub(pattern, replacement, readme, flags=re.DOTALL)
-          open('README.md', 'w').write(readme)
-          "
-
-          DATE=$(date -u +"%Y-%m-%d")
-          sed -i "s/> Benchmarks in Docker.*/> Benchmarks in Docker (ubuntu:24.04, GitHub Actions ubuntu-latest), $DATE. Auto-updated weekly./" README.md
-
-      - name: Commit results
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add README.md
-          git diff --cached --quiet || git commit -m "bench: update benchmark results $(date -u +%Y-%m-%d)"
-          git push
+          name: benchmark-${{ matrix.runner }}
+          path: benchmark-results/
