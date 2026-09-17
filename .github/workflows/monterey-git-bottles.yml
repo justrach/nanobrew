@@ -24,6 +24,13 @@ jobs:
       - uses: mlugg/setup-zig@v2
         with:
           version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            ~/.cache/zig
+          key: monterey-zig-0.16-${{ hashFiles('src/**', 'build.zig') }}
+          restore-keys: monterey-zig-0.16-
       - name: Build client and check compatibility regressions
         run: |
           zig build -Doptimize=ReleaseFast

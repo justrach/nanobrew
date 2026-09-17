@@ -73,6 +73,20 @@ def environment(name):
     return env
 
 
+def deployment_targets(load_commands):
+    targets, command = [], None
+    for line in load_commands.splitlines():
+        fields = line.split()
+        if len(fields) != 2:
+            continue
+        key, value = fields
+        if key == 'cmd':
+            command = value
+        elif (command == 'LC_BUILD_VERSION' and key == 'minos') or (command == 'LC_VERSION_MIN_MACOSX' and key == 'version'):
+            targets.append(value)
+    return targets
+
+
 def audit(keg_path):
     """Reject ARM payloads, newer deployment targets and foreign dylibs."""
     checked = []
@@ -85,8 +99,8 @@ def audit(keg_path):
             continue
         subprocess.run(['/usr/bin/lipo', str(path), '-verify_arch', 'x86_64'], check=True)
         load = subprocess.check_output(['/usr/bin/otool', '-l', str(path)], text=True)
-        versions = re.findall(r'^\s*(?:minos|version)\s+(\d+\.\d+(?:\.\d+)?)\s*$', load, re.M)
-        # "version" occurs in LC_VERSION_MIN_MACOSX. "sdk" is intentionally ignored.
+        versions = deployment_targets(load)
+        # Ignore SDK, linker/tool and source versions inside other load commands.
         if not versions or any(tuple(map(int, v.split('.'))) > (12, 0, 0) for v in versions):
             raise ValueError(f'Unexpected deployment target for {path}: {versions}')
         links = subprocess.check_output(['/usr/bin/otool', '-L', str(path)], text=True)
@@ -254,7 +268,21 @@ def main():
         return
     if not args.cmake:
         raise SystemExit('CMake is required as a build tool')
-    records = [build(name, str(Path(args.cmake).resolve())) for name in order(ROOTS)]
+    records, failures = [], {}
+    for name in order(ROOTS):
+        failed_deps = [dep for dep in RECIPES[name]['dependencies'] if dep in failures]
+        if failed_deps:
+            failures[name] = 'Blocked by: ' + ', '.join(failed_deps)
+            continue
+        try:
+            records.append(build(name, str(Path(args.cmake).resolve())))
+            print(f'::notice::{name}: built and deployment target audited', flush=True)
+        except Exception as exc:
+            failures[name] = str(exc)
+            print(f'::error::{name}: {exc}', flush=True)
+        (DIST / 'build-status.json').write_text(json.dumps({'built': [r['token'] for r in records], 'failures': failures}, indent=2) + '\n')
+    if failures:
+        raise SystemExit('Build failures: ' + json.dumps(failures))
     smoke()
     (DIST / 'registry.json').write_text(json.dumps({'schema_version': 1, 'records': records}, indent=2) + '\n')
     # Prepare an exact-bottle nb install. Only kegs made by this run are removed.

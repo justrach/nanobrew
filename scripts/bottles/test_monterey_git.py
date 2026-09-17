@@ -1,8 +1,14 @@
 import unittest
-from build_monterey_git import order, ROOTS, RECIPES
+from build_monterey_git import order, ROOTS, RECIPES, deployment_targets
 
 
 class RecipeTests(unittest.TestCase):
+    def test_deployment_audit_ignores_linker_sdk_and_source_versions(self):
+        modern = "cmd LC_BUILD_VERSION\n minos 12.0\n sdk 15.5\n ntools 1\n tool LD\n version 1167.5\ncmd LC_SOURCE_VERSION\n version 0.0\n"
+        self.assertEqual(deployment_targets(modern), ['12.0'])
+        self.assertEqual(deployment_targets('cmd LC_VERSION_MIN_MACOSX\n version 13.0\n sdk 15.0'), ['13.0'])
+        self.assertEqual(deployment_targets('cmd LC_SOURCE_VERSION\n version 12.0'), [])
+
     def test_dependency_graph_complete_and_topological(self):
         resolved = order(ROOTS)
         self.assertEqual(set(resolved), set(RECIPES))
