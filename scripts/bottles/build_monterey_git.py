@@ -144,13 +144,15 @@ def build(name, cmake):
             opts = {
                 'expat': ['-DEXPAT_BUILD_TESTS=ON', '-DEXPAT_BUILD_EXAMPLES=OFF'],
                 'json-c': ['-DBUILD_TESTING=ON'],
-                'pcre2': ['-DPCRE2_BUILD_PCRE2_16=ON', '-DPCRE2_BUILD_PCRE2_32=ON', '-DPCRE2_SUPPORT_JIT=ON'],
+                'pcre2': ['-DPCRE2_BUILD_PCRE2_16=ON', '-DPCRE2_BUILD_PCRE2_32=ON', '-DPCRE2_SUPPORT_JIT=ON', '-DPCRE2_SUPPORT_LIBREADLINE=OFF'],
                 'libxml2': ['-DLIBXML2_WITH_PYTHON=OFF', '-DLIBXML2_WITH_READLINE=ON', '-DLIBXML2_WITH_ZLIB=ON'],
                 'libssh2': ['-DCRYPTO_BACKEND=OpenSSL', '-DOPENSSL_ROOT_DIR=' + str(keg('openssl@3'))],
             }[name]
             call(cmake, '-S', '.', '-B', 'build', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_SHARED_LIBS=ON',
                  '-DCMAKE_INSTALL_PREFIX=' + str(target), '-DCMAKE_OSX_ARCHITECTURES=x86_64',
                  '-DCMAKE_OSX_DEPLOYMENT_TARGET=12.0', '-DCMAKE_INSTALL_LIBDIR=lib',
+                 '-DCMAKE_INSTALL_NAME_DIR=' + str(target / 'lib'),
+                 '-DCMAKE_INSTALL_RPATH=' + ';'.join(str(keg(d) / 'lib') for d in [name, *order(recipe['dependencies'])]),
                  '-DCMAKE_PREFIX_PATH=' + ';'.join(str(keg(d)) for d in order(recipe['dependencies'])),
                  '-DCMAKE_IGNORE_PREFIX_PATH=/usr/local;/opt/homebrew', *opts)
             call(cmake, '--build', 'build', '--parallel', '4')
