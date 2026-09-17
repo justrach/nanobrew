@@ -1,0 +1,56 @@
+name: Monterey Intel Git bottle pilot
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/monterey-intel-git]
+permissions:
+  contents: read
+concurrency:
+  group: monterey-git-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  intel:
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    env:
+      NANOBREW_NO_TELEMETRY: '1'
+      NANOBREW_DISABLE_UPSTREAM_REGISTRY_REMOTE: '1'
+      NANOBREW_DISABLE_UPSTREAM_FRESHNESS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - name: Build client and check compatibility regressions
+        run: |
+          zig build -Doptimize=ReleaseFast
+          zig build test-api test-tap test-upstream-registry test-upstream-github
+          zig test src/test_monterey_bottles.zig -lc
+          python3 scripts/bottles/test_monterey_git.py
+      - name: Prepare disposable prefix
+        run: |
+          test "$(uname -m)" = x86_64
+          sudo ./zig-out/bin/nb init
+          sudo chown -R "$(id -un)" /opt/nanobrew
+      - name: Build complete pinned stack and audit macOS deployment targets
+        run: python3 scripts/bottles/build_monterey_git.py
+      - name: Install exact bottles through Nanobrew and exercise Git HTTPS
+        env:
+          NANOBREW_UPSTREAM_REGISTRY_CACHE: ${{ github.workspace }}/dist/monterey/registry.json
+        run: |
+          ./zig-out/bin/nb install expat json-c readline pcre2 libxml2 libssh2 openldap curl git
+          python3 scripts/bottles/build_monterey_git.py --verify-install
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: monterey-intel-git-pilot
+          path: |
+            dist/monterey/
+            zig-out/bin/nb
+          if-no-files-found: warn
+      - name: Report scope
+        run: |
+          echo 'Built for macOS 12, tested on Intel macOS 15. Monterey runtime validation remains required. Artifacts only, no publication or default registry changes.' >> "$GITHUB_STEP_SUMMARY"

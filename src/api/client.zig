@@ -268,9 +268,7 @@ fn fetchFormulaWithClientAndUpstreamRegistryOptions(
                     // revision, or rebuild, and the resurrected edge can pair
                     // with live-fetched edges in the same resolve pass to form
                     // a cycle that no longer exists upstream (#359, #362).
-                    if (formulaMetadataIsNewer(live, upstream_formula) or
-                        upstreamHasRemovedDependency(live, upstream_formula))
-                    {
+                    if (preferLiveFormula(live, upstream_formula)) {
                         upstream_formula.deinit(alloc);
                         return live;
                     }
@@ -380,6 +378,22 @@ fn fetchFormulaLive(alloc: std.mem.Allocator, client: ?*std.http.Client, name: [
     }
 
     return fetchAndCache(alloc, client, name, cache_path);
+}
+
+// A newer source-only formula must not displace a working binary pin.
+// Otherwise Homebrew dropping Intel bottles undoes our maintained coverage.
+fn preferLiveFormula(live: Formula, upstream: Formula) bool {
+    if (upstream.bottle_url.len > 0 and live.bottle_url.len == 0) return false;
+    return formulaMetadataIsNewer(live, upstream) or upstreamHasRemovedDependency(live, upstream);
+}
+
+test "freshness preserves maintained Intel bottle when live is source-only" {
+    const pin = Formula{ .name = "expat", .version = "2.8.1", .bottle_url = "https://example.test/pin" };
+    const source = Formula{ .name = "expat", .version = "2.8.4" };
+    try std.testing.expect(!preferLiveFormula(source, pin));
+    var bottle = source;
+    bottle.bottle_url = "https://example.test/new";
+    try std.testing.expect(preferLiveFormula(bottle, pin));
 }
 
 fn formulaMetadataIsNewer(candidate: Formula, current: Formula) bool {
@@ -1149,8 +1163,11 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
 }
 
 fn findBottleTag(files: std.json.ObjectMap) ?std.json.Value {
-    if (files.get(BOTTLE_TAG)) |v| return v;
+    if (@import("formula.zig").bottleTagCompatible(BOTTLE_TAG)) {
+        if (files.get(BOTTLE_TAG)) |v| return v;
+    }
     for (BOTTLE_FALLBACKS) |tag| {
+        if (!@import("formula.zig").bottleTagCompatible(tag)) continue;
         if (files.get(tag)) |v| return v;
     }
     return null;

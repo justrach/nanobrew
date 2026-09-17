@@ -117,10 +117,30 @@ fn fetchVendorFormulaFromRecord(alloc: std.mem.Allocator, record: *const registr
     return formula;
 }
 
+fn bottlePinCompatible(minimum: ?u32, host: u32) bool {
+    // Preserve legacy pins on the previously tested macOS 15+ baseline.
+    // Unknown requirements are not proof of compatibility on older systems.
+    return host >= (minimum orelse 15);
+}
+
+test "unversioned bottle pins are not Monterey compatibility evidence" {
+    try std.testing.expect(!bottlePinCompatible(null, 12));
+    try std.testing.expect(!bottlePinCompatible(15, 12));
+    try std.testing.expect(bottlePinCompatible(12, 12));
+    try std.testing.expect(bottlePinCompatible(12, 15));
+    try std.testing.expect(bottlePinCompatible(null, 15));
+}
+
 fn fetchBottleFormulaFromRecord(alloc: std.mem.Allocator, record: *const registry_mod.Record) !Formula {
     const resolved = (try effectiveResolved(record)) orelse return error.MissingAsset;
     const platform = currentPlatform() orelse return error.UnsupportedPlatform;
     const asset = resolved.findAsset(platform) orelse return error.UnsupportedPlatform;
+    if (comptime builtin.os.tag == .macos) {
+        // Older hosts must not receive legacy pins whose OS requirement was
+        // discarded when converting Homebrew's tag to a platform-only asset.
+        const major = @import("../api/formula.zig").runningMacosMajor() orelse return error.UnsupportedPlatform;
+        if (!bottlePinCompatible(asset.minimum_macos_major, major)) return error.UnsupportedPlatform;
+    }
     var formula = try formulaFromBottleResolvedFields(alloc, record, resolved.version, resolved.revision, resolved.rebuild, asset.url, asset.sha256);
     formula.revoked_fallback = recordIsRevoked(record);
     return formula;

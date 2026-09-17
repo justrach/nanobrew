@@ -643,7 +643,7 @@ test "scopeToCacheName - single segment unchanged" {
 test "scopeToCacheName - repo too long returns null" {
     var buf: [256]u8 = undefined;
     const long: [257]u8 = @splat('a');
-    try testing.expectEqual(@as(?[]const u8, null), scopeToCacheName(long, &buf));
+    try testing.expectEqual(@as(?[]const u8, null), scopeToCacheName(&long, &buf));
 }
 
 test "isRetryable whitelists transient failures only" {
