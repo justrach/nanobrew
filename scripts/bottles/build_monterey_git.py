@@ -68,7 +68,7 @@ def environment(name):
     env.update(USER=user, LOGNAME=user, PATH='/usr/bin:/bin:/usr/sbin:/sbin', CC='/usr/bin/clang', CXX='/usr/bin/clang++',
                CFLAGS='-O2 -arch x86_64 -mmacosx-version-min=12.0',
                CXXFLAGS='-O2 -arch x86_64 -mmacosx-version-min=12.0',
-               MACOSX_DEPLOYMENT_TARGET='12.0', VERBOSE='1',
+               MACOSX_DEPLOYMENT_TARGET='12.0',
                CPPFLAGS=' '.join('-I' + str(keg(d) / 'include') for d in deps),
                LDFLAGS='-arch x86_64 -mmacosx-version-min=12.0 ' + ' '.join('-L' + str(keg(d) / 'lib') for d in deps),
                PKG_CONFIG_LIBDIR=':'.join(str(keg(d) / 'lib/pkgconfig') for d in deps))
