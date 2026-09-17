@@ -183,7 +183,7 @@ def build(name, cmake):
             call('make', 'test', 'HARNESS_JOBS=4')
             call('make', 'install_sw')
         elif name == 'git':
-            args = ['prefix=' + str(target), 'NO_GETTEXT=YesPlease', 'NO_TCLTK=YesPlease',
+            args = ['prefix=' + str(target), 'NO_GETTEXT=YesPlease', 'NO_TCLTK=YesPlease', 'NO_RUST=YesPlease',
                     'USE_LIBPCRE2=YesPlease', 'LIBPCREDIR=' + str(keg('pcre2')),
                     'CURLDIR=' + str(keg('curl')), 'CURL_CONFIG=' + str(keg('curl') / 'bin/curl-config'), 'EXPATDIR=' + str(keg('expat')), 'ZLIB_PATH=' + str(keg('zlib')),
                     'NO_INSTALL_HARDLINKS=YesPlease']
@@ -232,11 +232,45 @@ def build(name, cmake):
                 'deployment_target': '12.0', 'tested_os': platform.mac_ver()[0], 'host_arch': platform.machine(),
                 'audited_macho_files': checked, 'monterey_runtime_tested': False}
     bottle.with_suffix('.json').write_text(json.dumps(evidence, indent=2) + '\n')
+    return registry_record(name, digest, bottle.name)
+
+
+def registry_record(name, digest, filename):
+    recipe = RECIPES[name]
     return {'token': name, 'name': name, 'kind': 'formula', 'homepage': recipe['homepage'],
             'desc': recipe['description'], 'dependencies': recipe['dependencies'],
             'upstream': {'type': 'homebrew_bottle', 'verified': True}, 'verification': {'sha256': 'required'},
             'resolved': {'version': recipe['version'], 'assets': {'macos-x86_64': {
-                'url': 'https://example.invalid/monterey/' + bottle.name, 'sha256': digest, 'minimum_macos_major': 12}}}}
+                'url': 'https://example.invalid/monterey/' + filename, 'sha256': digest, 'minimum_macos_major': 12}}}}
+
+
+def resume_bottle(name, run_id):
+    """Reuse audited artifacts from an explicitly selected prior pilot run."""
+    recipe = RECIPES[name]
+    bottle = DIST / f'{name}-{recipe["version"]}.monterey.bottle.tar.gz'
+    evidence_path = bottle.with_suffix('.json')
+    if not bottle.exists() or not evidence_path.exists():
+        return None
+    evidence = json.loads(evidence_path.read_text())
+    if any(evidence.get(key) != value for key, value in recipe.items()):
+        raise ValueError('Resume recipe differs: ' + name)
+    if evidence.get('deployment_target') != '12.0' or evidence.get('host_arch') != 'x86_64':
+        raise ValueError('Resume target differs: ' + name)
+    digest = hashlib.sha256(bottle.read_bytes()).hexdigest()
+    if digest != evidence.get('bottle_sha256'):
+        raise ValueError('Resume checksum differs: ' + name)
+    if keg(name).exists():
+        raise ValueError('Refusing to overwrite existing keg: ' + name)
+    with tarfile.open(bottle) as archive:
+        root = f'{name}/{recipe["version"]}/'
+        if any(not member.name.startswith(root) for member in archive.getmembers()):
+            raise ValueError('Resume archive has unexpected paths: ' + name)
+        archive.extractall(PREFIX / 'Cellar', filter='data')
+    if audit(keg(name)) != evidence.get('audited_macho_files'):
+        raise ValueError('Resume payload audit differs: ' + name)
+    evidence['reused_from_run'] = run_id
+    evidence_path.write_text(json.dumps(evidence, indent=2) + '\n')
+    return registry_record(name, digest, bottle.name)
 
 
 def smoke():
@@ -272,6 +306,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cmake', default=shutil.which('cmake'))
     parser.add_argument('--verify-install', action='store_true')
+    parser.add_argument('--resume-run', type=int, help='Prior pilot Actions run supplying audited artifacts')
     args = parser.parse_args()
     if platform.system() != 'Darwin' or platform.machine() != 'x86_64' or os.environ.get('GITHUB_ACTIONS') != 'true':
         raise SystemExit('This writes test kegs and requires a disposable GitHub Actions Intel macOS runner')
@@ -296,7 +331,8 @@ def main():
             failures[name] = 'Blocked by: ' + ', '.join(failed_deps)
             continue
         try:
-            records.append(build(name, str(Path(args.cmake).resolve())))
+            record = resume_bottle(name, args.resume_run) if args.resume_run else None
+            records.append(record or build(name, str(Path(args.cmake).resolve())))
             print(f'::notice::{name}: built and deployment target audited', flush=True)
         except Exception as exc:
             failures[name] = str(exc)

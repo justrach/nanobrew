@@ -21,7 +21,7 @@ channel cleanup, with timeouts that fail the build if the SSH test stalls.
 
 These are CLI-focused pilot builds, not feature-equivalent Homebrew bottles:
 
-- Git omits gettext translations and Tcl/Tk GUIs.
+- Git uses its supported C-only build and omits gettext translations and Tcl/Tk GUIs.
 - curl uses OpenSSL, zlib and libssh2. It omits LDAP, libpsl, Brotli, Zstandard,
   libidn2 and HTTP/2/3 libraries. TLS uses `/etc/ssl/cert.pem`.
 - OpenLDAP builds client libraries/tools, not slapd or Cyrus SASL integration.
@@ -49,6 +49,13 @@ Push the `codex/monterey-intel-git` branch or dispatch the
 and uploads Actions artifacts only. There is no publish or deploy job.
 The builder writes and removes only the new test kegs on a disposable Intel
 GitHub Actions runner, and refuses to overwrite existing kegs.
+
+For an iterative pilot run, workflow dispatch can accept a prior `reuse_run`.
+Use only a reviewed pilot run with unchanged build settings for reused packages.
+The builder checks recipe metadata and bottle digests, then repeats the native
+Mach-O audit before reusing those bottles. The original upstream test evidence
+and source artifacts remain included; the final Nanobrew install tests run again.
+Leave this input empty when changing compiler flags, build recipes or audits.
 
 Before promotion: test on actual Monterey, assess omitted features, scan the
 binaries, publish immutable blobs, and update the registry only with evidence.

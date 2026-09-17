@@ -1,10 +1,16 @@
 name: Monterey Intel Git bottle pilot
 on:
   workflow_dispatch:
+    inputs:
+      reuse_run:
+        description: 'Optional prior pilot run with verified bottles; leave empty for a full rebuild'
+        type: string
+        default: ''
   push:
     branches: [codex/monterey-intel-git]
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: monterey-git-${{ github.ref }}
   cancel-in-progress: true
@@ -49,8 +55,24 @@ jobs:
           PYCODE
           sudo ./zig-out/bin/nb init
           sudo chown -R "$(id -un)" /opt/nanobrew
+      - uses: actions/download-artifact@v4
+        if: github.event_name == 'workflow_dispatch' && inputs.reuse_run != ''
+        with:
+          name: monterey-intel-git-pilot
+          run-id: ${{ inputs.reuse_run }}
+          github-token: ${{ github.token }}
+          path: previous-pilot
       - name: Build complete pinned stack and audit macOS deployment targets
-        run: python3 scripts/bottles/build_monterey_git.py
+        env:
+          REUSE_RUN: ${{ inputs.reuse_run }}
+        run: |
+          if [ -n "$REUSE_RUN" ]; then
+            mkdir -p dist/monterey
+            cp -R previous-pilot/dist/monterey/. dist/monterey/
+            python3 scripts/bottles/build_monterey_git.py --resume-run "$REUSE_RUN"
+          else
+            python3 scripts/bottles/build_monterey_git.py
+          fi
       - name: Install exact bottles through Nanobrew and exercise Git HTTPS
         env:
           NANOBREW_UPSTREAM_REGISTRY_CACHE: ${{ github.workspace }}/dist/monterey/registry.json

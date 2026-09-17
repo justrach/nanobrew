@@ -1,10 +1,29 @@
 import unittest
 import hashlib
+import json
+import tempfile
 from pathlib import Path
+from unittest.mock import patch
+import build_monterey_git as builder
 from build_monterey_git import order, ROOTS, RECIPES, deployment_targets
 
 
 class RecipeTests(unittest.TestCase):
+    def test_resume_rejects_changed_recipe_or_bottle_before_extraction(self):
+        with tempfile.TemporaryDirectory() as td, patch.object(builder, 'DIST', Path(td)):
+            recipe = RECIPES['expat']
+            bottle = Path(td) / f'expat-{recipe["version"]}.monterey.bottle.tar.gz'
+            bottle.write_bytes(b'corrupt bottle')
+            evidence = {**recipe, 'deployment_target': '12.0', 'host_arch': 'x86_64',
+                        'bottle_sha256': '0' * 64}
+            bottle.with_suffix('.json').write_text(json.dumps(evidence))
+            with self.assertRaisesRegex(ValueError, 'checksum differs'):
+                builder.resume_bottle('expat', 123)
+            evidence['version'] = 'wrong'
+            bottle.with_suffix('.json').write_text(json.dumps(evidence))
+            with self.assertRaisesRegex(ValueError, 'recipe differs'):
+                builder.resume_bottle('expat', 123)
+
     def test_deployment_audit_ignores_linker_sdk_and_source_versions(self):
         modern = "cmd LC_BUILD_VERSION\n minos 12.0\n sdk 15.5\n ntools 1\n tool LD\n version 1167.5\ncmd LC_SOURCE_VERSION\n version 0.0\n"
         self.assertEqual(deployment_targets(modern), ['12.0'])
