@@ -61,9 +61,11 @@ def run(args, cwd, env):
 
 
 def environment(name):
+    import pwd
+    user = pwd.getpwuid(os.getuid()).pw_name
     deps = order(RECIPES[name]['dependencies'])
     env = {k: os.environ[k] for k in ('HOME', 'TMPDIR') if k in os.environ}
-    env.update(PATH='/usr/bin:/bin:/usr/sbin:/sbin', CC='/usr/bin/clang', CXX='/usr/bin/clang++',
+    env.update(USER=user, LOGNAME=user, PATH='/usr/bin:/bin:/usr/sbin:/sbin', CC='/usr/bin/clang', CXX='/usr/bin/clang++',
                CFLAGS='-O2 -arch x86_64 -mmacosx-version-min=12.0',
                CXXFLAGS='-O2 -arch x86_64 -mmacosx-version-min=12.0',
                MACOSX_DEPLOYMENT_TARGET='12.0', VERBOSE='1',
@@ -197,10 +199,12 @@ def build(name, cmake):
                          '--without-nghttp2', '--without-nghttp3', '--without-ngtcp2', '--disable-ldap'],
             }[name]
             call('./configure', '--prefix=' + str(target), *flags)
-            call('make', '-j4')
+            # Keep standard roff .so includes; macOS no longer ships soelim.
+            make_args = ['SOELIM=cat'] if name == 'openldap' else []
+            call('make', '-j4', *make_args)
             if name == 'zlib':
                 call('make', 'test')
-            call('make', 'install')
+            call('make', 'install', *make_args)
         license_dir = target / 'share/licenses' / name
         for path in src.rglob('*'):
             if path.is_file() and path.name.upper().startswith(('LICENSE', 'COPYING', 'COPYRIGHT')):
