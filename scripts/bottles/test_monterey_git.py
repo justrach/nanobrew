@@ -1,4 +1,6 @@
 import unittest
+import hashlib
+from pathlib import Path
 from build_monterey_git import order, ROOTS, RECIPES, deployment_targets
 
 
@@ -22,9 +24,15 @@ class RecipeTests(unittest.TestCase):
         self.assertEqual([p['url'].rsplit('-', 1)[1] for p in recipe['patches']],
                          [f'{i:03}' for i in range(1, 7)])
 
+    def test_local_patches_match_recipe_digests(self):
+        for recipe in RECIPES.values():
+            for patch in recipe.get('local_patches', []):
+                data = (Path(__file__).parent / patch['file']).read_bytes()
+                self.assertEqual(hashlib.sha256(data).hexdigest(), patch['sha256'])
+
     def test_sources_and_patches_have_digest_pins(self):
         for recipe in RECIPES.values():
-            for source in [recipe, *recipe.get('patches', [])]:
+            for source in [recipe, *recipe.get('patches', []), *recipe.get('test_files', [])]:
                 self.assertRegex(source['sha256'], r'^[a-f0-9]{64}$')
                 self.assertTrue(source['url'].startswith('https://'))
 

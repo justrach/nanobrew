@@ -33,13 +33,20 @@ jobs:
           restore-keys: monterey-zig-0.16-
       - name: Build client and check compatibility regressions
         run: |
-          zig build -Doptimize=ReleaseFast
+          zig build -Dtarget=x86_64-macos.12.0 -Doptimize=ReleaseFast
           zig build test-api test-tap test-upstream-registry test-upstream-github
           zig test src/test_monterey_bottles.zig -lc
           python3 scripts/bottles/test_monterey_git.py
       - name: Prepare disposable prefix
         run: |
           test "$(uname -m)" = x86_64
+          python3 - <<'PYCODE'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts/bottles')
+          from build_monterey_git import audit
+          audit(Path('zig-out/bin'))
+          PYCODE
           sudo ./zig-out/bin/nb init
           sudo chown -R "$(id -un)" /opt/nanobrew
       - name: Build complete pinned stack and audit macOS deployment targets

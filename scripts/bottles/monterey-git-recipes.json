@@ -15,7 +15,14 @@
     "license": "MIT",
     "homepage": "https://github.com/json-c/json-c/wiki",
     "description": "JSON parser for C",
-    "dependencies": []
+    "dependencies": [],
+    "local_patches": [
+      {
+        "file": "patches/json-c-portable-printf.patch",
+        "sha256": "3e045a22d2b97e410e1f410794fa5b7d74ff8081c0d1365b5ccadccef5153bd8",
+        "strip": 1
+      }
+    ]
   },
   "readline": {
     "version": "8.3.6",
@@ -71,6 +78,16 @@
     "dependencies": [
       "readline",
       "zlib"
+    ],
+    "test_files": [
+      {
+        "url": "https://raw.githubusercontent.com/GNOME/libxml2/v2.15.4/run_and_diff.cmake",
+        "sha256": "f40cdbab613908006a554f586c96042663e85f762a07b702cc615339e80b20a3"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/GNOME/libxml2/v2.15.4/test_xmlcatalog_add_del.cmake",
+        "sha256": "1339088a9235f15d9feb52453d6dcd18f726336c910d4ec8d80bae5824d680c7"
+      }
     ]
   },
   "libssh2": {

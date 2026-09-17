@@ -10,7 +10,12 @@ A successful run does not replace a runtime test on macOS 12.7.6 / Xcode 14.2.
 
 Git, expat, json-c, readline, pcre2, libxml2, libssh2, openldap, curl, zlib and
 OpenSSL 3. `monterey-git-recipes.json` pins every source digest and the six
-patches that turn the readline 8.3 archive into 8.3.6.
+patches that turn the readline 8.3 archive into 8.3.6. OpenLDAP's Darwin
+configure patch is pinned too. JSON-C's test input uses portable printf instead
+of echo -n, with unchanged assertions. Two libxml2 test helpers missing from its
+release archive are restored from its matching upstream tag with digest pins.
+libssh2 runs standalone and local-sshd tests; its Docker integration tests need
+a Docker host and are disabled on the macOS runner.
 
 These are CLI-focused pilot builds, not feature-equivalent Homebrew bottles:
 

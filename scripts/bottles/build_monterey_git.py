@@ -66,7 +66,7 @@ def environment(name):
     env.update(PATH='/usr/bin:/bin:/usr/sbin:/sbin', CC='/usr/bin/clang', CXX='/usr/bin/clang++',
                CFLAGS='-O2 -arch x86_64 -mmacosx-version-min=12.0',
                CXXFLAGS='-O2 -arch x86_64 -mmacosx-version-min=12.0',
-               MACOSX_DEPLOYMENT_TARGET='12.0',
+               MACOSX_DEPLOYMENT_TARGET='12.0', VERBOSE='1',
                CPPFLAGS=' '.join('-I' + str(keg(d) / 'include') for d in deps),
                LDFLAGS='-arch x86_64 -mmacosx-version-min=12.0 ' + ' '.join('-L' + str(keg(d) / 'lib') for d in deps),
                PKG_CONFIG_LIBDIR=':'.join(str(keg(d) / 'lib/pkgconfig') for d in deps))
@@ -136,9 +136,23 @@ def build(name, cmake):
         def call(*args):
             commands.append(list(map(str, args)))
             run(args, src, env)
-        for patch in recipe.get('patches', []):
-            path = DIST / patch['url'].rsplit('/', 1)[-1]
-            path.write_bytes(download(patch['url'], patch['sha256']))
+        # The libxml2 release tarball omits helpers present in its matching tag.
+        # Restore checksum-pinned upstream test code instead of skipping tests.
+        for helper in recipe.get('test_files', []):
+            path = DIST / helper['url'].rsplit('/', 1)[-1]
+            path.write_bytes(download(helper['url'], helper['sha256']))
+            shutil.copyfile(path, src / path.name)
+        for patch in [*recipe.get('patches', []), *recipe.get('local_patches', [])]:
+            if 'file' in patch:
+                local = Path(__file__).parent / patch['file']
+                patch_data = local.read_bytes()
+                if hashlib.sha256(patch_data).hexdigest() != patch['sha256']:
+                    raise ValueError('Local patch checksum mismatch')
+                path = DIST / local.name
+            else:
+                path = DIST / patch['url'].rsplit('/', 1)[-1]
+                patch_data = download(patch['url'], patch['sha256'])
+            path.write_bytes(patch_data)
             call('/usr/bin/patch', '-p' + str(patch.get('strip', 0)), '-i', path)
         if name in ('expat', 'json-c', 'pcre2', 'libxml2', 'libssh2'):
             opts = {
@@ -146,7 +160,7 @@ def build(name, cmake):
                 'json-c': ['-DBUILD_TESTING=ON'],
                 'pcre2': ['-DPCRE2_BUILD_PCRE2_16=ON', '-DPCRE2_BUILD_PCRE2_32=ON', '-DPCRE2_SUPPORT_JIT=ON', '-DPCRE2_SUPPORT_LIBREADLINE=OFF'],
                 'libxml2': ['-DLIBXML2_WITH_PYTHON=OFF', '-DLIBXML2_WITH_READLINE=ON', '-DLIBXML2_WITH_ZLIB=ON'],
-                'libssh2': ['-DCRYPTO_BACKEND=OpenSSL', '-DOPENSSL_ROOT_DIR=' + str(keg('openssl@3'))],
+                'libssh2': ['-DRUN_DOCKER_TESTS=OFF', '-DRUN_SSHD_TESTS=ON', '-DCRYPTO_BACKEND=OpenSSL', '-DOPENSSL_ROOT_DIR=' + str(keg('openssl@3'))],
             }[name]
             call(cmake, '-S', '.', '-B', 'build', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_SHARED_LIBS=ON',
                  '-DCMAKE_INSTALL_PREFIX=' + str(target), '-DCMAKE_OSX_ARCHITECTURES=x86_64',

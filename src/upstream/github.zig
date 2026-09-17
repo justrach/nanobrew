@@ -138,8 +138,8 @@ fn fetchBottleFormulaFromRecord(alloc: std.mem.Allocator, record: *const registr
     if (comptime builtin.os.tag == .macos) {
         // Older hosts must not receive legacy pins whose OS requirement was
         // discarded when converting Homebrew's tag to a platform-only asset.
-        const major = @import("../api/formula.zig").runningMacosMajor() orelse return error.UnsupportedPlatform;
-        if (!bottlePinCompatible(asset.minimum_macos_major, major)) return error.UnsupportedPlatform;
+        const major = @import("../api/formula.zig").runningMacosMajor() orelse return if (recordIsRevoked(record)) error.RevokedPin else error.UnsupportedPlatform;
+        if (!bottlePinCompatible(asset.minimum_macos_major, major)) return if (recordIsRevoked(record)) error.RevokedPin else error.UnsupportedPlatform;
     }
     var formula = try formulaFromBottleResolvedFields(alloc, record, resolved.version, resolved.revision, resolved.rebuild, asset.url, asset.sha256);
     formula.revoked_fallback = recordIsRevoked(record);
