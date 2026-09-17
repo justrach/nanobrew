@@ -24,6 +24,11 @@ class RegistryTests(unittest.TestCase):
         self.assertEqual(assets["macos-arm64"], before["records"][1]["resolved"]["assets"]["macos-arm64"])
         self.assertEqual(assets["macos-x86_64"], {"url": "new", "sha256": "a" * 64})
 
+    def test_explicit_source_deployment_target_survives_promotion(self):
+        result = prepare_registry(self.registry, {**self.evidence, "deployment_target": "12.0"}, "new")
+        intel = result["records"][1]["resolved"]["assets"]["macos-x86_64"]
+        self.assertEqual(intel["minimum_macos_major"], 12)
+
     def test_rejects_mismatched_version_or_revision(self):
         for field, value in [("version", "1.3.3"), ("revision", 1)]:
             registry = copy.deepcopy(self.registry)

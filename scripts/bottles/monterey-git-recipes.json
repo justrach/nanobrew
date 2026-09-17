@@ -94,6 +94,13 @@
     "description": "Open source suite of directory software",
     "dependencies": [
       "openssl@3"
+    ],
+    "patches": [
+      {
+        "url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/1cf441a09f572566b1b7c4695a4d169d1177248a/Patches/libtool/configure-big_sur.diff",
+        "sha256": "35acd6aebc19843f1a2b3a63e880baceb0f5278ab1ace661e57a502d9d78c93c",
+        "strip": 1
+      }
     ]
   },
   "curl": {

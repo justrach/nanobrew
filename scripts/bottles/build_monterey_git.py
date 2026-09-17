@@ -125,13 +125,13 @@ def build(name, cmake):
         for patch in recipe.get('patches', []):
             path = DIST / patch['url'].rsplit('/', 1)[-1]
             path.write_bytes(download(patch['url'], patch['sha256']))
-            call('/usr/bin/patch', '-p0', '-i', path)
+            call('/usr/bin/patch', '-p' + str(patch.get('strip', 0)), '-i', path)
         if name in ('expat', 'json-c', 'pcre2', 'libxml2', 'libssh2'):
             opts = {
                 'expat': ['-DEXPAT_BUILD_TESTS=ON', '-DEXPAT_BUILD_EXAMPLES=OFF'],
                 'json-c': ['-DBUILD_TESTING=ON'],
                 'pcre2': ['-DPCRE2_BUILD_PCRE2_16=ON', '-DPCRE2_BUILD_PCRE2_32=ON', '-DPCRE2_SUPPORT_JIT=ON'],
-                'libxml2': ['-DLIBXML2_WITH_PYTHON=OFF', '-DLIBXML2_WITH_LZMA=OFF'],
+                'libxml2': ['-DLIBXML2_WITH_PYTHON=OFF', '-DLIBXML2_WITH_READLINE=ON', '-DLIBXML2_WITH_ZLIB=ON'],
                 'libssh2': ['-DCRYPTO_BACKEND=OpenSSL', '-DOPENSSL_ROOT_DIR=' + str(keg('openssl@3'))],
             }[name]
             call(cmake, '-S', '.', '-B', 'build', '-DCMAKE_BUILD_TYPE=Release', '-DBUILD_SHARED_LIBS=ON',
@@ -152,7 +152,7 @@ def build(name, cmake):
         elif name == 'git':
             args = ['prefix=' + str(target), 'NO_GETTEXT=YesPlease', 'NO_TCLTK=YesPlease',
                     'USE_LIBPCRE2=YesPlease', 'LIBPCREDIR=' + str(keg('pcre2')),
-                    'CURLDIR=' + str(keg('curl')), 'EXPATDIR=' + str(keg('expat')), 'ZLIB_PATH=' + str(keg('zlib')),
+                    'CURLDIR=' + str(keg('curl')), 'CURL_CONFIG=' + str(keg('curl') / 'bin/curl-config'), 'EXPATDIR=' + str(keg('expat')), 'ZLIB_PATH=' + str(keg('zlib')),
                     'NO_INSTALL_HARDLINKS=YesPlease']
             call('make', '-j4', *args)
             call('make', 'install', *args)
