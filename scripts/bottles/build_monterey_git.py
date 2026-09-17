@@ -173,7 +173,8 @@ def build(name, cmake):
                  '-DCMAKE_IGNORE_PREFIX_PATH=/usr/local;/opt/homebrew', *opts)
             call(cmake, '--build', 'build', '--parallel', '4')
             ctest = str(Path(cmake).with_name('ctest'))
-            call(ctest, '--test-dir', 'build', '--output-on-failure', '--parallel', '4')
+            test_opts = ['--verbose', '--timeout', '180'] if name == 'libssh2' else []
+            call(ctest, '--test-dir', 'build', '--output-on-failure', '--parallel', '4', *test_opts)
             call(cmake, '--install', 'build')
         elif name == 'openssl@3':
             call('/usr/bin/perl', './Configure', 'darwin64-x86_64-cc', 'shared', '--prefix=' + str(target),

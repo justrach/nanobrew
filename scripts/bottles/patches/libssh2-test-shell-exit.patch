@@ -1,0 +1,24 @@
+--- a/tests/test_ssh2.c
++++ b/tests/test_ssh2.c
+@@ -141,6 +141,7 @@
+     }
+ 
+     libssh2_session_set_blocking(session, 1);
++    libssh2_session_set_timeout(session, 30000);
+ 
+     {
+         int retries = 0, retry = 0;
+@@ -240,6 +241,13 @@
+         goto shutdown;
+     }
+ 
++    /* Finish the interactive shell before freeing its blocking channel. */
++    if(libssh2_channel_write(channel, "exit\n", 5) != 5 ||
++       libssh2_channel_send_eof(channel)) {
++        fprintf(stderr, "Unable to finish shell session\n");
++        goto shutdown;
++    }
++
+     rc = 0;
+ 
+ skip_shell:

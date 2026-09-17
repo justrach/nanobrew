@@ -16,6 +16,8 @@ of echo -n, with unchanged assertions. Two libxml2 test helpers missing from its
 release archive are restored from its matching upstream tag with digest pins.
 libssh2 runs standalone and local-sshd tests; its Docker integration tests need
 a Docker host and are disabled on the macOS runner.
+Its interactive-shell test explicitly exits the remote shell before blocking
+channel cleanup, with timeouts that fail the build if the SSH test stalls.
 
 These are CLI-focused pilot builds, not feature-equivalent Homebrew bottles:
 

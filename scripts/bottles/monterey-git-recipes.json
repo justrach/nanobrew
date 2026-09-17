@@ -100,6 +100,13 @@
     "dependencies": [
       "openssl@3",
       "zlib"
+    ],
+    "local_patches": [
+      {
+        "file": "patches/libssh2-test-shell-exit.patch",
+        "sha256": "8a7434234d95f707af532d4cf7068a0b81e71d13bb89327134a0838c24ed2e1d",
+        "strip": 1
+      }
     ]
   },
   "openldap": {
