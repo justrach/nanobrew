@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Build a checksum-pinned Intel Git stack on a disposable native macOS runner.
 
-No publishing. Produces bottles, matching source, an opt-in registry and
-build/install evidence. macOS 12 is a deployment target, not a runtime test.
+Publishing is a separate opt-in workflow job (publish_monterey_git.py).
+Produces bottles, matching source, an opt-in registry and build/install
+evidence. macOS 12 is a deployment target, not a runtime test.
 """
 import argparse
 import gzip

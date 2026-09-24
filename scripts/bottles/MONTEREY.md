@@ -46,7 +46,8 @@ Sources, patches and license notices accompany the artifact for inspection.
 
 Push the `codex/monterey-intel-git` branch or dispatch the
 `Monterey Intel Git bottle pilot` workflow. It has read-only repository access
-and uploads Actions artifacts only. There is no publish or deploy job.
+and uploads Actions artifacts only. Publishing is opt-in via the `publish`
+dispatch input (below); there is no automatic publish or deploy job.
 The builder writes and removes only the new test kegs on a disposable Intel
 GitHub Actions runner, and refuses to overwrite existing kegs.
 
@@ -59,3 +60,19 @@ Leave this input empty when changing compiler flags, build recipes or audits.
 
 Before promotion: test on actual Monterey, assess omitted features, scan the
 binaries, publish immutable blobs, and update the registry only with evidence.
+
+## Publishing
+
+Dispatch the workflow with `publish: true` to run the opt-in publish job after
+the Intel build. The scan gate (generic syft SBOM + grype `--fail-on high`, no
+recipe CPE annotation) runs per bottle on the runner, then the publish job on
+ubuntu-latest validates every bottle against its build evidence and recipe
+digests, pushes each blob under `nb-bottles/<pkg>` tagged
+`<version>-monterey-<run>-<attempt>`, verifies it with an anonymous pull, and
+writes `dist/monterey/registry-monterey.json` with the real GHCR URLs plus
+`SHA256SUMS`. A prerelease `monterey-git-<run>-<attempt>` hosts the bottles,
+evidence, SBOMs, scan reports, rewritten registry and notes.
+
+Promotion to the default catalog is a follow-up PR that copies the
+`macos-x86_64` assets from `registry-monterey.json` into both
+`registry_default.json` and `registry/upstream.json`.

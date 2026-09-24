@@ -4,6 +4,9 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+### Added
+- Opt-in Monterey Intel Git publish job: dispatch-gated syft/grype scan gate, immutable GHCR bottles with anonymous pull verification, a rewritten `registry-monterey.json`, and a prerelease. (#388)
+
 ## [0.1.212] - 2026-09-17
 
 ### Added
