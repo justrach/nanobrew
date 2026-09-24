@@ -32,6 +32,14 @@ sudo chown -R "$(whoami)" /opt/nanobrew
 echo "    Installing nb binary..."
 cp zig-out/bin/nb "$NANOBREW_BIN/nb"
 
+# Initialize (creates /opt/nb and /opt/homebrew symlinks, chowns back to the user)
+echo "    Initializing /opt/nanobrew (sudo nb init)..."
+if [ "$(id -u)" -eq 0 ]; then
+    "$NANOBREW_BIN/nb" init
+else
+    sudo "$NANOBREW_BIN/nb" init
+fi
+
 # Detect shell config file
 if [ "$(uname -s)" = "Linux" ]; then
     SHELL_RC="$HOME/.bashrc"

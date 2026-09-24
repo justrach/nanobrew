@@ -335,7 +335,7 @@ fn relocateFile(alloc: std.mem.Allocator, io: std.Io, path: []const u8) void {
     if (needs_patchelf) {
         ensurePatchelf(alloc, io) catch {
             ({
-                const _tmp = std.fmt.allocPrint(std.heap.smp_allocator, "nb: {s}: patchelf unavailable and /opt/nb not creatable — run `sudo nb init` and reinstall\n", .{path}) catch "";
+                const _tmp = std.fmt.allocPrint(std.heap.smp_allocator, "nb: {s}: patchelf unavailable and /opt/nb not creatable — run `sudo $(command -v nb) init` and reinstall\n", .{path}) catch "";
                 defer std.heap.smp_allocator.free(_tmp);
                 std.Io.File.stderr().writeStreamingAll(io, _tmp) catch {};
             });
@@ -354,7 +354,6 @@ fn relocateFile(alloc: std.mem.Allocator, io: std.Io, path: []const u8) void {
 /// platform/short_prefix.zig, shared with the Mach-O relocator. The
 /// '/'-padding strategy is POSIX-valid for C-string consumers (ld.so,
 /// dlopen, execve, dyld) and length-delimited ones (perl @INC sizes).
-
 /// Find PT_INTERP in a 64-bit little-endian ELF and, when the interpreter
 /// points into the nanobrew tree but the file doesn't exist, overwrite it
 /// in place with the system loader for the binary's architecture. Returns

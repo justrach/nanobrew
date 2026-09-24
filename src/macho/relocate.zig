@@ -409,7 +409,7 @@ var warned_no_short_prefix = std.atomic.Value(bool).init(false);
 
 fn warnNoShortPrefix(io: std.Io) void {
     if (warned_no_short_prefix.swap(true, .acq_rel)) return; // already warned this process
-    const msg = "nb: note: /opt/nb short-prefix symlink unavailable — Mach-O .rodata not relocated; run `sudo nb init` and reinstall affected packages\n";
+    const msg = "nb: note: /opt/nb short-prefix symlink unavailable — Mach-O .rodata not relocated; run `sudo $(command -v nb) init` and reinstall affected packages\n";
     std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
 }
 
@@ -919,8 +919,7 @@ test "byte-pass - whole-file pass mirrors relocateFile (placeholder + literal)" 
     // A tiny stand-in for a Mach-O file body: a placeholder dylib id plus a
     // literal /opt/homebrew/ .rodata default. relocateFile rewrites both in
     // one pass without shifting any byte offset.
-    var buf = ("LC_ID:@@HOMEBREW_CELLAR@@/openssl@3/3.6.2/lib/libssl.3.dylib"
-        ++ "|OPENSSLDIR=\"/opt/homebrew/etc/openssl@3\"\x00").*;
+    var buf = ("LC_ID:@@HOMEBREW_CELLAR@@/openssl@3/3.6.2/lib/libssl.3.dylib" ++ "|OPENSSLDIR=\"/opt/homebrew/etc/openssl@3\"\x00").*;
     const before_len = buf.len;
     short.rewriteAllInPlace(&buf, "@@HOMEBREW_REPOSITORY@@", "/opt/nanobrew");
     short.rewriteAllInPlace(&buf, "@@HOMEBREW_CELLAR@@", "/opt/nb/Cellar");
