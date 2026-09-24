@@ -6,6 +6,7 @@ All notable changes to nanobrew are documented here.
 
 ### Fixed
 - Create the `/opt/nb` and `/opt/homebrew` symlinks during installation by running `nb init` from both installers, and print the absolute nb path in `sudo … init` hints so they work under sudo's secure_path. (#399)
+- `nb doctor` now checks (and creates when possible) the `/opt/nb` short-prefix symlink; `nb install` warns before downloading when it is unavailable. (#399)
 
 ## [0.1.212] - 2026-09-17
 

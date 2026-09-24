@@ -36,6 +36,38 @@ comptime {
     }
 }
 
+pub const ShortPrefixStatus = enum { ok, missing, wrong_target, not_symlink };
+
+pub const ShortPrefixCheck = struct {
+    status: ShortPrefixStatus,
+    /// Length of the link's current target in `target_buf` (valid for .ok and .wrong_target).
+    target_len: usize = 0,
+};
+
+/// Read-only classification of the short-prefix link at `link_path` against
+/// `expected_target`. On .ok/.wrong_target the link's target is left in
+/// `target_buf` (length in the returned struct's `target_len`).
+pub fn statusAt(io: std.Io, link_path: []const u8, expected_target: []const u8, target_buf: *[std.fs.max_path_bytes]u8) ShortPrefixCheck {
+    if (std.Io.Dir.readLinkAbsolute(io, link_path, target_buf)) |n| {
+        return .{
+            .status = if (std.mem.eql(u8, target_buf[0..n], expected_target)) .ok else .wrong_target,
+            .target_len = n,
+        };
+    } else |_| {}
+
+    // Exists but isn't a symlink (a real dir/file someone put there).
+    if (std.Io.Dir.accessAbsolute(io, link_path, .{})) |_| {
+        return .{ .status = .not_symlink };
+    } else |_| {}
+
+    return .{ .status = .missing };
+}
+
+/// Classify the /opt/nb link against the real prefix.
+pub fn status(io: std.Io, target_buf: *[std.fs.max_path_bytes]u8) ShortPrefixCheck {
+    return statusAt(io, SHORT_PREFIX, paths.PREFIX, target_buf);
+}
+
 /// Ensure /opt/nb → <PREFIX> exists. Memoized per process: one readlink/
 /// symlink attempt shared across install workers. Returns false when it
 /// can't be created (no permission on /opt and not already present) or
@@ -139,4 +171,46 @@ pub fn restoreMode(io: std.Io, path: []const u8, orig_mode: anytype) void {
     const f = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return;
     defer f.close(io);
     _ = std.c.fchmod(f.handle, @intCast(orig_mode));
+}
+
+const testing = std.testing;
+
+test "statusAt - classifies short-prefix link states" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var base_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base_n = tmp_dir.dir.realPathFile(testing.io, ".", &base_buf) catch unreachable;
+    const base = base_buf[0..base_n];
+
+    var link_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const link = std.fmt.bufPrint(&link_buf, "{s}/link", .{base}) catch unreachable;
+    var expected_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const expected = std.fmt.bufPrint(&expected_buf, "{s}/expected-prefix", .{base}) catch unreachable;
+    var other_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const other = std.fmt.bufPrint(&other_buf, "{s}/elsewhere", .{base}) catch unreachable;
+
+    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+
+    // Nothing at the path.
+    try testing.expectEqual(ShortPrefixStatus.missing, statusAt(testing.io, link, expected, &target_buf).status);
+
+    // Symlink to the expected target.
+    std.Io.Dir.symLinkAbsolute(testing.io, expected, link, .{}) catch unreachable;
+    var check = statusAt(testing.io, link, expected, &target_buf);
+    try testing.expectEqual(ShortPrefixStatus.ok, check.status);
+    try testing.expectEqualStrings(expected, target_buf[0..check.target_len]);
+
+    // Symlink to a different target.
+    std.Io.Dir.deleteFileAbsolute(testing.io, link) catch unreachable;
+    std.Io.Dir.symLinkAbsolute(testing.io, other, link, .{}) catch unreachable;
+    check = statusAt(testing.io, link, expected, &target_buf);
+    try testing.expectEqual(ShortPrefixStatus.wrong_target, check.status);
+    try testing.expectEqualStrings(other, target_buf[0..check.target_len]);
+
+    // A real directory where the link belongs.
+    std.Io.Dir.deleteFileAbsolute(testing.io, link) catch unreachable;
+    std.Io.Dir.createDirAbsolute(testing.io, link, .default_dir) catch unreachable;
+    check = statusAt(testing.io, link, expected, &target_buf);
+    try testing.expectEqual(ShortPrefixStatus.not_symlink, check.status);
 }
