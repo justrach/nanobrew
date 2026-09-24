@@ -1090,6 +1090,15 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         std.process.exit(1);
     }
 
+    // Warn before downloads when the /opt/nb short-prefix link can't be
+    // created — relocation would otherwise degrade or fail mid-install (#399).
+    if (comptime builtin.os.tag == .linux or builtin.os.tag == .macos) {
+        if (!platform.relocate.short.ensureShortPrefixLink(g_io)) {
+            var hint_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            stderr.print("nb: note: /opt/nb short-prefix symlink unavailable — native binary relocation may be incomplete; run `sudo {s} init` first (see nb doctor)\n", .{selfExeForHint(&hint_buf)}) catch {};
+        }
+    }
+
     stdout.print("==> Installing {d} package(s) ({d} already up to date):\n", .{ install_order.len, all_formulae.len - install_order.len }) catch {};
     for (install_order) |f| {
         var version_buf: [256]u8 = undefined;
@@ -4613,6 +4622,39 @@ fn runDoctor(alloc: std.mem.Allocator, args: []const []const u8) void {
         } else |_| {
             stdout.print("  ✗ Missing directory: {s}\n", .{dir}) catch {};
             issues += 1;
+        }
+    }
+
+    // 2b. Check the /opt/nb short-prefix symlink used by native binary
+    // relocation (without it, Mach-O/ELF rewriting degrades to fallbacks or
+    // fails the install as incomplete — #399).
+    if (comptime builtin.os.tag == .linux or builtin.os.tag == .macos) {
+        var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const sp = platform.relocate.short.status(g_io, &target_buf);
+        switch (sp.status) {
+            .ok => stdout.print("  ✓ {s} -> {s} (short-prefix symlink)\n", .{ platform.relocate.short.SHORT_PREFIX, PREFIX }) catch {},
+            .missing => {
+                if (platform.relocate.short.ensureShortPrefixLink(g_io)) {
+                    stdout.print("  ✓ Created {s} -> {s} short-prefix symlink\n", .{ platform.relocate.short.SHORT_PREFIX, PREFIX }) catch {};
+                } else {
+                    stdout.print("  ✗ {s} short-prefix symlink missing (binary relocation will be incomplete)\n", .{platform.relocate.short.SHORT_PREFIX}) catch {};
+                    var hint_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                    stdout.print("      fix: sudo {s} init\n", .{selfExeForHint(&hint_buf)}) catch {};
+                    issues += 1;
+                }
+            },
+            .wrong_target => {
+                stdout.print("  ✗ {s} points to {s}, expected {s} (relocation falls back to install_name_tool / patchelf)\n", .{ platform.relocate.short.SHORT_PREFIX, target_buf[0..sp.target_len], PREFIX }) catch {};
+                var hint_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                stdout.print("      fix: sudo rm {s} && sudo {s} init\n", .{ platform.relocate.short.SHORT_PREFIX, selfExeForHint(&hint_buf) }) catch {};
+                issues += 1;
+            },
+            .not_symlink => {
+                stdout.print("  ✗ {s} exists but is not a symlink (relocation falls back to install_name_tool / patchelf)\n", .{platform.relocate.short.SHORT_PREFIX}) catch {};
+                var hint_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                stdout.print("      fix: move it aside, then sudo {s} init\n", .{selfExeForHint(&hint_buf)}) catch {};
+                issues += 1;
+            },
         }
     }
 

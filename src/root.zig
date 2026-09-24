@@ -100,5 +100,6 @@ comptime {
     _ = linker;
     _ = @import("platform/copy.zig");
     _ = @import("platform/placeholder.zig");
+    _ = @import("platform/short_prefix.zig");
     _ = security_test;
 }
