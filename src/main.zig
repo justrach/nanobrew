@@ -382,7 +382,8 @@ fn runInit() void {
             error.AccessDenied => {
                 const stderr = StderrWriter{};
                 stderr.print("nb: permission denied creating {s}\n", .{dir}) catch {};
-                stderr.print("nb: try: sudo nb init\n", .{}) catch {};
+                var hint_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+                stderr.print("nb: try: sudo {s} init\n", .{selfExeForHint(&hint_buf)}) catch {};
                 std.process.exit(1);
             },
             else => {
@@ -575,7 +576,8 @@ fn runLocalRbInstall(alloc: std.mem.Allocator, path: []const u8) void {
         pf.close(g_io);
         std.Io.Dir.deleteFileAbsolute(g_io, ROOT ++ "/cache/.nb_write_test") catch {};
     } else {
-        stderr.print("nb: /opt/nanobrew is not writable. Run: sudo nb init\n", .{}) catch {};
+        var hint_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        stderr.print("nb: /opt/nanobrew is not writable. Run: sudo {s} init\n", .{selfExeForHint(&hint_buf)}) catch {};
         std.process.exit(1);
     }
 
@@ -1083,7 +1085,8 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         write_ok.?.close(g_io);
         std.Io.Dir.deleteFileAbsolute(g_io, ROOT ++ "/cache/.nb_write_test") catch {};
     } else {
-        stderr.print("nb: /opt/nanobrew is not writable. Run: sudo nb init\n", .{}) catch {};
+        var hint_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        stderr.print("nb: /opt/nanobrew is not writable. Run: sudo {s} init\n", .{selfExeForHint(&hint_buf)}) catch {};
         std.process.exit(1);
     }
 
@@ -1757,12 +1760,14 @@ fn fullInstallOne(
     // or breaks outright when they aren't (#355). Failing here also keeps
     // the keg out of the relocated-snapshot cache (#356).
     if (platform.relocate.short.incompleteCount() > 0) {
+        var hint_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+        const self_exe = selfExeForHint(&hint_buf);
         stderr.print(
-            "nb: {s}: {d} file(s) kept foreign runtime paths because the /opt/nb short-prefix symlink is unavailable; run `sudo nb init`, then reinstall\n",
-            .{ f.name, platform.relocate.short.incompleteCount() },
+            "nb: {s}: {d} file(s) kept foreign runtime paths because the /opt/nb short-prefix symlink is unavailable; run `sudo {s} init`, then reinstall\n",
+            .{ f.name, platform.relocate.short.incompleteCount(), self_exe },
         ) catch {};
         nb.cellar.remove(f.name, actual_ver) catch {};
-        fail_reason.* = "incomplete relocation (run `sudo nb init` and retry)";
+        fail_reason.* = std.fmt.allocPrint(std.heap.smp_allocator, "incomplete relocation (run `sudo {s} init` and retry)", .{self_exe}) catch "incomplete relocation (run `sudo nb init` and retry)";
         had_error.store(true, .release);
         phase.store(@intFromEnum(Phase.failed), .release);
         return;
@@ -3700,6 +3705,22 @@ fn runAutoUpdate(alloc: std.mem.Allocator, args: []const []const u8) void {
     }
 }
 
+// Absolute path of the running nb for `sudo … init` hints: sudo's
+// secure_path usually omits /opt/nanobrew/prefix/bin, so a bare `nb` in the
+// hint fails with "command not found" (#399). Falls back to "nb" on error.
+fn selfExeForHint(buf: *[std.Io.Dir.max_path_bytes]u8) []const u8 {
+    if (comptime builtin.os.tag == .macos) {
+        var exe_buf_size: u32 = @intCast(buf.len);
+        if (std.c._NSGetExecutablePath(@ptrCast(buf), &exe_buf_size) == 0) {
+            return std.mem.sliceTo(buf, 0);
+        }
+    } else {
+        const n_signed = std.c.readlink("/proc/self/exe", buf, buf.len);
+        if (n_signed >= 0) return buf[0..@as(usize, @intCast(n_signed))];
+    }
+    return "nb";
+}
+
 fn currentExecutablePath(alloc: std.mem.Allocator) ![]const u8 {
     var exe_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
     if (comptime builtin.os.tag == .macos) {
@@ -4474,7 +4495,7 @@ fn printUsage() void {
         \\  help                     Show this help
         \\
         \\EXAMPLES:
-        \\  sudo nb init
+        \\  sudo "$(command -v nb)" init
         \\  nb install ripgrep
         \\  nb install ffmpeg python node
         \\  nb install --cask firefox
@@ -5883,7 +5904,8 @@ fn runTelemetry(args: []const []const u8) void {
     if (std.mem.eql(u8, subcmd, "off") or std.mem.eql(u8, subcmd, "disable")) {
         nb.telemetry.setEnabled(false) catch |err| {
             stderr.print("nb: failed to disable telemetry: {}\n", .{err}) catch {};
-            stderr.print("nb: try `sudo nb init` if /opt/nanobrew is not writable\n", .{}) catch {};
+            var hint_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            stderr.print("nb: try `sudo {s} init` if /opt/nanobrew is not writable\n", .{selfExeForHint(&hint_buf)}) catch {};
             return;
         };
         stdout.print("==> Telemetry disabled\n", .{}) catch {};
@@ -5894,7 +5916,8 @@ fn runTelemetry(args: []const []const u8) void {
     if (std.mem.eql(u8, subcmd, "on") or std.mem.eql(u8, subcmd, "enable")) {
         nb.telemetry.setEnabled(true) catch |err| {
             stderr.print("nb: failed to enable telemetry: {}\n", .{err}) catch {};
-            stderr.print("nb: try `sudo nb init` if /opt/nanobrew is not writable\n", .{}) catch {};
+            var hint_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
+            stderr.print("nb: try `sudo {s} init` if /opt/nanobrew is not writable\n", .{selfExeForHint(&hint_buf)}) catch {};
             return;
         };
         stdout.print("==> Telemetry enabled\n", .{}) catch {};

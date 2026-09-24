@@ -124,6 +124,14 @@ cp "$NB_BIN" "$BIN_DIR/nb"
 chmod +x "$BIN_DIR/nb"
 echo "  Installed nb to $BIN_DIR/nb"
 
+# Initialize (creates /opt/nb and /opt/homebrew symlinks, chowns back to the user)
+echo "  Initializing /opt/nanobrew (sudo nb init)..."
+if [ "$(id -u)" -eq 0 ]; then
+    "$BIN_DIR/nb" init
+else
+    sudo "$BIN_DIR/nb" init
+fi
+
 # Add to PATH
 SHELL_RC="$HOME/.zshrc"
 if [ -n "${BASH_VERSION:-}" ] && [ -f "$HOME/.bashrc" ]; then
