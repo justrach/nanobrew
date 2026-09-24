@@ -319,7 +319,13 @@ def main():
             digest = record['resolved']['assets']['macos-x86_64']['sha256']
             if digest not in state:
                 raise ValueError('Installed digest missing: ' + record['token'])
+        try:
+            translated = subprocess.check_output(['/usr/sbin/sysctl', '-n', 'sysctl.proc_translated'],
+                                                 text=True, stderr=subprocess.DEVNULL).strip() == '1'
+        except (subprocess.CalledProcessError, OSError):
+            translated = False
         (DIST / 'installed-tests.json').write_text(json.dumps({'tested_os': platform.mac_ver()[0],
+             'host_arch': platform.machine(), 'rosetta_translated': translated,
              'packages': order(ROOTS), 'checks': ['exact installed digests', 'Mach-O target audit at build', 'CLI and library consumers', 'Git commit/grep/fsck', 'Git HTTPS ls-remote', 'curl HTTPS'],
              'monterey_runtime_tested': False}, indent=2) + '\n')
         return

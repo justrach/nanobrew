@@ -58,6 +58,11 @@ Mach-O audit before reusing those bottles. The original upstream test evidence
 and source artifacts remain included; the final Nanobrew install tests run again.
 Leave this input empty when changing compiler flags, build recipes or audits.
 
+A Rosetta smoke job runs the same exact-bottle install and consumer checks on
+an Apple Silicon macOS 15 runner via `arch -x86_64`. Its `installed-tests.json`
+carries `host_arch` and `rosetta_translated` markers; it exercises the client
+and payloads under translation but is not a Monterey runtime test.
+
 Before promotion: test on actual Monterey, assess omitted features, scan the
 binaries, publish immutable blobs, and update the registry only with evidence.
 

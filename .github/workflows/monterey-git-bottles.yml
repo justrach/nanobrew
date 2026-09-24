@@ -109,6 +109,54 @@ jobs:
         run: |
           echo 'Built for macOS 12, tested on Intel macOS 15. Monterey runtime validation remains required. Publication happens only when the publish dispatch input is set; the default registry is unchanged.' >> "$GITHUB_STEP_SUMMARY"
 
+  rosetta:
+    needs: intel
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      NANOBREW_NO_TELEMETRY: '1'
+      NANOBREW_DISABLE_UPSTREAM_REGISTRY_REMOTE: '1'
+      NANOBREW_DISABLE_UPSTREAM_FRESHNESS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: monterey-intel-git-pilot
+          path: .
+      - name: Confirm x86_64 client runs under Rosetta
+        run: |
+          chmod +x zig-out/bin/nb
+          test "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 0
+          arch -x86_64 sh -c 'test "$(sysctl -n sysctl.proc_translated)" = 1'
+          arch -x86_64 zig-out/bin/nb --version
+      - name: Install exact bottles through Nanobrew under Rosetta
+        env:
+          NANOBREW_UPSTREAM_REGISTRY_CACHE: ${{ github.workspace }}/dist/monterey/registry.json
+        run: |
+          sudo arch -x86_64 zig-out/bin/nb init
+          sudo chown -R "$(id -un)" /opt/nanobrew
+          python3 - <<'PYCODE'
+          import json, shutil
+          from pathlib import Path
+          for evidence in Path('dist/monterey').glob('*.monterey.bottle.tar.json'):
+              record = json.loads(evidence.read_text())
+              bottle = evidence.with_suffix('.gz')
+              shutil.copyfile(bottle, '/opt/nanobrew/cache/blobs/' + record['bottle_sha256'])
+          PYCODE
+          arch -x86_64 zig-out/bin/nb install expat json-c readline pcre2 libxml2 libssh2 openldap curl git
+          # System python3 is universal; arch -x86_64 makes it report x86_64 so
+          # the builder's Intel-runner guard and smoke run under translation.
+          arch -x86_64 /usr/bin/python3 scripts/bottles/build_monterey_git.py --verify-install
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: monterey-rosetta-smoke
+          path: dist/monterey/installed-tests.json
+          if-no-files-found: warn
+      - name: Report scope
+        run: |
+          echo 'Rosetta (x86_64 under Apple Silicon macOS 15) exact-bottle install + smoke passed; not a Monterey runtime test.' >> "$GITHUB_STEP_SUMMARY"
+
   publish:
     needs: intel
     if: github.event_name == 'workflow_dispatch' && inputs.publish && github.repository == 'justrach/nanobrew'
