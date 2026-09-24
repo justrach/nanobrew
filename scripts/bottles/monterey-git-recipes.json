@@ -1,0 +1,175 @@
+{
+  "expat": {
+    "version": "2.8.4",
+    "url": "https://github.com/libexpat/libexpat/releases/download/R_2_8_4/expat-2.8.4.tar.xz",
+    "sha256": "656ae1cc8da3b4ea513bb4e254f33e6243938084c0ec6239da873376b09985a7",
+    "license": "MIT",
+    "homepage": "https://libexpat.github.io/",
+    "description": "XML 1.0 parser",
+    "dependencies": []
+  },
+  "json-c": {
+    "version": "0.19",
+    "url": "https://s3.amazonaws.com/json-c_releases/releases/json-c-0.19.tar.gz",
+    "sha256": "37ad0249902e301bd9052bf712e511fcc6acff4ecaad4b5900aad9ce564e26de",
+    "license": "MIT",
+    "homepage": "https://github.com/json-c/json-c/wiki",
+    "description": "JSON parser for C",
+    "dependencies": [],
+    "local_patches": [
+      {
+        "file": "patches/json-c-portable-printf.patch",
+        "sha256": "3e045a22d2b97e410e1f410794fa5b7d74ff8081c0d1365b5ccadccef5153bd8",
+        "strip": 1
+      }
+    ]
+  },
+  "readline": {
+    "version": "8.3.6",
+    "url": "https://ftp.gnu.org/gnu/readline/readline-8.3.tar.gz",
+    "sha256": "fe5383204467828cd495ee8d1d3c037a7eba1389c22bc6a041f627976f9061cc",
+    "license": "GPL-3.0-or-later",
+    "homepage": "https://tiswww.case.edu/php/chet/readline/rltop.html",
+    "description": "Library for command-line editing",
+    "dependencies": [],
+    "patches": [
+      {
+        "url": "https://ftp.gnu.org/gnu/readline/readline-8.3-patches/readline83-001",
+        "sha256": "21f0a03106dbe697337cd25c70eb0edbaa2bdb6d595b45f83285cdd35bac84de"
+      },
+      {
+        "url": "https://ftp.gnu.org/gnu/readline/readline-8.3-patches/readline83-002",
+        "sha256": "e27364396ba9f6debf7cbaaf1a669e2b2854241ae07f7eca74ca8a8ba0c97472"
+      },
+      {
+        "url": "https://ftp.gnu.org/gnu/readline/readline-8.3-patches/readline83-003",
+        "sha256": "72dee13601ce38f6746eb15239999a7c56f8e1ff5eb1ec8153a1f213e4acdb29"
+      },
+      {
+        "url": "https://ftp.gnu.org/gnu/readline/readline-8.3-patches/readline83-004",
+        "sha256": "1f189c4566aa35950964647b9ec3be1a821e42b86048129c63eb7f9d4d2f5a74"
+      },
+      {
+        "url": "https://ftp.gnu.org/gnu/readline/readline-8.3-patches/readline83-005",
+        "sha256": "5481adbe161c9f6ba972c74db9e18c7aa351d3df3035cc4a673a1aa06247d1c6"
+      },
+      {
+        "url": "https://ftp.gnu.org/gnu/readline/readline-8.3-patches/readline83-006",
+        "sha256": "4ebd261a608287796e171af0ea9af5a1e3122e46672accda2484b6698c47c1a4"
+      }
+    ]
+  },
+  "pcre2": {
+    "version": "10.48",
+    "url": "https://github.com/PCRE2Project/pcre2/releases/download/pcre2-10.48/pcre2-10.48.tar.bz2",
+    "sha256": "b6c68fdf6f3ac31388b50aa89ff0fc49c00c987c16e7b5146491d12003f2c8ed",
+    "license": "BSD-3-Clause",
+    "homepage": "https://www.pcre.org/",
+    "description": "Perl compatible regular expressions library with a new API",
+    "dependencies": []
+  },
+  "libxml2": {
+    "version": "2.15.4",
+    "url": "https://download.gnome.org/sources/libxml2/2.15/libxml2-2.15.4.tar.xz",
+    "sha256": "98087fd181d9070724f3fbc65c7377db03038eb92bd882374daff44940138821",
+    "license": "MIT",
+    "homepage": "http://xmlsoft.org/",
+    "description": "GNOME XML library",
+    "dependencies": [
+      "readline",
+      "zlib"
+    ],
+    "test_files": [
+      {
+        "url": "https://raw.githubusercontent.com/GNOME/libxml2/v2.15.4/run_and_diff.cmake",
+        "sha256": "f40cdbab613908006a554f586c96042663e85f762a07b702cc615339e80b20a3"
+      },
+      {
+        "url": "https://raw.githubusercontent.com/GNOME/libxml2/v2.15.4/test_xmlcatalog_add_del.cmake",
+        "sha256": "1339088a9235f15d9feb52453d6dcd18f726336c910d4ec8d80bae5824d680c7"
+      }
+    ]
+  },
+  "libssh2": {
+    "version": "1.11.1",
+    "url": "https://libssh2.org/download/libssh2-1.11.1.tar.gz",
+    "sha256": "d9ec76cbe34db98eec3539fe2c899d26b0c837cb3eb466a56b0f109cabf658f7",
+    "license": "BSD-3-Clause",
+    "homepage": "https://libssh2.org/",
+    "description": "C library implementing the SSH2 protocol",
+    "dependencies": [
+      "openssl@3",
+      "zlib"
+    ],
+    "local_patches": [
+      {
+        "file": "patches/libssh2-test-shell-exit.patch",
+        "sha256": "8a7434234d95f707af532d4cf7068a0b81e71d13bb89327134a0838c24ed2e1d",
+        "strip": 1
+      }
+    ]
+  },
+  "openldap": {
+    "version": "2.7.1",
+    "url": "https://www.openldap.org/software/download/OpenLDAP/openldap-release/openldap-2.7.1.tgz",
+    "sha256": "253db80f301258ea69cda1184766d57395b836aaabf41157eb0316eb0fac1341",
+    "license": "OLDAP-2.8",
+    "homepage": "https://www.openldap.org/software/",
+    "description": "Open source suite of directory software",
+    "dependencies": [
+      "openssl@3"
+    ],
+    "patches": [
+      {
+        "url": "https://raw.githubusercontent.com/Homebrew/homebrew-core/1cf441a09f572566b1b7c4695a4d169d1177248a/Patches/libtool/configure-big_sur.diff",
+        "sha256": "35acd6aebc19843f1a2b3a63e880baceb0f5278ab1ace661e57a502d9d78c93c",
+        "strip": 1
+      }
+    ]
+  },
+  "curl": {
+    "version": "8.22.0",
+    "url": "https://curl.se/download/curl-8.22.0.tar.bz2",
+    "sha256": "5d956a6a22b3c279f50c421ee5d3c9e9d660cb6f115dcf881b579e952130549c",
+    "license": "curl",
+    "homepage": "https://curl.se",
+    "description": "Get a file from an HTTP, HTTPS or FTP server",
+    "dependencies": [
+      "openssl@3",
+      "zlib",
+      "libssh2"
+    ]
+  },
+  "git": {
+    "version": "2.55.0",
+    "url": "https://mirrors.edge.kernel.org/pub/software/scm/git/git-2.55.0.tar.xz",
+    "sha256": "457fdb04dc8728e007d4688695e6912e6f680727920f2a40bf11eacc17505357",
+    "license": "GPL-2.0-only AND GPL-2.0-or-later AND LGPL-2.1-or-later AND BSD-3-Clause AND MIT",
+    "homepage": "https://git-scm.com",
+    "description": "Distributed revision control system",
+    "dependencies": [
+      "curl",
+      "expat",
+      "pcre2",
+      "zlib"
+    ]
+  },
+  "zlib": {
+    "version": "1.3.2",
+    "url": "https://zlib.net/zlib-1.3.2.tar.gz",
+    "sha256": "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16",
+    "license": "Zlib",
+    "homepage": "https://zlib.net/",
+    "description": "General-purpose lossless data-compression library",
+    "dependencies": []
+  },
+  "openssl@3": {
+    "version": "3.6.4",
+    "url": "https://github.com/openssl/openssl/releases/download/openssl-3.6.4/openssl-3.6.4.tar.gz",
+    "sha256": "9bffaa1ad1e07b354c21bd3324ec02fa15579f45a7d0494b3e74bc449b7333ef",
+    "license": "Apache-2.0",
+    "homepage": "https://openssl-library.org",
+    "description": "Cryptography and SSL/TLS Toolkit",
+    "dependencies": []
+  }
+}

@@ -115,6 +115,7 @@ pub fn selectVersionTag(tags: []const []const u8, requested: []const u8) ?usize 
 /// Rank a bottle tag suffix (e.g. `arm64_sequoia`) for this platform.
 /// 0 = exact BOTTLE_TAG, then BOTTLE_FALLBACKS in order, else null (no match).
 fn platformRank(tag: []const u8) ?usize {
+    if (!formula.bottleTagCompatible(tag)) return null;
     if (std.mem.eql(u8, tag, BOTTLE_TAG)) return 0;
     for (BOTTLE_FALLBACKS, 0..) |fb, i| {
         if (std.mem.eql(u8, tag, fb)) return i + 1;
@@ -358,7 +359,7 @@ test "pickBottleDigest selects this platform's bottle" {
         \\{{"manifests":[
         \\{{"annotations":{{"org.opencontainers.image.ref.name":"1.2.3.{s}","sh.brew.bottle.digest":"deadbeef"}}}}
         \\]}}
-    , .{BOTTLE_TAG});
+    , .{@import("formula.zig").preferredCompatibleBottleTag()});
     const digest = try pickBottleDigest(testing.allocator, json);
     defer if (digest) |d| testing.allocator.free(d);
     try testing.expect(digest != null);

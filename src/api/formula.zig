@@ -130,6 +130,62 @@ pub const BOTTLE_FALLBACKS = switch (@import("builtin").os.tag) {
     else => [_][]const u8{"all"},
 };
 
+// Read the running OS, not the compiler deployment target. A binary built
+// for macOS 12 can run on 15, and vice versa bottle requirements still matter.
+extern "c" fn sysctlbyname([*:0]const u8, ?*anyopaque, *usize, ?*anyopaque, usize) c_int;
+
+pub fn runningMacosMajor() ?u32 {
+    if (comptime @import("builtin").os.tag != .macos) return null;
+    var buf: [64]u8 = undefined;
+    var len: usize = buf.len;
+    if (sysctlbyname("kern.osproductversion", &buf, &len, null, 0) != 0 or len > buf.len) return null;
+    const version = std.mem.sliceTo(buf[0..len], 0);
+    const end = std.mem.indexOfScalar(u8, version, '.') orelse version.len;
+    return std.fmt.parseInt(u32, version[0..end], 10) catch null;
+}
+
+pub fn bottleTagMinimumMacos(tag: []const u8) ?u32 {
+    const plain = if (std.mem.startsWith(u8, tag, "arm64_")) tag[6..] else tag;
+    const names = [_][]const u8{ "big_sur", "monterey", "ventura", "sonoma", "sequoia", "tahoe", "golden_gate" };
+    const versions = [_]u32{ 11, 12, 13, 14, 15, 26, 27 };
+    for (names, versions) |name, version| {
+        if (std.mem.eql(u8, plain, name)) return version;
+    }
+    return null;
+}
+
+pub fn bottleTagCompatibleWithMacos(tag: []const u8, major: ?u32) bool {
+    if (std.mem.eql(u8, tag, "all")) return true;
+    const minimum = bottleTagMinimumMacos(tag) orelse return false;
+    return minimum <= (major orelse return false);
+}
+
+pub fn bottleTagCompatible(tag: []const u8) bool {
+    if (comptime @import("builtin").os.tag != .macos) return true;
+    return bottleTagCompatibleWithMacos(tag, runningMacosMajor());
+}
+
+pub fn preferredCompatibleBottleTag() []const u8 {
+    if (bottleTagCompatible(BOTTLE_TAG)) return BOTTLE_TAG;
+    for (BOTTLE_FALLBACKS) |tag| {
+        if (bottleTagCompatible(tag)) return tag;
+    }
+    return "all";
+}
+
+test "Monterey rejects newer bottles on both architectures" {
+    for ([_][]const u8{ "sonoma", "sequoia", "tahoe", "arm64_ventura", "arm64_tahoe" }) |tag| {
+        try std.testing.expect(!bottleTagCompatibleWithMacos(tag, 12));
+    }
+    for ([_][]const u8{ "monterey", "big_sur", "arm64_monterey", "all" }) |tag| {
+        try std.testing.expect(bottleTagCompatibleWithMacos(tag, 12));
+    }
+    try std.testing.expect(!bottleTagCompatibleWithMacos("monterey", null));
+    try std.testing.expect(bottleTagCompatibleWithMacos("all", null));
+    try std.testing.expect(bottleTagCompatibleWithMacos("sonoma", 15));
+    try std.testing.expect(!bottleTagCompatibleWithMacos("future_unknown", 27));
+}
+
 const testing = std.testing;
 
 test "effectiveVersion - no revision returns base version" {

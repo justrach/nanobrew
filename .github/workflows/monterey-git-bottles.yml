@@ -1,0 +1,210 @@
+name: Monterey Intel Git bottle pilot
+on:
+  workflow_dispatch:
+    inputs:
+      reuse_run:
+        description: 'Optional prior pilot run with verified bottles; leave empty for a full rebuild'
+        type: string
+        default: ''
+      publish:
+        description: 'Publish immutable GHCR bottles and a prerelease with the opt-in registry'
+        type: boolean
+        default: false
+  push:
+    branches: [codex/monterey-intel-git]
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: monterey-git-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  intel:
+    runs-on: macos-15-intel
+    timeout-minutes: 90
+    env:
+      NANOBREW_NO_TELEMETRY: '1'
+      NANOBREW_DISABLE_UPSTREAM_REGISTRY_REMOTE: '1'
+      NANOBREW_DISABLE_UPSTREAM_FRESHNESS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .zig-cache
+            ~/.cache/zig
+          key: monterey-zig-0.16-${{ hashFiles('src/**', 'build.zig') }}
+          restore-keys: monterey-zig-0.16-
+      - name: Build client and check compatibility regressions
+        run: |
+          zig build -Dtarget=x86_64-macos.12.0 -Doptimize=ReleaseFast
+          zig build test-api test-tap test-upstream-registry test-upstream-github
+          zig test src/test_monterey_bottles.zig -lc
+          python3 scripts/bottles/test_monterey_git.py
+      - name: Prepare disposable prefix
+        run: |
+          test "$(uname -m)" = x86_64
+          python3 - <<'PYCODE'
+          import sys
+          from pathlib import Path
+          sys.path.insert(0, 'scripts/bottles')
+          from build_monterey_git import audit
+          audit(Path('zig-out/bin'))
+          PYCODE
+          sudo ./zig-out/bin/nb init
+          sudo chown -R "$(id -un)" /opt/nanobrew
+      - uses: actions/download-artifact@v4
+        if: github.event_name == 'workflow_dispatch' && inputs.reuse_run != ''
+        with:
+          name: monterey-intel-git-pilot
+          run-id: ${{ inputs.reuse_run }}
+          github-token: ${{ github.token }}
+          path: previous-pilot
+      - name: Build complete pinned stack and audit macOS deployment targets
+        env:
+          REUSE_RUN: ${{ inputs.reuse_run }}
+        run: |
+          if [ -n "$REUSE_RUN" ]; then
+            mkdir -p dist/monterey
+            cp -R previous-pilot/dist/monterey/. dist/monterey/
+            python3 scripts/bottles/build_monterey_git.py --resume-run "$REUSE_RUN"
+          else
+            python3 scripts/bottles/build_monterey_git.py
+          fi
+      - name: Install exact bottles through Nanobrew and exercise Git HTTPS
+        env:
+          NANOBREW_UPSTREAM_REGISTRY_CACHE: ${{ github.workspace }}/dist/monterey/registry.json
+        run: |
+          ./zig-out/bin/nb install expat json-c readline pcre2 libxml2 libssh2 openldap curl git
+          python3 scripts/bottles/build_monterey_git.py --verify-install
+      - name: Scan bottles before publication
+        if: github.event_name == 'workflow_dispatch' && inputs.publish
+        run: |
+          curl -sSfL https://get.anchore.io/syft | sh -s -- -b "$RUNNER_TEMP/tools"
+          curl -sSfL https://get.anchore.io/grype | sh -s -- -b "$RUNNER_TEMP/tools"
+          for bottle in dist/monterey/*.monterey.bottle.tar.gz; do
+            base="$(basename "$bottle" .monterey.bottle.tar.gz)"
+            name="${base%%-[0-9]*}"
+            rm -rf "$RUNNER_TEMP/bottle-scan"
+            mkdir -p "$RUNNER_TEMP/bottle-scan"
+            tar -xzf "$bottle" -C "$RUNNER_TEMP/bottle-scan"
+            "$RUNNER_TEMP/tools/syft" scan "dir:$RUNNER_TEMP/bottle-scan" -o "spdx-json=dist/monterey/$name.spdx.json"
+            "$RUNNER_TEMP/tools/grype" "sbom:dist/monterey/$name.spdx.json" --fail-on high -o json > "dist/monterey/$name.grype.json"
+          done
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: monterey-intel-git-pilot
+          path: |
+            dist/monterey/
+            zig-out/bin/nb
+          if-no-files-found: warn
+      - name: Report scope
+        run: |
+          echo 'Built for macOS 12, tested on Intel macOS 15. Monterey runtime validation remains required. Publication happens only when the publish dispatch input is set; the default registry is unchanged.' >> "$GITHUB_STEP_SUMMARY"
+
+  rosetta:
+    needs: intel
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      NANOBREW_NO_TELEMETRY: '1'
+      NANOBREW_DISABLE_UPSTREAM_REGISTRY_REMOTE: '1'
+      NANOBREW_DISABLE_UPSTREAM_FRESHNESS: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: monterey-intel-git-pilot
+          path: .
+      - name: Confirm x86_64 client runs under Rosetta
+        run: |
+          chmod +x zig-out/bin/nb
+          test "$(sysctl -n sysctl.proc_translated 2>/dev/null || echo 0)" = 0
+          arch -x86_64 sh -c 'test "$(sysctl -n sysctl.proc_translated)" = 1'
+          arch -x86_64 zig-out/bin/nb --version
+      - name: Install exact bottles through Nanobrew under Rosetta
+        env:
+          NANOBREW_UPSTREAM_REGISTRY_CACHE: ${{ github.workspace }}/dist/monterey/registry.json
+        run: |
+          sudo arch -x86_64 zig-out/bin/nb init
+          sudo chown -R "$(id -un)" /opt/nanobrew
+          python3 - <<'PYCODE'
+          import json, shutil
+          from pathlib import Path
+          for evidence in Path('dist/monterey').glob('*.monterey.bottle.tar.json'):
+              record = json.loads(evidence.read_text())
+              bottle = evidence.with_suffix('.gz')
+              shutil.copyfile(bottle, '/opt/nanobrew/cache/blobs/' + record['bottle_sha256'])
+          PYCODE
+          arch -x86_64 zig-out/bin/nb install expat json-c readline pcre2 libxml2 libssh2 openldap curl git
+          # System python3 is universal; arch -x86_64 makes it report x86_64 so
+          # the builder's Intel-runner guard and smoke run under translation.
+          arch -x86_64 /usr/bin/python3 scripts/bottles/build_monterey_git.py --verify-install
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: monterey-rosetta-smoke
+          path: dist/monterey/installed-tests.json
+          if-no-files-found: warn
+      - name: Report scope
+        run: |
+          echo 'Rosetta (x86_64 under Apple Silicon macOS 15) exact-bottle install + smoke passed; not a Monterey runtime test.' >> "$GITHUB_STEP_SUMMARY"
+
+  publish:
+    needs: intel
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.repository == 'justrach/nanobrew'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      packages: write
+    env:
+      GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GHCR_USER: ${{ github.repository_owner }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@v4
+        with:
+          name: monterey-intel-git-pilot
+          path: .
+      - name: Publish immutable GHCR bottles and rewrite the opt-in registry
+        run: python3 scripts/bottles/publish_monterey_git.py
+      - name: Prerelease opt-in registry, bottles and scan evidence
+        env:
+          RELEASE_TAG: monterey-git-${{ github.run_id }}-${{ github.run_attempt }}
+        run: |
+          cat > dist/monterey/release-notes.md <<'EOF'
+          Monterey Intel Git catalog (opt-in): expat, json-c, readline, pcre2,
+          libxml2, libssh2, openldap, curl and git.
+
+          Built from pinned source on macos-15-intel for deployment target 12.0,
+          with upstream tests, exact-bottle Nanobrew installs, consumer smoke
+          tests, per-package SPDX SBOMs and a high-severity vulnerability gate.
+          Real Monterey runtime validation is tracked in issue #388 but is not
+          automated. Published GHCR blobs were pulled anonymously and checked
+          against their build digests. Feature omissions are documented in
+          scripts/bottles/MONTEREY.md; these are pilot builds, not
+          feature-equivalent Homebrew bottles.
+
+          Opt in using this release's registry-monterey.json URL as
+          NANOBREW_UPSTREAM_REGISTRY_URL, then run nb update-registry.
+          Use a fresh Intel test installation for this pilot. The default
+          registry remains unchanged; promoting these pins into
+          registry_default.json and registry/upstream.json is a separate
+          reviewed PR.
+          EOF
+          gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --prerelease --latest=false \
+            --title "Monterey Intel Git catalog (opt-in)" --notes-file dist/monterey/release-notes.md \
+            dist/monterey/*.tar.gz dist/monterey/*.json dist/monterey/SHA256SUMS
+          echo "Published: https://github.com/$GITHUB_REPOSITORY/releases/tag/$RELEASE_TAG" >> "$GITHUB_STEP_SUMMARY"

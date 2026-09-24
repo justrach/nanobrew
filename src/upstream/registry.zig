@@ -111,6 +111,7 @@ pub const ArtifactRule = struct {
 
 pub const ResolvedAsset = struct {
     platform: Platform,
+    minimum_macos_major: ?u32 = null,
     url: []const u8,
     sha256: []const u8,
     artifacts: []const ArtifactRule,
@@ -1317,7 +1318,15 @@ fn parseResolved(alloc: std.mem.Allocator, obj: std.json.ObjectMap) !Resolved {
             for (artifact_rules) |artifact| artifact.deinit(alloc);
             alloc.free(artifact_rules);
         }
+        const minimum_macos_major = if (entry.value_ptr.*.object.get("minimum_macos_major")) |v|
+            parseU32(v) orelse return error.InvalidField
+        else
+            null;
+        if (minimum_macos_major) |minimum| {
+            if (minimum < 11) return error.InvalidField;
+        }
         try assets.append(alloc, .{
+            .minimum_macos_major = minimum_macos_major,
             .platform = platform,
             .url = url,
             .sha256 = sha256,
@@ -2069,4 +2078,21 @@ test "parseRegistry rejects formula records without assets" {
         \\}
     ;
     try testing.expectError(error.MissingAssets, parseRegistry(testing.allocator, json));
+}
+
+test "resolved asset macOS minimum is retained and validated" {
+    const a = std.testing.allocator;
+    const json =
+        \\{"version":"1.0","assets":{"macos-x86_64":{"url":"https://example.test/bottle","sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","minimum_macos_major":12}}}
+    ;
+    const parsed = try std.json.parseFromSlice(std.json.Value, a, json, .{});
+    defer parsed.deinit();
+    const resolved = try parseResolved(a, parsed.value.object);
+    defer resolved.deinit(a);
+    try std.testing.expectEqual(@as(?u32, 12), resolved.findAsset(.macos_x86_64).?.minimum_macos_major);
+    const invalid = try std.mem.replaceOwned(u8, a, json, "\":12", "\":0");
+    defer a.free(invalid);
+    const invalid_parsed = try std.json.parseFromSlice(std.json.Value, a, invalid, .{});
+    defer invalid_parsed.deinit();
+    try std.testing.expectError(error.InvalidField, parseResolved(a, invalid_parsed.value.object));
 }

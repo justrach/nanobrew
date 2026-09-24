@@ -472,6 +472,7 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
             } else if (startsWith(line, "sha256")) {
                 const tags = [_][]const u8{BOTTLE_TAG} ++ BOTTLE_FALLBACKS;
                 for (tags, 0..) |tag, rank| {
+                    if (!@import("formula.zig").bottleTagCompatible(tag)) continue;
                     if (rank < bottle_rank) {
                         if (findTagInLine(line, tag)) |val| {
                             bottle_sha256 = val;
@@ -792,8 +793,11 @@ fn findBottleSha256(line: []const u8) ?[]const u8 {
     if (!startsWith(trimmed, "sha256")) return null;
 
     // Try primary tag first, then fallbacks
-    if (findTagInLine(trimmed, BOTTLE_TAG)) |sha| return sha;
+    if (@import("formula.zig").bottleTagCompatible(BOTTLE_TAG)) {
+        if (findTagInLine(trimmed, BOTTLE_TAG)) |sha| return sha;
+    }
     for (BOTTLE_FALLBACKS) |tag| {
+        if (!@import("formula.zig").bottleTagCompatible(tag)) continue;
         if (findTagInLine(trimmed, tag)) |sha| return sha;
     }
     return null;
@@ -1446,13 +1450,13 @@ test "tap VERSION constants interpolate source and selected bottle URL (#370)" {
         \\  bottle do
         \\    root_url "https://example.test/releases/v#{VERSION}"
     ;
-    const full = try std.fmt.allocPrint(testing.allocator, "{s}\n    sha256 {s}: \"bottle\"\n  end\nend\n", .{ src, BOTTLE_TAG });
+    const full = try std.fmt.allocPrint(testing.allocator, "{s}\n    sha256 {s}: \"bottle\"\n  end\nend\n", .{ src, @import("formula.zig").preferredCompatibleBottleTag() });
     defer testing.allocator.free(full);
     var f = try parseRubyFormula(testing.allocator, "anylinuxfs", full);
     defer f.deinit(testing.allocator);
     try testing.expectEqualStrings("0.19.0", f.version);
     try testing.expectEqualStrings("https://example.test/v0.19.0.tar.gz", f.source_url);
-    const expected = try std.fmt.allocPrint(testing.allocator, "https://example.test/releases/v0.19.0/anylinuxfs-0.19.0.{s}.bottle.tar.gz", .{BOTTLE_TAG});
+    const expected = try std.fmt.allocPrint(testing.allocator, "https://example.test/releases/v0.19.0/anylinuxfs-0.19.0.{s}.bottle.tar.gz", .{@import("formula.zig").preferredCompatibleBottleTag()});
     defer testing.allocator.free(expected);
     try testing.expectEqualStrings(expected, f.bottle_url);
     try testing.expectEqualStrings("bottle", f.bottle_sha256);
@@ -1461,7 +1465,7 @@ test "tap VERSION constants interpolate source and selected bottle URL (#370)" {
 test "tap bottle digest and URL select the same best platform regardless of order (#370)" {
     const a = testing.allocator;
     const fallback = BOTTLE_FALLBACKS[BOTTLE_FALLBACKS.len - 1];
-    const src = try std.fmt.allocPrint(a, "version \"1.0\"\nbottle do\nroot_url \"https://example.test\"\nsha256 {s}: \"primary\"\nsha256 {s}: \"fallback\"\nend\n", .{ BOTTLE_TAG, fallback });
+    const src = try std.fmt.allocPrint(a, "version \"1.0\"\nbottle do\nroot_url \"https://example.test\"\nsha256 {s}: \"primary\"\nsha256 {s}: \"fallback\"\nend\n", .{ @import("formula.zig").preferredCompatibleBottleTag(), fallback });
     defer a.free(src);
     var f = try parseRubyFormula(a, "demo", src);
     defer f.deinit(a);

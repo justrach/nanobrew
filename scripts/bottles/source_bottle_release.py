@@ -49,6 +49,13 @@ def add_recipe_identity(sbom, evidence):
     return sbom
 
 
+def source_asset(evidence, url):
+    asset = {"url": url, "sha256": evidence["bottle_sha256"]}
+    if evidence.get("deployment_target") == "12.0":
+        asset["minimum_macos_major"] = 12
+    return asset
+
+
 def prepare_registry(registry, evidence, url):
     name = evidence.get("package", "zlib")
     if name != "zlib":
@@ -66,7 +73,7 @@ def prepare_registry(registry, evidence, url):
     if (resolved["version"] != evidence["version"] or resolved.get("revision", 0) != 0
             or record["upstream"]["type"] != "homebrew_bottle"):
         raise ValueError("zlib registry version/type changed; review the recipe before publishing")
-    resolved["assets"]["macos-x86_64"] = {"url": url, "sha256": evidence["bottle_sha256"]}
+    resolved["assets"]["macos-x86_64"] = source_asset(evidence, url)
     return registry
 
 
@@ -92,7 +99,7 @@ def prepare_library_registry(registry, evidence, url):
             assets[platform] = {"url": asset["url"], "sha256": asset["sha256"]}
         elif platform in old.get("assets", {}):
             raise ValueError(f"No matching-version companion for {name} {platform}")
-    assets["macos-x86_64"] = {"url": url, "sha256": evidence["bottle_sha256"]}
+    assets["macos-x86_64"] = source_asset(evidence, url)
     replacement = {"token": name, "name": name, "kind": "formula", "homepage": meta["homepage"],
                    "desc": meta["desc"], "dependencies": meta["dependencies"],
                    "upstream": {"type": "homebrew_bottle", "verified": True},
