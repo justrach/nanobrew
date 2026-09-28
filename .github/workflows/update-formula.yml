@@ -1,9 +1,9 @@
 name: Update Homebrew Formula on Release
 
-# Fires after a maintainer publishes a GitHub Release with the locally
-# notarized macOS tarballs uploaded as assets. The release.yml workflow
-# itself stays disabled because Apple notarization runs from a developer
-# machine via scripts/notarize-macos.sh — see release.yml.disabled.
+# Fires after a maintainer publishes a GitHub Release. release.yml creates
+# that release as a draft with the macOS tarballs already signed and
+# notarized in CI (or, without the signing secrets, a maintainer uploads ones
+# signed by hand with scripts/notarize-macos.sh before publishing).
 #
 # This job downloads the two macOS tarballs from the published release,
 # recomputes their SHA256s, rewrites Formula/nanobrew.rb, runs the formula

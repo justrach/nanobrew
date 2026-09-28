@@ -1,0 +1,352 @@
+name: Release
+
+# Pushing a tag like v0.1.213 builds nb for macOS (arm64, x86_64), Linux
+# (x86_64, aarch64) and Windows (x86_64), and creates a DRAFT GitHub Release
+# with every asset and its .sha256 sidecar. A maintainer publishes the draft;
+# update-formula.yml then bumps Formula/nanobrew.rb from the published assets.
+# Tags with a hyphen (v0.1.213-beta.1) become prereleases, which the formula
+# job skips.
+#
+# The two macOS binaries are Developer ID signed and notarized on a macOS
+# runner BEFORE anything is uploaded, so the release only ever receives final
+# bytes and each checksum is computed once, from them. That needs all five
+# repository secrets:
+#   MACOS_CERT_P12 / MACOS_CERT_PASSWORD - base64 "Developer ID Application"
+#     certificate + private key (.p12) and its export password.
+#   AC_API_KEY_P8 / AC_API_KEY_ID / AC_API_ISSUER_ID - App Store Connect API
+#     key (raw .p8 contents) for notarytool.
+# Without them the signing job succeeds as a no-op and the draft carries no
+# macOS assets at all: sign them by hand with scripts/notarize-macos.sh and
+# upload them to the draft before publishing (docs/RELEASING.md). Unsigned
+# macOS tarballs never reach a release.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  build-macos:
+    strategy:
+      matrix:
+        include:
+          - arch: arm64
+            zig_target: aarch64-macos
+          - arch: x86_64
+            zig_target: x86_64-macos.12.0
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build
+        run: zig build -Doptimize=ReleaseFast -Dtarget=${{ matrix.zig_target }}
+
+      - name: Smoke test binary
+        run: |
+          set -euo pipefail
+          run=(zig-out/bin/nb)
+          if [[ "${{ matrix.arch }}" == "x86_64" ]]; then
+            MINOS="$(otool -l zig-out/bin/nb | awk '
+              $1 == "cmd" && $2 == "LC_BUILD_VERSION" { in_build = 1; next }
+              in_build && $1 == "minos" { print $2; exit }
+            ')"
+            case "$MINOS" in
+              10.*|11.*|12.*) ;;
+              *)
+                echo "x86_64 binary must target macOS 12.x or older; got minos '${MINOS:-unknown}'" >&2
+                exit 1
+                ;;
+            esac
+            run=(arch -x86_64 zig-out/bin/nb)
+          fi
+          set +e
+          SMOKE_OUT="$("${run[@]}" 2>&1)"
+          SMOKE_STATUS=$?
+          set -e
+          if [[ "$SMOKE_STATUS" != "1" ]]; then
+            echo "smoke test exited with $SMOKE_STATUS, expected 1 from usage path" >&2
+            echo "$SMOKE_OUT" >&2
+            exit 1
+          fi
+          grep -q "nanobrew" <<<"$SMOKE_OUT"
+
+      # The bare binary: it is signed, notarized and packaged by macos-sign.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nb-${{ matrix.arch }}-macos-unsigned
+          path: zig-out/bin/nb
+          if-no-files-found: error
+
+  build-linux:
+    strategy:
+      matrix:
+        include:
+          - arch: x86_64
+            build_cmd: linux
+          - arch: aarch64
+            build_cmd: linux-arm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build
+        run: zig build ${{ matrix.build_cmd }} -Doptimize=ReleaseFast
+
+      - name: Smoke test
+        if: matrix.arch == 'x86_64'
+        run: ./zig-out/bin/nb help
+
+      - name: Package
+        run: |
+          tar -czf nb-${{ matrix.arch }}-linux.tar.gz -C zig-out/bin nb
+          sha256sum nb-${{ matrix.arch }}-linux.tar.gz > nb-${{ matrix.arch }}-linux.tar.gz.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nb-${{ matrix.arch }}-linux
+          path: |
+            nb-${{ matrix.arch }}-linux.tar.gz
+            nb-${{ matrix.arch }}-linux.tar.gz.sha256
+          if-no-files-found: error
+
+  build-windows:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.16.0
+
+      - name: Build
+        run: zig build windows -Doptimize=ReleaseFast
+
+      - name: Package
+        run: |
+          zip -j nb-x86_64-windows.zip zig-out/bin/nb.exe
+          sha256sum nb-x86_64-windows.zip > nb-x86_64-windows.zip.sha256
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nb-x86_64-windows
+          path: |
+            nb-x86_64-windows.zip
+            nb-x86_64-windows.zip.sha256
+          if-no-files-found: error
+
+  # Sign + notarize both macOS binaries, as scripts/notarize-macos.sh does by
+  # hand. No-op (success) unless all five secrets are configured.
+  macos-sign:
+    needs: build-macos
+    runs-on: macos-26
+    timeout-minutes: 60
+    outputs:
+      signed: ${{ steps.signing.outputs.enabled }}
+    steps:
+      - name: Select signed distribution path
+        id: signing
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+        run: |
+          if [[ -n "$MACOS_CERT_P12" && -n "$MACOS_CERT_PASSWORD" && \
+                -n "$AC_API_KEY_P8" && -n "$AC_API_KEY_ID" && \
+                -n "$AC_API_ISSUER_ID" ]]; then
+            echo 'enabled=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'enabled=false' >> "$GITHUB_OUTPUT"
+            msg='macOS signing secrets are not all set; the draft gets no macOS assets. Sign them with scripts/notarize-macos.sh and upload them before publishing.'
+            echo "::notice::$msg"
+            echo "$msg" >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - uses: actions/download-artifact@v4
+        if: steps.signing.outputs.enabled == 'true'
+        with:
+          pattern: nb-*-macos-unsigned
+          path: unsigned
+
+      - name: Import Developer ID certificate
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          MACOS_CERT_P12: ${{ secrets.MACOS_CERT_P12 }}
+          MACOS_CERT_PASSWORD: ${{ secrets.MACOS_CERT_PASSWORD }}
+        run: |
+          set -euo pipefail
+          keychain="$RUNNER_TEMP/release.keychain-db"
+          pass="$(openssl rand -hex 16)"
+          security create-keychain -p "$pass" "$keychain"
+          security set-keychain-settings -lut 3600 "$keychain"
+          security unlock-keychain -p "$pass" "$keychain"
+          printf '%s' "$MACOS_CERT_P12" | base64 -d >"$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$keychain" \
+            -P "$MACOS_CERT_PASSWORD" -T /usr/bin/codesign
+          rm -f "$RUNNER_TEMP/cert.p12"
+          # Allow codesign to use the imported key without a UI prompt.
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$pass" "$keychain" >/dev/null
+          security list-keychains -d user -s "$keychain" login.keychain-db
+          identity="$(security find-identity -v -p codesigning "$keychain" \
+            | sed -n 's/.*"\(Developer ID Application: [^"]*\)".*/\1/p' | head -1)"
+          [ -n "$identity" ] || { echo "p12 contains no Developer ID Application identity" >&2; exit 1; }
+          echo "Signing as: $identity"
+          echo "CODESIGN_IDENTITY=$identity" >>"$GITHUB_ENV"
+
+      - name: Sign and notarize
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          AC_API_KEY_P8: ${{ secrets.AC_API_KEY_P8 }}
+          AC_API_KEY_ID: ${{ secrets.AC_API_KEY_ID }}
+          AC_API_ISSUER_ID: ${{ secrets.AC_API_ISSUER_ID }}
+        run: |
+          set -euo pipefail
+          # No AppleDouble (._*) members when tarring on macOS.
+          export COPYFILE_DISABLE=1
+          key="$RUNNER_TEMP/ac_api_key.p8"
+          printf '%s' "$AC_API_KEY_P8" >"$key"
+          notary=(--key "$key" --key-id "$AC_API_KEY_ID" --issuer "$AC_API_ISSUER_ID")
+          mkdir -p signed
+          for arch in arm64 x86_64; do
+            work="$RUNNER_TEMP/nb-$arch"
+            mkdir -p "$work"
+            bin="$work/nb"
+            cp "unsigned/nb-$arch-macos-unsigned/nb" "$bin"
+            chmod 755 "$bin"
+            [ "$(lipo -archs "$bin")" = "$arch" ] || { echo "nb-$arch: got $(lipo -archs "$bin")" >&2; exit 1; }
+            xattr -c "$bin"
+            # Hardened runtime + secure timestamp are required by the notary service.
+            codesign --force --options runtime --timestamp --sign "$CODESIGN_IDENTITY" "$bin"
+            codesign --verify --strict --verbose=2 "$bin"
+
+            # ditto, not zip: keep the signed bytes and metadata exact.
+            ditto -c -k --keepParent "$bin" "$work/nb.notarize.zip"
+            # notarytool exits 0 even when the submission is Invalid, so the
+            # status field is the gate, not the exit code.
+            xcrun notarytool submit "$work/nb.notarize.zip" "${notary[@]}" \
+              --wait --timeout 30m --output-format json >"$work/notary.json"
+            id="$(plutil -extract id raw -o - "$work/notary.json")"
+            status="$(plutil -extract status raw -o - "$work/notary.json")"
+            echo "nb-$arch: notarization $id -> $status"
+            echo "- \`nb-$arch\`: notarization \`$id\` $status" >>"$GITHUB_STEP_SUMMARY"
+            if [ "$status" != Accepted ]; then
+              xcrun notarytool log "$id" "${notary[@]}" || true
+              echo "nb-$arch: notarization was not Accepted; refusing to ship a signed but unnotarized binary" >&2
+              exit 1
+            fi
+            # A bare CLI can't be stapled (stapler error 73): the ticket is
+            # bound to the cdhash and checked online. Ship the accepted bytes,
+            # with the same single `nb` member the formula installs.
+            name="nb-$arch-apple-darwin.tar.gz"
+            tar -czf "signed/$name" -C "$work" nb
+            (cd signed && shasum -a 256 "$name" > "$name.sha256")
+          done
+          rm -f "$key"
+
+      - name: Verify like a user
+        if: steps.signing.outputs.enabled == 'true'
+        run: |
+          set -euo pipefail
+          for arch in arm64 x86_64; do
+            name="nb-$arch-apple-darwin.tar.gz"
+            (cd signed && shasum -a 256 -c "$name.sha256")
+            members="$(tar -tzf "signed/$name" | tr '\n' ' ')"
+            [ "$members" = "nb " ] || { echo "$name: unexpected tarball members: $members" >&2; exit 1; }
+            check="$(mktemp -d)"
+            tar -xzf "signed/$name" -C "$check"
+            codesign --verify --strict "$check/nb"
+            info="$(codesign -dv --verbose=2 "$check/nb" 2>&1)"
+            grep -q 'Authority=Developer ID Application' <<<"$info"
+            grep -q 'flags=.*runtime' <<<"$info"
+            run=("$check/nb")
+            [ "$arch" = x86_64 ] && run=(arch -x86_64 "$check/nb")
+            set +e
+            out="$("${run[@]}" 2>&1)"
+            code=$?
+            set -e
+            [ "$code" = 1 ] && grep -q nanobrew <<<"$out" \
+              || { echo "$name: signed binary smoke test exited $code" >&2; echo "$out" >&2; exit 1; }
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: steps.signing.outputs.enabled == 'true'
+        with:
+          name: nb-macos-signed
+          path: signed/*
+          if-no-files-found: error
+
+      - name: Remove signing keychain
+        if: always() && steps.signing.outputs.enabled == 'true'
+        run: |
+          security delete-keychain "$RUNNER_TEMP/release.keychain-db" 2>/dev/null || true
+          rm -f "$RUNNER_TEMP/cert.p12" "$RUNNER_TEMP/ac_api_key.p8"
+
+  release:
+    needs: [build-linux, build-windows, macos-sign]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: nb-*-linux
+          path: artifacts
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: nb-x86_64-windows
+          path: artifacts
+
+      - uses: actions/download-artifact@v4
+        if: needs.macos-sign.outputs.signed == 'true'
+        with:
+          name: nb-macos-signed
+          path: artifacts
+
+      - name: Assemble assets
+        env:
+          SIGNED: ${{ needs.macos-sign.outputs.signed }}
+        run: |
+          set -euo pipefail
+          expected=(nb-x86_64-linux.tar.gz nb-aarch64-linux.tar.gz nb-x86_64-windows.zip)
+          if [ "$SIGNED" = true ]; then
+            expected+=(nb-arm64-apple-darwin.tar.gz nb-x86_64-apple-darwin.tar.gz)
+            echo 'macOS: Developer ID signed and notarized in CI.' >>"$GITHUB_STEP_SUMMARY"
+          else
+            echo 'macOS: NOT in this draft. Sign with scripts/notarize-macos.sh and upload before publishing.' >>"$GITHUB_STEP_SUMMARY"
+          fi
+          for f in "${expected[@]}"; do
+            test -f "artifacts/$f" || { echo "missing $f" >&2; exit 1; }
+            (cd artifacts && sha256sum -c "$f.sha256")
+          done
+          ls -la artifacts
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            # A re-run: replace this run's assets on the existing release.
+            gh release upload "$TAG" artifacts/* --repo "$GITHUB_REPOSITORY" --clobber
+            exit 0
+          fi
+          prerelease=()
+          [[ "$TAG" == *-* ]] && prerelease=(--prerelease)
+          gh release create "$TAG" artifacts/* --repo "$GITHUB_REPOSITORY" \
+            --draft --verify-tag --generate-notes --title "$TAG" "${prerelease[@]}"
