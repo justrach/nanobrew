@@ -1223,10 +1223,18 @@ pub fn unlinkKeg(name: []const u8, version: []const u8) !void {
     removeManagedWrapper(name, keg_dir);
 
     // Remove opt/ symlink
-    const lib_io = paths.safe_io;
     var opt_buf: [512]u8 = undefined;
     const opt_link = std.fmt.bufPrint(&opt_buf, "{s}/{s}", .{ OPT_DIR, name }) catch return;
-    std.Io.Dir.deleteFileAbsolute(lib_io, opt_link) catch {};
+    removeOptLink(opt_link, keg_dir);
+}
+
+/// Remove prefix/opt/<name> only while it still points at `keg_dir`, matching
+/// how file links are unlinked. `nb upgrade` links the new keg before it
+/// unlinks the old one, so an unconditional delete wiped the new version's
+/// opt/ link and broke every dependent at load time (#407).
+fn removeOptLink(opt_link: []const u8, keg_dir: []const u8) void {
+    if (!symlinkTargetEquals(opt_link, keg_dir)) return;
+    std.Io.Dir.deleteFileAbsolute(paths.safe_io, opt_link) catch {};
 }
 
 test "needsManagedWrapper only wraps fortune binary" {
@@ -1472,6 +1480,37 @@ test "bottle payload: slow-path unlink removes keg symlinks, keeps non-keg (#347
     } else |_| {}
     const n_cert = try std.Io.Dir.readLinkAbsolute(lib_io, f.dest_cert, &tbuf);
     try std.testing.expectEqualStrings(f.elsewhere, tbuf[0..n_cert]);
+}
+
+test "unlink keeps opt/ link owned by another version, removes its own (#407)" {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+
+    const root = try std.fmt.allocPrint(a, "/tmp/nb-test-optlink-{d}", .{std.c.getpid()});
+    defer std.Io.Dir.cwd().deleteTree(lib_io, root) catch {};
+    const old_keg = try std.fmt.allocPrint(a, "{s}/Cellar/openssl@3/3.6.4", .{root});
+    const new_keg = try std.fmt.allocPrint(a, "{s}/Cellar/openssl@3/3.6.5", .{root});
+    const opt_dir = try std.fmt.allocPrint(a, "{s}/opt", .{root});
+    const opt_link = try std.fmt.allocPrint(a, "{s}/openssl@3", .{opt_dir});
+    testMkPath(lib_io, old_keg);
+    testMkPath(lib_io, new_keg);
+    testMkPath(lib_io, opt_dir);
+
+    // `nb upgrade` links the new keg first, then unlinks the old one.
+    try std.Io.Dir.symLinkAbsolute(lib_io, new_keg, opt_link, .{});
+    removeOptLink(opt_link, old_keg);
+
+    var tbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try std.Io.Dir.readLinkAbsolute(lib_io, opt_link, &tbuf);
+    try std.testing.expectEqualStrings(new_keg, tbuf[0..n]);
+
+    // Unlinking the keg the link points at still removes it.
+    removeOptLink(opt_link, new_keg);
+    if (std.Io.Dir.readLinkAbsolute(lib_io, opt_link, &tbuf)) |_| {
+        return error.TestUnexpectedOptLinkSurvived;
+    } else |_| {}
 }
 
 test "git shim uses the keg's templates during git init" {
