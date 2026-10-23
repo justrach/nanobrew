@@ -12,13 +12,22 @@ https://github.com/justrach/nanobrew/releases/download/v<VERSION>/nb-<arch>-appl
 
 ### Stable release flow
 
-The tag-triggered release workflow is disabled (`.github/workflows/release.yml.disabled`). macOS binaries are signed and notarized locally; do not assume pushing a tag creates release assets.
+Pushing a `v*` tag runs `.github/workflows/release.yml`. It builds every platform and signs and notarizes both macOS binaries on a macOS runner **before** anything is uploaded. It then creates a **draft** release that holds each asset and its `.sha256` sidecar. Checksums are computed once, from the final bytes. Nothing is published automatically.
 
 1. Bump the version constants and changelog in a maintainer PR, run CI, and merge it.
-2. Build ReleaseFast binaries from that exact commit for macOS ARM64, macOS Intel (`x86_64-macos.12.0`), Linux x86-64/ARM64, and Windows x86-64.
-3. Run `scripts/notarize-macos.sh` on both macOS binaries using the configured local signing identity and notarytool profile. Verify notarization is accepted and smoke tests pass.
-4. Package the binaries and SHA256 sidecars, tag the validated commit, and upload all assets to a draft GitHub Release. Publish only after the asset set is complete.
-5. The `update-formula.yml` workflow downloads the published macOS assets, verifies their checksums, and opens a formula PR. Approve its CI run if GitHub requires it, then merge after checks pass.
+2. Tag the merged commit and push the tag.
+3. Check the workflow summary. It lists each macOS notarization id and its status, and the job fails unless both are `Accepted`.
+4. Review the draft, write the notes, and publish it.
+5. Publishing triggers `update-formula.yml`, which downloads the published macOS assets, verifies their checksums, and opens a formula PR. Approve its CI run if GitHub requires it, then merge after checks pass.
+
+Signing needs five repository secrets:
+
+- `MACOS_CERT_P12` and `MACOS_CERT_PASSWORD`: the base64 Developer ID Application certificate and private key (`.p12`), and its export password.
+- `AC_API_KEY_P8`, `AC_API_KEY_ID` and `AC_API_ISSUER_ID`: the App Store Connect API key (raw `.p8` contents) for `notarytool`.
+
+If any secret is missing, the signing job succeeds as a no-op and the draft gets **no macOS assets**. Unsigned macOS tarballs never reach a release. In that case, sign the ReleaseFast binaries from the tagged commit by hand with `scripts/notarize-macos.sh` (arm64, and x86_64 built with `-Dtarget=x86_64-macos.12.0`), upload the tarballs and sidecars to the draft, and then publish.
+
+A bare CLI can't be stapled. The notarization ticket is bound to the binary's code hash, and Gatekeeper checks it online the first time a quarantined download runs.
 
 ## Beta releases
 
