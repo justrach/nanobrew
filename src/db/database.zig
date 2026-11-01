@@ -45,6 +45,8 @@ pub const CaskRecord = struct {
     sha256: []const u8 = "",
     apps: []const []const u8,
     binaries: []const []const u8,
+    /// Font file names copied into ~/Library/Fonts, so removal can delete them.
+    fonts: []const []const u8 = &.{},
     probe_success: bool = false,
     probed_at: i64 = 0,
     probe_schema: u32 = 0,
@@ -207,6 +209,18 @@ pub const Database = struct {
                             }
                         }
 
+                        // Absent in records written before fonts were tracked.
+                        var cfonts: std.ArrayList([]const u8) = .empty;
+                        if (item.object.get("fonts")) |fonts_val| {
+                            if (fonts_val == .array) {
+                                for (fonts_val.array.items) |f| {
+                                    if (f == .string) {
+                                        cfonts.append(alloc, alloc.dupe(u8, f.string) catch continue) catch {};
+                                    }
+                                }
+                            }
+                        }
+
                         const c_token = alloc.dupe(u8, ctoken) catch continue;
                         const c_canonical = alloc.dupe(u8, ccanonical) catch {
                             alloc.free(c_token);
@@ -239,6 +253,17 @@ pub const Database = struct {
                             alloc.free(c_apps);
                             continue;
                         };
+                        const c_fonts = cfonts.toOwnedSlice(alloc) catch {
+                            alloc.free(c_token);
+                            alloc.free(c_canonical);
+                            alloc.free(c_ver);
+                            alloc.free(c_sha);
+                            for (c_apps) |s| alloc.free(s);
+                            alloc.free(c_apps);
+                            for (c_bins) |s| alloc.free(s);
+                            alloc.free(c_bins);
+                            continue;
+                        };
                         db.casks.append(alloc, .{
                             .token = c_token,
                             .canonical_token = c_canonical,
@@ -246,6 +271,7 @@ pub const Database = struct {
                             .sha256 = c_sha,
                             .apps = c_apps,
                             .binaries = c_bins,
+                            .fonts = c_fonts,
                             .probe_success = cprobe,
                             .probed_at = cprobed,
                             .probe_schema = cprobe_schema,
@@ -259,6 +285,8 @@ pub const Database = struct {
                             alloc.free(c_apps);
                             for (c_bins) |s| alloc.free(s);
                             alloc.free(c_bins);
+                            for (c_fonts) |s| alloc.free(s);
+                            alloc.free(c_fonts);
                         };
                     }
                 }
@@ -373,6 +401,8 @@ pub const Database = struct {
             self.alloc.free(c.apps);
             for (c.binaries) |b| self.alloc.free(b);
             self.alloc.free(c.binaries);
+            for (c.fonts) |f| self.alloc.free(f);
+            self.alloc.free(c.fonts);
         }
         self.casks.deinit(self.alloc);
         for (self.debs.items) |d| {
@@ -507,10 +537,10 @@ pub const Database = struct {
         return result;
     }
 
-    pub fn recordCaskInstall(self: *Database, token: []const u8, canonical_token: []const u8, version: []const u8, sha256: []const u8, apps: []const []const u8, binaries: []const []const u8) !void {
+    pub fn recordCaskInstall(self: *Database, token: []const u8, canonical_token: []const u8, version: []const u8, sha256: []const u8, apps: []const []const u8, binaries: []const []const u8, fonts: []const []const u8) !void {
         // Build the replacement first: callers may pass fields borrowed from
         // the existing record, and allocation failure must preserve that record.
-        const replacement = try dupeCaskRecord(self.alloc, .{ .token = token, .canonical_token = canonical_token, .version = version, .sha256 = sha256, .apps = apps, .binaries = binaries });
+        const replacement = try dupeCaskRecord(self.alloc, .{ .token = token, .canonical_token = canonical_token, .version = version, .sha256 = sha256, .apps = apps, .binaries = binaries, .fonts = fonts });
         errdefer freeCaskRecord(self.alloc, replacement);
         try self.casks.ensureUnusedCapacity(self.alloc, 1);
         var i: usize = 0;
@@ -575,6 +605,8 @@ pub const Database = struct {
                 self.alloc.free(old_cask.apps);
                 for (old_cask.binaries) |b| self.alloc.free(b);
                 self.alloc.free(old_cask.binaries);
+                for (old_cask.fonts) |f| self.alloc.free(f);
+                self.alloc.free(old_cask.fonts);
                 _ = self.casks.orderedRemove(i);
             } else {
                 i += 1;
@@ -812,6 +844,11 @@ pub const Database = struct {
             for (c.binaries, 0..) |b, j| {
                 if (j > 0) try writer.interface.writeAll(",");
                 try writeJsonStringFallible(&writer.interface, b);
+            }
+            try writer.interface.writeAll("],\"fonts\":[");
+            for (c.fonts, 0..) |f, j| {
+                if (j > 0) try writer.interface.writeAll(",");
+                try writeJsonStringFallible(&writer.interface, f);
             }
             try writer.interface.writeAll("]}");
         }
@@ -1100,7 +1137,7 @@ test "probe results persist against current package records" {
     try testing.expectEqual(@as(u32, 9), keg.probe_schema);
     try testing.expectEqual(@as(u32, 10), keg.probe_platform);
 
-    try db.recordCaskInstall("alias", "canonical", "2.0", "def", &.{"App.app"}, &.{});
+    try db.recordCaskInstall("alias", "canonical", "2.0", "def", &.{"App.app"}, &.{}, &.{});
     try db.recordCaskProbe("canonical", "2.0", "def", true, 11, 12);
     var cask = db.findCask("canonical").?;
     try testing.expect(cask.probe_success);
@@ -1114,6 +1151,35 @@ test "probe results persist against current package records" {
     try testing.expect(!cask.probe_success);
     try testing.expectEqual(@as(u32, 13), cask.probe_schema);
     try testing.expectEqual(@as(u32, 14), cask.probe_platform);
+}
+
+test "cask font records survive a reload and legacy records load without them" {
+    const io = testing.io;
+    const path = try std.fmt.allocPrint(testing.allocator, "/tmp/nb-test-db-fonts-{d}.json", .{std.c.getpid()});
+    defer testing.allocator.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const snapshot = try std.fmt.allocPrint(testing.allocator, "{s}.snapshot", .{path});
+    defer testing.allocator.free(snapshot);
+    defer std.Io.Dir.deleteFileAbsolute(io, snapshot) catch {};
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, path, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io,
+            \\{"casks":[{"token":"font-fira-code","version":"6.2","apps":[],"binaries":[],"fonts":["FiraCode-Regular.ttf"]},
+            \\{"token":"legacy","version":"1.0","apps":["Legacy.app"],"binaries":[]}]}
+        );
+    }
+
+    var db = try Database.openAt(testing.allocator, path);
+    defer db.close();
+    try db.writeSnapshot(snapshot);
+
+    var buf: [2048]u8 = undefined;
+    const f = try std.Io.Dir.openFileAbsolute(io, snapshot, .{});
+    defer f.close(io);
+    const written = buf[0..try f.readPositionalAll(io, &buf, 0)];
+    try testing.expect(std.mem.indexOf(u8, written, "\"binaries\":[],\"fonts\":[\"FiraCode-Regular.ttf\"]}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "\"apps\":[\"Legacy.app\"],\"binaries\":[],\"fonts\":[]}") != null);
 }
 
 fn dupeStrings(alloc: std.mem.Allocator, strings: []const []const u8) ![]const []const u8 {
@@ -1145,7 +1211,12 @@ fn dupeCaskRecord(alloc: std.mem.Allocator, c: CaskRecord) !CaskRecord {
         alloc.free(apps);
     }
     const bins = try dupeStrings(alloc, c.binaries);
-    return .{ .token = token, .canonical_token = canonical, .version = version, .sha256 = sha, .apps = apps, .binaries = bins };
+    errdefer {
+        for (bins) |s| alloc.free(s);
+        alloc.free(bins);
+    }
+    const fonts = try dupeStrings(alloc, c.fonts);
+    return .{ .token = token, .canonical_token = canonical, .version = version, .sha256 = sha, .apps = apps, .binaries = bins, .fonts = fonts };
 }
 
 fn freeCaskRecord(alloc: std.mem.Allocator, c: CaskRecord) void {
@@ -1157,6 +1228,8 @@ fn freeCaskRecord(alloc: std.mem.Allocator, c: CaskRecord) void {
     alloc.free(c.apps);
     for (c.binaries) |s| alloc.free(s);
     alloc.free(c.binaries);
+    for (c.fonts) |s| alloc.free(s);
+    alloc.free(c.fonts);
 }
 
 test "cask replacement preserves borrowed fields and is allocation atomic" {
@@ -1175,9 +1248,9 @@ fn testCaskReplacementAllocation(alloc: std.mem.Allocator) !void {
         db.dirty = false;
         db.close();
     }
-    try db.recordCaskInstall("alias", "canonical", "1", "old-sha", &.{"App.app"}, &.{"tool"});
+    try db.recordCaskInstall("alias", "canonical", "1", "old-sha", &.{"App.app"}, &.{"tool"}, &.{"Font.ttf"});
     const old = db.findCask("alias").?;
-    db.recordCaskInstall(old.token, old.canonical_token, "2", "new-sha", old.apps, old.binaries) catch |err| {
+    db.recordCaskInstall(old.token, old.canonical_token, "2", "new-sha", old.apps, old.binaries, old.fonts) catch |err| {
         try testing.expectEqualStrings("1", db.findCask("alias").?.version);
         try testing.expectEqualStrings("old-sha", db.findCask("alias").?.sha256);
         return err;
@@ -1187,4 +1260,5 @@ fn testCaskReplacementAllocation(alloc: std.mem.Allocator) !void {
     try testing.expectEqualStrings("2", new.version);
     try testing.expectEqualStrings("App.app", new.apps[0]);
     try testing.expectEqualStrings("tool", new.binaries[0]);
+    try testing.expectEqualStrings("Font.ttf", new.fonts[0]);
 }

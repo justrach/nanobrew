@@ -5,6 +5,7 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- `nb remove --cask` now deletes the font files a cask installed into `~/Library/Fonts`, so removing and then reinstalling a font cask no longer fails with "refusing to overwrite existing font". The cask record gains a `fonts` list; records without it still load, and only the listed file names are deleted from that folder. If a font cannot be deleted the record is kept for a retry. Fonts of casks installed before this change are not tracked and must be removed by hand. (#479)
 - `nb remove --cask` deletes a recorded `bin/` link only when it points into that cask's Caskroom payload or one of its apps, the same ownership rule `nb upgrade --cask` uses. A name the cask recorded but never linked (for example a binary install refused) is left alone when another package now owns it, and nanobrew says so. (#477)
 - `nb remove --cask` now removes an app the cask names inside a subfolder (`app "Sub/Foo.app"`). Install copies it to `/Applications/Foo.app`; the record and the post-install probe now use that basename, and removal also handles records written by older versions. (#433)
 - `nb switch` with several specs now saves the new version of each package that switched, even when another spec fails. Before, `state.json` kept the old version while the links pointed at the new keg. (#475)
