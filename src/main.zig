@@ -777,11 +777,17 @@ fn resolveVersionPin(
 }
 
 fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
+    if (!installFormulae(alloc, args)) std.process.exit(1);
+}
+
+/// Returns false where `nb install` must exit 1. `nb upgrade` calls this
+/// directly so one failed keg does not stop the remaining upgrades (#445).
+fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8) bool {
     const stderr = StderrWriter{};
 
     g_min_trust = trust.minTrust(alloc) catch |err| {
         stderr.print("nb: invalid trust configuration: {}\n", .{err}) catch {};
-        std.process.exit(1);
+        return false;
     };
     // Check for --cask, --deb, --repo, --skip-postinst, --no-verify, and --shims flags
     var is_cask = false;
@@ -814,7 +820,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             use_shims = true;
         } else if (arg.len > 0 and arg[0] == '-') {
             stderr.print("nb: unknown flag '{s}'\n", .{arg}) catch {};
-            std.process.exit(1);
+            return false;
         } else {
             formulae.append(alloc, arg) catch {};
         }
@@ -822,7 +828,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     if (formulae.items.len == 0) {
         stderr.print("nb: no formulae specified\n", .{}) catch {};
-        std.process.exit(1);
+        return false;
     }
 
     // Local .rb formula install (#225). Detect a filesystem path that points
@@ -838,10 +844,10 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             if (exists) {
                 if (g_min_trust > 0) {
                     stderr.print("nb: trust gating is unavailable for local Ruby installs\n", .{}) catch {};
-                    std.process.exit(1);
+                    return false;
                 }
                 runLocalRbInstall(alloc, arg);
-                return;
+                return true;
             }
         }
     }
@@ -850,25 +856,25 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     for (formulae.items) |name| {
         if (!isPackageNameSafe(name)) {
             stderr.print("nb: refusing to install package with unsafe name: {s}\n", .{name}) catch {};
-            std.process.exit(1);
+            return false;
         }
     }
 
     if (is_deb) {
         if (g_min_trust > 0) {
             stderr.print("nb: trust gating is unavailable for deb installs\n", .{}) catch {};
-            std.process.exit(1);
+            return false;
         }
         runDebInstall(alloc, formulae.items, repo_spec, .{
             .skip_postinst = skip_postinst,
             .no_verify = no_verify,
         });
-        return;
+        return true;
     }
 
     if (is_cask) {
         runCaskInstall(alloc, formulae.items);
-        return;
+        return true;
     }
 
     // Homebrew accepts `brew install owner/tap/token` for tap casks as well
@@ -876,7 +882,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     // has no formula and does have a cask, route it through the cask installer.
     if (formulae.items.len == 1 and tapInstallShouldUseCask(alloc, formulae.items[0])) {
         runCaskInstall(alloc, formulae.items);
-        return;
+        return true;
     }
 
     const stdout = StdoutWriter{};
@@ -908,17 +914,17 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             const good = if (evidence) |d| d.value.newestPassing(base, .formula, trust.platform(), trust.timestamp()) else null;
             if (good == null) {
                 stderr.print("nb: no fresh signed install evidence for {s} on {s}\n", .{ base, trust.platform() }) catch {};
-                std.process.exit(1);
+                return false;
             }
             trust.rejectRevoked(alloc, good.?.*) catch {
                 stderr.print("nb: trusted candidate is revoked\n", .{}) catch {};
-                std.process.exit(1);
+                return false;
             };
             const f = good.?.toFormula(alloc) catch {
-                std.process.exit(1);
+                return false;
             };
             resolver.addResolved(f) catch {
-                std.process.exit(1);
+                return false;
             };
             formulae.items[i] = base;
             pinned_names.append(alloc, base) catch {};
@@ -931,12 +937,12 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         }
         roots.append(alloc, name) catch {
             stderr.print("nb: failed to queue '{s}' for resolution\n", .{name}) catch {};
-            std.process.exit(1);
+            return false;
         };
     }
     resolver.resolveMany(roots.items) catch |err| {
         stderr.print("nb: dependency resolution failed: {}\n", .{err}) catch {};
-        std.process.exit(1);
+        return false;
     };
 
     // Verify all requested formulas were actually found (#68)
@@ -949,7 +955,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
                 any_missing = true;
             }
         }
-        if (any_missing) std.process.exit(1);
+        if (any_missing) return false;
     }
 
     const resolve_ms = @as(f64, @floatFromInt(phase_timer.read())) / 1_000_000.0;
@@ -961,7 +967,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         } else {
             stderr.print("nb: warning: dependency resolution failed for '{s}': {}, skipping\n", .{ formulae.items[0], err }) catch {};
         }
-        return;
+        return true;
     };
     defer alloc.free(all_formulae);
     var filter_db: ?nb.database.Database = nb.database.Database.open(alloc) catch null;
@@ -971,7 +977,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             for (f.dependencies) |dep| {
                 if (!resolver.hasFormula(dep)) {
                     stderr.print("nb: refusing {s}: dependency {s} has no resolved trust metadata\n", .{ f.name, dep }) catch {};
-                    std.process.exit(1);
+                    return false;
                 }
             }
             var tier = trust.formulaTier(resolver.evidence, f, trust.timestamp());
@@ -987,7 +993,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
             if (tier < 2 and sourceVerified(alloc, f)) tier = 2;
             if (tier < g_min_trust) {
                 stderr.print("nb: refusing {s}: trust tier {d} is below required {d} (includes dependencies)\n", .{ f.name, tier, g_min_trust }) catch {};
-                std.process.exit(1);
+                return false;
             }
         }
     }
@@ -1027,7 +1033,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
                 const installed = if (filter_db) |*loaded| loaded.findKeg(f.name) else null;
                 if (installed == null or !trust.validSha(installed.?.sha256)) {
                     stderr.print("nb: cannot certify existing unrecorded bytes for {s}; reinstall it before requiring trust\n", .{f.name}) catch {};
-                    std.process.exit(1);
+                    return false;
                 }
             }
             const artifact_changed = if (filter_db) |*db| blk: {
@@ -1053,7 +1059,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     if (install_order.len == 0) {
         var db = nb.database.Database.open(alloc) catch {
             stderr.print("nb: warning: could not open database\n", .{}) catch {};
-            return;
+            return true;
         };
         defer db.close();
         for (all_formulae) |f| {
@@ -1076,7 +1082,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
         stdout.print("==> Already installed ({d} packages up to date)\n", .{all_formulae.len}) catch {};
         stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
-        return;
+        return true;
     }
 
     // Pre-flight check: verify /opt/nanobrew is writable
@@ -1087,7 +1093,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     } else {
         var hint_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         stderr.print("nb: /opt/nanobrew is not writable. Run: sudo {s} init\n", .{selfExeForHint(&hint_buf)}) catch {};
-        std.process.exit(1);
+        return false;
     }
 
     // Warn before downloads when the /opt/nb short-prefix link can't be
@@ -1109,13 +1115,13 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     const pkg_count = install_order.len;
     const install_succeeded = alloc.alloc(bool, pkg_count) catch {
         stderr.print("nb: out of memory\n", .{}) catch {};
-        std.process.exit(1);
+        return false;
     };
     defer alloc.free(install_succeeded);
     @memset(install_succeeded, false);
     const probe_results = alloc.alloc(ProbeResult, pkg_count) catch {
         stderr.print("nb: out of memory\n", .{}) catch {};
-        std.process.exit(1);
+        return false;
     };
     defer alloc.free(probe_results);
     @memset(probe_results, .not_run);
@@ -1128,7 +1134,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         // Allocate per-package phase tracking
         const phases = alloc.alloc(std.atomic.Value(u8), pkg_count) catch {
             stderr.print("nb: out of memory\n", .{}) catch {};
-            std.process.exit(1);
+            return false;
         };
         defer alloc.free(phases);
         for (phases) |*p| p.* = std.atomic.Value(u8).init(@intFromEnum(Phase.waiting));
@@ -1136,7 +1142,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         // Collect package names for display
         const names = alloc.alloc([]const u8, pkg_count) catch {
             stderr.print("nb: out of memory\n", .{}) catch {};
-            std.process.exit(1);
+            return false;
         };
         defer alloc.free(names);
         for (install_order, 0..) |f, idx| names[idx] = f.name;
@@ -1145,7 +1151,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         // final summary explains *why* each package failed instead of a bare ✗.
         const reasons = alloc.alloc(?[]const u8, pkg_count) catch {
             stderr.print("nb: out of memory\n", .{}) catch {};
-            std.process.exit(1);
+            return false;
         };
         defer alloc.free(reasons);
         for (reasons) |*r| r.* = null;
@@ -1279,7 +1285,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     // therefore skipped from install_order during this run.
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: warning: could not open database\n", .{}) catch {};
-        return;
+        return true;
     };
     defer db.close();
     for (all_formulae) |f| {
@@ -1360,7 +1366,12 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     const elapsed_ns: u64 = timer.read();
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
     stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
-    if (pipeline_failed) std.process.exit(1);
+    return !pipeline_failed;
+}
+
+test "installFormulae returns false on failure instead of exiting (#445)" {
+    g_io = std.testing.io;
+    try std.testing.expect(!installFormulae(std.testing.allocator, &.{"--no-such-flag"}));
 }
 
 /// Render live progress UI with spinners and checkmarks.
@@ -3528,6 +3539,8 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
     var upgraded_count: usize = 0;
     // Execute upgrades
     for (upgradeable.items) |pkg| {
+        var new_ver_buf: [256]u8 = undefined;
+        var new_ver: []const u8 = pkg.new_ver;
         if (pkg.is_cask_pkg) {
             const candidate = cask_candidates.get(pkg.name).?;
             nb.cask_upgrade.upgrade(alloc, g_io, pkg.name, candidate, .{}) catch |err| {
@@ -3552,25 +3565,29 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
             // Install new keg first; remove old tree only after upgrade succeeds (#153).
             const old_keg = db.findKeg(pkg.name);
             const names_slice: []const []const u8 = &.{pkg.name};
-            runInstall(alloc, names_slice);
+            if (!installFormulae(alloc, names_slice)) {
+                failed_count += 1;
+                stderr.print("nb: {s}: upgrade failed; keeping {s}\n", .{ pkg.name, pkg.old_ver }) catch {};
+                continue;
+            }
 
             if (old_keg) |keg| {
-                var ver_buf: [256]u8 = undefined;
-                const installed_new = nb.cellar.detectKegVersion(pkg.name, pkg.new_ver, &ver_buf);
-                const upgraded = blk: {
-                    if (installed_new) |nv| {
-                        if (nb.version.isNewer(nv, keg.version)) break :blk true;
-                        if (std.mem.eql(u8, nv, pkg.new_ver)) break :blk true;
-                    }
-                    break :blk false;
+                // Read back the version the install recorded: it can be newer
+                // than `pkg.new_ver`, which comes from the cached version index.
+                var installed_db = nb.database.Database.open(alloc) catch {
+                    failed_count += 1;
+                    continue;
                 };
-                if (!upgraded) {
+                defer installed_db.close();
+                const installed = installed_db.findKeg(pkg.name);
+                if (installed == null or !nb.version.isNewer(installed.?.version, keg.version)) {
                     failed_count += 1;
                     stderr.print("nb: {s}: upgrade did not install {s}; keeping {s}\n", .{ pkg.name, pkg.new_ver, keg.version }) catch {};
                     continue;
                 }
+                new_ver = std.fmt.bufPrint(&new_ver_buf, "{s}", .{installed.?.version}) catch pkg.new_ver;
 
-                // `runInstall` already persisted the new version, artifact SHA,
+                // `installFormulae` already persisted the new version, artifact SHA,
                 // and probe evidence through its own fresh Database instance.
                 // Keep this outer snapshot read-only: rewriting it here would
                 // overwrite that identity with the old SHA on close (#349).
@@ -3579,7 +3596,7 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
             }
         }
         upgraded_count += 1;
-        stdout.print("==> Upgraded {s} ({s} -> {s})\n", .{ pkg.name, pkg.old_ver, pkg.new_ver }) catch {};
+        stdout.print("==> Upgraded {s} ({s} -> {s})\n", .{ pkg.name, pkg.old_ver, new_ver }) catch {};
     }
 
     const elapsed_ns: u64 = timer.read();
