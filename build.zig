@@ -63,6 +63,14 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    // The Windows bridge's cache logic is plain std code, so its tests run on any host.
+    const windows_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/windows_main.zig"),
+        .target = target,
+        .optimize = optimize,
+    });
+    windows_test_mod.addOptions("windows_registry", windows_registry_opts);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = windows_test_mod })).step);
 
     // ── Repository maintenance checks ──
     // Zig 0.17 removed in-process custom build steps. Keep the public step
