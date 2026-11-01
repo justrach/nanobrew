@@ -836,7 +836,7 @@ def cmd_scan(args):
     for rec in records:
         try:
             scan_results = _scan_one(rec, platforms, outdir)
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:  # die() on an HTTP error raises SystemExit
             ver = rec.get("resolved", {}).get("version", "unknown")
             requested = platforms or sorted((rec.get("resolved") or {}).get("assets", {}).keys()) or ["unknown"]
             log(f"  {rec['token']} {ver}: scan failed ({type(exc).__name__}: {exc}) — continuing")
