@@ -172,7 +172,11 @@ pub fn upgradeWithHooks(alloc: std.mem.Allocator, io: std.Io, requested: []const
         if (!component(bin)) return error.UnsafePath;
         if (!contains(bins.items, bin)) {
             const destination = try std.fs.path.join(a, &.{ locations.bin, bin });
-            try addStep(a, io, &steps, destination, ownedBinary(io, destination, old, old_payload, locations.applications), true);
+            const owned = ownedBinary(io, destination, old, old_payload, locations.applications);
+            // Only our own link is removed; nothing replaces a dropped name, so
+            // a file the user put there is left alone instead of a conflict.
+            if (!owned and try transaction.exists(io, destination)) continue;
+            try addStep(a, io, &steps, destination, owned, true);
         }
     }
     for (old.apps) |app| {

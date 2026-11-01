@@ -15,7 +15,7 @@ import zipfile
 fixture = str(pathlib.Path(sys.argv[1]).resolve())
 
 
-def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_moves=0):
+def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_moves=0, foreign_removed=False):
     with tempfile.TemporaryDirectory(prefix="nb-upgrade-") as temp:
         root = pathlib.Path(temp).resolve()
         old = root / "Caskroom/fixture/1.0"
@@ -32,6 +32,10 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
         (root / "bin/fixture").symlink_to(old / "cli")
         (root / "bin/retired").symlink_to(old / "cli")
         (root / "bin/app-tool").symlink_to(apps / "Fixture.app/Contents/MacOS/tool")
+        if foreign_removed:
+            # The user replaced a link that version 2.0 no longer ships.
+            (root / "bin/retired").unlink()
+            (root / "bin/retired").symlink_to("/usr/bin/true")
         original = {"kegs": [{"name": "untouched", "version": "8"}], "casks": [{
             "token": "fixture", "canonical_token": "fixture", "version": "1.0", "sha256": "a" * 64,
             "apps": ["Fixture.app", "Retired.app"], "binaries": ["fixture", "retired", "app-tool"],
@@ -143,7 +147,10 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
                 assert subprocess.check_output([str((root / "bin/fixture").resolve())], text=True) == "new"
                 assert (new / "dist/helper").read_text() == "new"
                 assert subprocess.check_output([str(root / "bin/app-tool")], text=True) == "new-app\n"
-            assert not (root / "bin/retired").is_symlink()
+            if foreign_removed:
+                assert (root / "bin/retired").readlink() == pathlib.Path("/usr/bin/true")
+            else:
+                assert not (root / "bin/retired").is_symlink()
             assert not (apps / "Retired.app").exists()
             assert not record["probe_success"]
             assert record["sha256"] == metadata["sha256"]
@@ -165,11 +172,12 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
                 assert (apps / "Foreign.app/keep").read_text() == "foreign"
         assert not (root / "transaction").exists()
         assert not list(root.rglob("*.nb-upgrade-*"))
-        print("PASS", fmt, fault, bad or "", activation_moves, rollback_moves, flush=True)
+        print("PASS", fmt, fault, bad or "", activation_moves, rollback_moves, "foreign-removed" if foreign_removed else "", flush=True)
 
 
 for fmt in ("tar.gz", "tar.xz", "zip", "binary"):
     run_case(fmt=fmt)
+run_case(foreign_removed=True)
 for bad in ("missing-source", "checksum", "foreign-link", "foreign-app", "external-installer"):
     run_case(bad=bad)
 for fault in ["late-conflict", "crash-activating-0", "database-failure", "fail-staged-0", "crash-staged-0", "crash-database-7", "fail-committed-0", "crash-committed-0"]:
