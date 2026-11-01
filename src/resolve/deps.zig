@@ -18,6 +18,10 @@ pub const DepResolver = struct {
     edges: std.StringHashMap([]const []const u8),
     client: ?std.http.Client,
     evidence: ?@import("../trust/evidence.zig").Feed = null,
+    /// Formula fetcher; tests swap it to simulate API failures without network.
+    fetch: *const fn (std.mem.Allocator, ?*std.http.Client, []const u8) anyerror!Formula = api.fetchFormulaWithClient,
+    /// Name of the formula whose fetch made resolve() fail, for the error message.
+    fetch_failed: ?[]const u8 = null,
 
     pub fn init(alloc: std.mem.Allocator) DepResolver {
         return .{
@@ -64,13 +68,13 @@ pub const DepResolver = struct {
             const batch_size = frontier.items.len;
 
             // Allocate result slots (one per frontier entry)
-            const results = try self.alloc.alloc(?Formula, batch_size);
+            const results = try self.alloc.alloc(anyerror!Formula, batch_size);
             defer self.alloc.free(results);
-            @memset(results, null);
+            @memset(results, error.FormulaNotFound);
 
             if (batch_size == 1) {
                 // Single item — no thread overhead
-                results[0] = api.fetchFormulaWithClient(self.alloc, client_ptr, frontier.items[0]) catch null;
+                results[0] = self.fetch(self.alloc, client_ptr, frontier.items[0]);
             } else {
                 // Bounded worker pool — each worker owns a persistent std.http.Client
                 // that's reused across every item it picks up. Mirrors the
@@ -79,8 +83,9 @@ pub const DepResolver = struct {
                 const WorkerCtx = struct {
                     alloc_: std.mem.Allocator,
                     items: []const []const u8,
-                    results: []?Formula,
+                    results: []anyerror!Formula,
                     next_idx: *std.atomic.Value(usize),
+                    fetch: @FieldType(DepResolver, "fetch"),
                 };
 
                 const workerFn = struct {
@@ -93,7 +98,7 @@ pub const DepResolver = struct {
                         while (true) {
                             const idx = ctx.next_idx.fetchAdd(1, .monotonic);
                             if (idx >= ctx.items.len) break;
-                            ctx.results[idx] = api.fetchFormulaWithClient(ctx.alloc_, &client, ctx.items[idx]) catch null;
+                            ctx.results[idx] = ctx.fetch(ctx.alloc_, &client, ctx.items[idx]);
                         }
                     }
                 }.run;
@@ -104,6 +109,7 @@ pub const DepResolver = struct {
                     .items = frontier.items,
                     .results = results,
                     .next_idx = &next_idx,
+                    .fetch = self.fetch,
                 };
 
                 const n_threads = @min(batch_size, 8);
@@ -117,18 +123,30 @@ pub const DepResolver = struct {
                 if (spawned == 0) {
                     // Fallback: spawn failed entirely — fetch inline with the shared client.
                     for (frontier.items, 0..) |dep_name, i| {
-                        results[i] = api.fetchFormulaWithClient(self.alloc, client_ptr, dep_name) catch null;
+                        results[i] = self.fetch(self.alloc, client_ptr, dep_name);
                     }
                 } else {
                     for (threads[0..spawned]) |t| t.join();
                 }
             }
 
+            // Only "not a formula" may be skipped (e.g. a uses_from_macos system
+            // library). Skipping a timeout or 5xx would install a tree without that
+            // dependency and fail later at load time.
+            for (results, frontier.items) |res, name| {
+                _ = res catch |err| {
+                    if (err == error.FormulaNotFound) continue;
+                    for (results) |other| if (other) |f| f.deinit(self.alloc) else |_| {};
+                    self.fetch_failed = name;
+                    return err;
+                };
+            }
+
             // Collect results, discover next frontier.
             frontier.clearRetainingCapacity();
             queued_names.clearRetainingCapacity();
             for (results) |maybe_f| {
-                const raw = maybe_f orelse continue;
+                const raw = maybe_f catch continue;
                 const f = if (self.evidence) |feed| try @import("../trust/evidence.zig").chooseFormula(self.alloc, feed, raw) else raw;
                 if (self.formulae.contains(f.name)) {
                     var dup = f;
@@ -305,12 +323,44 @@ fn tapShortName(name: []const u8) []const u8 {
 
 const testing = std.testing;
 
-fn makeFormula(name: []const u8, dep_list: []const []const u8) Formula {
+// Heap-owned, like API results, because DepResolver.deinit frees every formula.
+fn makeFormula(name: []const u8, dep_list: []const []const u8) !Formula {
+    const deps = try testing.allocator.alloc([]const u8, dep_list.len);
+    for (deps, dep_list) |*dep, src| dep.* = try testing.allocator.dupe(u8, src);
     return .{
-        .name = name,
-        .version = "1.0",
-        .dependencies = dep_list,
+        .name = try testing.allocator.dupe(u8, name),
+        .version = try testing.allocator.dupe(u8, "1.0"),
+        .dependencies = deps,
     };
+}
+
+/// Fake API: "flaky" times out (or gets a 5xx), "sysdep" is not a formula (404).
+fn fakeFetch(_: std.mem.Allocator, _: ?*std.http.Client, name: []const u8) anyerror!Formula {
+    if (std.mem.eql(u8, name, "flaky")) return error.FetchFailed;
+    if (std.mem.eql(u8, name, "sysdep")) return error.FormulaNotFound;
+    if (std.mem.eql(u8, name, "app")) return makeFormula(name, &.{ "lib", "sysdep", "flaky" });
+    if (std.mem.eql(u8, name, "tool")) return makeFormula(name, &.{ "lib", "sysdep" });
+    return makeFormula(name, &.{});
+}
+
+test "resolveMany - failed dependency fetch is an error, not a skipped dependency" {
+    var r = DepResolver.init(testing.allocator);
+    defer r.deinit();
+    r.fetch = fakeFetch;
+
+    try testing.expectError(error.FetchFailed, r.resolveMany(&.{"app"}));
+    try testing.expectEqualStrings("flaky", r.fetch_failed.?);
+}
+
+test "resolveMany - dependency that is not a formula is still skipped" {
+    var r = DepResolver.init(testing.allocator);
+    defer r.deinit();
+    r.fetch = fakeFetch;
+
+    try r.resolveMany(&.{"tool"});
+    try testing.expect(r.hasFormula("tool"));
+    try testing.expect(r.hasFormula("lib"));
+    try testing.expect(!r.hasFormula("sysdep"));
 }
 
 test "topologicalSort - linear chain" {
@@ -318,9 +368,9 @@ test "topologicalSort - linear chain" {
     defer r.deinit();
 
     // C has no deps, B depends on C, A depends on B
-    const c = makeFormula("c", &.{});
-    const b = makeFormula("b", &.{"c"});
-    const a = makeFormula("a", &.{"b"});
+    const c = try makeFormula("c", &.{});
+    const b = try makeFormula("b", &.{"c"});
+    const a = try makeFormula("a", &.{"b"});
 
     try r.formulae.put("a", a);
     try r.formulae.put("b", b);
@@ -344,10 +394,10 @@ test "topologicalSort - diamond dependency" {
     defer r.deinit();
 
     // D has no deps; B and C depend on D; A depends on B and C
-    const d = makeFormula("d", &.{});
-    const b_dep = makeFormula("b", &.{"d"});
-    const c_dep = makeFormula("c", &.{"d"});
-    const a_dep = makeFormula("a", &.{ "b", "c" });
+    const d = try makeFormula("d", &.{});
+    const b_dep = try makeFormula("b", &.{"d"});
+    const c_dep = try makeFormula("c", &.{"d"});
+    const a_dep = try makeFormula("a", &.{ "b", "c" });
 
     try r.formulae.put("a", a_dep);
     try r.formulae.put("b", b_dep);
@@ -372,8 +422,8 @@ test "topologicalSort - cycle detection" {
     defer r.deinit();
 
     // A depends on B, B depends on A — cycle
-    const a = makeFormula("a", &.{"b"});
-    const b = makeFormula("b", &.{"a"});
+    const a = try makeFormula("a", &.{"b"});
+    const b = try makeFormula("b", &.{"a"});
 
     try r.formulae.put("a", a);
     try r.formulae.put("b", b);
@@ -391,7 +441,7 @@ test "topologicalSort - system dep (uses_from_macos) not in formulae is skipped 
     // This mirrors `nb install node` where uses_from_macos adds system lib names
     // that have no standalone Homebrew formula.  The sort must succeed and
     // produce [a], not return MissingDependency or DependencyCycle.
-    const a = makeFormula("a", &.{"bzip2"});
+    const a = try makeFormula("a", &.{"bzip2"});
 
     try r.formulae.put("a", a);
     try r.edges.put("a", a.dependencies);
@@ -409,8 +459,8 @@ test "topologicalSort - self-dependency does not cause false cycle" {
     defer r.deinit();
 
     // Package "r" depends on itself — should not be treated as a cycle
-    const pkg_r = makeFormula("r", &.{ "r", "b" });
-    const pkg_b = makeFormula("b", &.{});
+    const pkg_r = try makeFormula("r", &.{ "r", "b" });
+    const pkg_b = try makeFormula("b", &.{});
 
     try r.formulae.put("r", pkg_r);
     try r.formulae.put("b", pkg_b);
@@ -437,11 +487,11 @@ test "topologicalSort - node-style diamond with system deps does not false-cycle
     //   node -> bzip2   (uses_from_macos — NOT in formulae)
     //   libnghttp2 -> openssl@3          (diamond via openssl@3)
     //   uvwasi -> libuv                  (diamond via libuv)
-    const openssl = makeFormula("openssl@3", &.{});
-    const libuv = makeFormula("libuv", &.{});
-    const libnghttp2 = makeFormula("libnghttp2", &.{"openssl@3"});
-    const uvwasi = makeFormula("uvwasi", &.{"libuv"});
-    const node = makeFormula("node", &.{ "openssl@3", "libnghttp2", "libuv", "uvwasi", "bzip2" });
+    const openssl = try makeFormula("openssl@3", &.{});
+    const libuv = try makeFormula("libuv", &.{});
+    const libnghttp2 = try makeFormula("libnghttp2", &.{"openssl@3"});
+    const uvwasi = try makeFormula("uvwasi", &.{"libuv"});
+    const node = try makeFormula("node", &.{ "openssl@3", "libnghttp2", "libuv", "uvwasi", "bzip2" });
 
     try r.formulae.put("openssl@3", openssl);
     try r.formulae.put("libuv", libuv);

@@ -25,7 +25,7 @@ class Origin(http.server.BaseHTTPRequestHandler):
             self.send_header('Location', f'http://localhost:{self.server.server_port}/payload')
             self.end_headers()
         else:
-            self.send_response(404 if self.path == '/missing' else 200)
+            self.send_response({'/missing': 404, '/unavailable': 503}.get(self.path, 200))
             self.send_header('Content-Length', '7')
             self.end_headers()
             self.wfile.write(b'payload')
@@ -93,6 +93,9 @@ with tempfile.TemporaryDirectory() as temp:
         if success and kind in ('get', 'post'): assert result.stdout == b'payload', result.stdout
         return result
     run('get', direct + '/payload')  # native transport
+    # A missing formula (404) must stay distinguishable from a transient 5xx.
+    assert b'BottleNotFound' in run('get', direct + '/missing', success=False).stderr
+    assert b'FetchFailed' in run('get', direct + '/unavailable', success=False).stderr
     run('get', direct + '/payload', {'HTTP_PROXY': proxy_url})
     assert hits[-1][0] == 'GET'
     assert hits[-1][2] == 'Basic ' + base64.b64encode(b'user:pass').decode()
