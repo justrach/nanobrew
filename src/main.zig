@@ -1600,6 +1600,9 @@ fn fullInstallOne(
     const stderr = StderrWriter{};
     const bench: bool = std.c.getenv("NB_BENCH") != null;
     var bench_t: i64 = 0;
+    // A same-version reinstall parks the old keg (cellar.replaceKeg): drop it
+    // when this install is done, put it back when any later step failed.
+    defer nb.cellar.settlePrevious(g_io, f.name, phase.load(.acquire) == @intFromEnum(Phase.done));
 
     const is_source_build = f.bottle_url.len == 0 and f.source_url.len > 0;
     var expected_ver_buf: [256]u8 = undefined;
