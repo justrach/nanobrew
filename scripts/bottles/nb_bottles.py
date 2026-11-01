@@ -23,6 +23,7 @@ See manage.md at the repo root for the full operating guide.
 
 import argparse
 import base64
+import gzip
 import hashlib
 import io
 import json
@@ -418,7 +419,10 @@ def cmd_repackage(args):
                     members[Path(info.name).name] = ("tar", tf, info)
 
         out = dist / f"{args.name}-{ver}.{platform}.tar.gz"
-        with tarfile.open(out, "w:gz") as bottle:
+        # mtime=0: a rerun must rebuild the same digest, or push_manifest
+        # refuses the already-pushed version tag.
+        with gzip.GzipFile(out, "wb", mtime=0) as compressed, \
+                tarfile.open(fileobj=compressed, mode="w") as bottle:
             for rel in artifacts:
                 base = Path(rel).name
                 if base not in members:
