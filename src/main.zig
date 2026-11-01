@@ -3145,6 +3145,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
         old_ver: []const u8,
         is_cask: bool,
         is_pinned: bool,
+        apps: []const []const u8 = &.{},
     };
     var to_check: std.ArrayList(CheckItem) = .empty;
     defer to_check.deinit(alloc);
@@ -3170,6 +3171,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
                 .old_ver = c.version,
                 .is_cask = true,
                 .is_pinned = false,
+                .apps = c.apps,
             }) catch {};
         }
     }
@@ -3355,6 +3357,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
     for (to_check.items, 0..) |item, i| {
         if (version_results[i].has_update) {
             const new_ver = version_results[i].new_ver_buf[0..version_results[i].new_ver_len];
+            if (item.is_cask and caskAppUpdatedItself(alloc, stdout, item.name, item.apps, item.old_ver, new_ver)) continue;
             const n = alloc.dupe(u8, item.name) catch continue;
             const ov = alloc.dupe(u8, item.old_ver) catch {
                 alloc.free(n);
@@ -3381,6 +3384,23 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
     }
 
     return result;
+}
+
+/// True when an auto-updating app on disk is already at or past `candidate`,
+/// so listing or upgrading it would be a downgrade.
+fn caskAppUpdatedItself(alloc: std.mem.Allocator, stdout: StdoutWriter, token: []const u8, apps: []const []const u8, recorded: []const u8, candidate: []const u8) bool {
+    if (apps.len == 0) return false;
+    var app_buf: [1024]u8 = undefined;
+    const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{std.fs.path.basename(apps[0])}) catch return false;
+    const bundle = nb.cask_upgrade.bundleShortVersion(alloc, g_io, app_path) orelse return false;
+    defer alloc.free(bundle);
+    if (nb.cask_upgrade.outdated(recorded, candidate, true, bundle)) return false;
+    // The bulk version index has no auto_updates flag; fetch it only in this rare case.
+    const cask = nb.api_client.fetchCask(alloc, token) catch return false;
+    defer cask.deinit(alloc);
+    if (nb.cask_upgrade.outdated(recorded, candidate, cask.auto_updates, bundle)) return false;
+    stdout.print("    {s}: app updated itself to {s}; skipping {s}\n", .{ token, bundle, candidate }) catch {};
+    return true;
 }
 
 fn fetchCaskUpgradeCandidate(alloc: std.mem.Allocator, token: []const u8) !nb.cask.Cask {
