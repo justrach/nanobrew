@@ -2578,7 +2578,7 @@ fn ownedCaskBinaryTarget(cask: nb.database.CaskRecord, linked: []const u8, targe
 
     for (cask.apps) |app| {
         var app_buf: [1024]u8 = undefined;
-        const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{app}) catch continue;
+        const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{std.fs.path.basename(app)}) catch continue;
         if (pathIsWithin(target, app_path)) return target;
     }
     return null;
@@ -2612,7 +2612,8 @@ fn probeInstalledCask(
 
     for (cask.apps) |app| {
         var app_buf: [1024]u8 = undefined;
-        const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{app}) catch {
+        // Records from v0.1.214 and older can keep the source subfolder ("Sub/Foo.app").
+        const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{std.fs.path.basename(app)}) catch {
             ok = false;
             continue;
         };
@@ -4251,7 +4252,8 @@ fn collectCaskDbEntries(
 ) void {
     for (artifacts) |art| {
         switch (art) {
-            .app => |a| apps.append(alloc, a) catch {},
+            // Install copies `app "Sub/Foo.app"` to /Applications/Foo.app.
+            .app => |a| apps.append(alloc, std.fs.path.basename(a)) catch {},
             .binary => |b| binaries.append(alloc, b.target) catch {},
             .suite => |s| if (nb.cask_installer.artifactInstallsToApplications(s.target)) {
                 apps.append(alloc, std.fs.path.basename(s.target)) catch {};

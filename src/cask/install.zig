@@ -681,7 +681,8 @@ fn removeAppsIn(io: std.Io, applications_dir: []const u8, apps: []const []const 
     var failed = false;
     for (apps) |app| {
         var buf: [512]u8 = undefined;
-        const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ applications_dir, app }) catch continue;
+        // Install copies `app "Sub/Foo.app"` to Foo.app; older records keep "Sub/Foo.app".
+        const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ applications_dir, std.fs.path.basename(app) }) catch continue;
         std.Io.Dir.cwd().deleteTree(io, path) catch |err| {
             var _b: [512]u8 = undefined;
             const _m = std.fmt.bufPrint(&_b, "nb: could not remove {s}: {}\n", .{ app, err }) catch "nb: could not remove app\n";
@@ -1818,4 +1819,21 @@ test "removeAppsIn reports apps it could not delete" {
 
     try removeAppsIn(io, applications_dir, &.{"Gone.app"});
     try std.testing.expectError(error.AppRemovalFailed, removeAppsIn(io, applications_dir, &.{ "Locked.app", "Gone.app" }));
+}
+
+test "removeAppsIn removes the installed app when the record keeps its subfolder" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var applications_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const applications_dir = try std.fmt.bufPrint(&applications_buf, ".zig-cache/tmp/{s}", .{tmp_dir.sub_path[0..]});
+    // `app "Sub/Foo.app"` installs to <applications>/Foo.app, but records
+    // written by v0.1.214 and older keep "Sub/Foo.app".
+    var dst_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dst = try appDestinationPath(applications_dir, "Sub/Foo.app", &dst_buf);
+    try std.Io.Dir.cwd().createDirPath(io, dst);
+
+    try removeAppsIn(io, applications_dir, &.{"Sub/Foo.app"});
+    try std.testing.expect(!try pathExistsNoFollow(io, dst));
 }
