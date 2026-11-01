@@ -85,7 +85,7 @@ pub const Database = struct {
         const st = file.stat(lib_io) catch return db;
         db.loaded_mtime_ns = st.mtime.nanoseconds;
         if (st.size > max_state_bytes) {
-            std.Io.File.stderr().writeStreamingAll(paths.safe_io, "warning: nanobrew database is too large to load; it will not be modified: " ++ DB_PATH ++ "\n") catch {};
+            warnUnreadable("is too large to load; it will not be modified", path);
             db.unreadable = true;
             return db;
         }
@@ -95,7 +95,7 @@ pub const Database = struct {
         };
         const n_read = file.readPositionalAll(lib_io, contents, 0) catch {
             alloc.free(contents);
-            std.Io.File.stderr().writeStreamingAll(paths.safe_io, "warning: nanobrew database read failed; it will not be modified: " ++ DB_PATH ++ "\n") catch {};
+            warnUnreadable("read failed; it will not be modified", path);
             db.unreadable = true;
             return db;
         };
@@ -104,7 +104,7 @@ pub const Database = struct {
         if (data.len == 0) return db;
 
         const parsed = std.json.parseFromSlice(std.json.Value, alloc, data, .{}) catch {
-            std.Io.File.stderr().writeStreamingAll(paths.safe_io, "warning: nanobrew database parse failed; it will not be modified until repaired or removed: " ++ DB_PATH ++ "\n") catch {};
+            warnUnreadable("parse failed; it will not be modified until repaired or removed", path);
             db.unreadable = true;
             return db;
         };
@@ -865,6 +865,13 @@ fn getU32(obj: std.json.ObjectMap, key: []const u8) u32 {
     const value = getInt(obj, key);
     if (value < 0 or value > std.math.maxInt(u32)) return 0;
     return @intCast(value);
+}
+
+/// Name the file openAt() actually read, not the default DB_PATH.
+fn warnUnreadable(comptime reason: []const u8, path: []const u8) void {
+    var buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "warning: nanobrew database " ++ reason ++ ": {s}\n", .{path}) catch "warning: nanobrew database " ++ reason ++ "\n";
+    std.Io.File.stderr().writeStreamingAll(paths.safe_io, msg) catch {};
 }
 
 const testing = std.testing;
