@@ -4164,26 +4164,29 @@ fn runUpdate(alloc: std.mem.Allocator) void {
 
 // ── nb install --cask ──
 
-/// Collect the app and binary names a cask install records in the DB. App
+/// Collect the app, binary and font names a cask install records in the DB. App
 /// artifacts contribute their app name; suite/artifact payloads that land in
-/// /Applications contribute the target basename (so `nb remove` cleans them up).
+/// /Applications contribute the target basename (so `nb remove` cleans them up);
+/// fonts contribute the file name they get in ~/Library/Fonts.
 fn collectCaskDbEntries(
     alloc: std.mem.Allocator,
     artifacts: []const nb.cask.Artifact,
     apps: *std.ArrayList([]const u8),
     binaries: *std.ArrayList([]const u8),
+    fonts: *std.ArrayList([]const u8),
 ) void {
     for (artifacts) |art| {
         switch (art) {
             .app => |a| apps.append(alloc, a) catch {},
             .binary => |b| binaries.append(alloc, b.target) catch {},
+            .font => |f| fonts.append(alloc, std.fs.path.basename(f)) catch {},
             .suite => |s| if (nb.cask_installer.artifactInstallsToApplications(s.target)) {
                 apps.append(alloc, std.fs.path.basename(s.target)) catch {};
             },
             .artifact => |a| if (nb.cask_installer.artifactInstallsToApplications(a.target)) {
                 apps.append(alloc, std.fs.path.basename(a.target)) catch {};
             },
-            .pkg, .font, .installer_script, .uninstall => {},
+            .pkg, .installer_script, .uninstall => {},
         }
     }
 }
@@ -4325,9 +4328,11 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
                 defer apps.deinit(alloc);
                 var binaries: std.ArrayList([]const u8) = .empty;
                 defer binaries.deinit(alloc);
-                collectCaskDbEntries(alloc, cask_meta.artifacts, &apps, &binaries);
+                var fonts: std.ArrayList([]const u8) = .empty;
+                defer fonts.deinit(alloc);
+                collectCaskDbEntries(alloc, cask_meta.artifacts, &apps, &binaries, &fonts);
                 // Adoption cannot prove which bytes produced an existing payload.
-                db.recordCaskInstall(token, cask_meta.token, disk_ver, "", apps.items, binaries.items) catch |err| {
+                db.recordCaskInstall(token, cask_meta.token, disk_ver, "", apps.items, binaries.items, fonts.items) catch |err| {
                     stderr.print("nb: could not record existing cask install: {}\n", .{err}) catch {};
                     had_error = true;
                     break;
@@ -4363,15 +4368,17 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
         };
         nb.cask_installer.traceCaskPhase(cask_trace, token, "payload_install", phase_timer.read());
 
-        // Collect app/binary names from artifacts for the database.
+        // Collect app/binary/font names from artifacts for the database.
         var apps: std.ArrayList([]const u8) = .empty;
         defer apps.deinit(alloc);
         var binaries: std.ArrayList([]const u8) = .empty;
         defer binaries.deinit(alloc);
-        collectCaskDbEntries(alloc, cask_meta.artifacts, &apps, &binaries);
+        var fonts: std.ArrayList([]const u8) = .empty;
+        defer fonts.deinit(alloc);
+        collectCaskDbEntries(alloc, cask_meta.artifacts, &apps, &binaries, &fonts);
 
         phase_timer = MonoTimer.start();
-        db.recordCaskInstall(token, cask_meta.token, cask_meta.version, cask_meta.sha256, apps.items, binaries.items) catch |err| {
+        db.recordCaskInstall(token, cask_meta.token, cask_meta.version, cask_meta.sha256, apps.items, binaries.items, fonts.items) catch |err| {
             stderr.print("nb: payload installed but its database record failed: {}\n", .{err}) catch {};
             had_error = true;
             break;
@@ -4422,7 +4429,7 @@ fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) void {
         };
 
         const caskroom_token = if (record.canonical_token.len > 0) record.canonical_token else record.token;
-        nb.cask_installer.removeCask(alloc, g_io, caskroom_token, record.version, record.apps, record.binaries) catch |err| {
+        nb.cask_installer.removeCask(alloc, g_io, caskroom_token, record.version, record.apps, record.binaries, record.fonts) catch |err| {
             stderr.print("nb: failed to remove cask '{s}': {}\n", .{ token, err }) catch {};
             continue;
         };
@@ -7222,7 +7229,7 @@ fn runMigrate(alloc: std.mem.Allocator) void {
 
                 const empty_apps: []const []const u8 = &.{};
                 const empty_bins: []const []const u8 = &.{};
-                db.recordCaskInstall(token, token, version, "", empty_apps, empty_bins) catch {
+                db.recordCaskInstall(token, token, version, "", empty_apps, empty_bins, &.{}) catch {
                     stderr.print("nb: failed to record cask {s} {s}\n", .{ token, version }) catch {};
                     continue;
                 };
