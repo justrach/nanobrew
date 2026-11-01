@@ -5194,15 +5194,18 @@ fn runRollback(alloc: std.mem.Allocator, args: []const []const u8) void {
     };
     defer db.close();
 
+    var had_error = false;
     for (args) |name| {
         const keg = db.findKeg(name) orelse {
             stderr.print("nb: '{s}' is not installed\n", .{name}) catch {};
+            had_error = true;
             continue;
         };
 
         const hist = db.getHistory(name);
         if (hist.len == 0) {
             stderr.print("nb: no previous version found for '{s}'\n", .{name}) catch {};
+            had_error = true;
             continue;
         }
 
@@ -5210,29 +5213,54 @@ fn runRollback(alloc: std.mem.Allocator, args: []const []const u8) void {
 
         if (prev.sha256.len > 0 and !nb.store.hasEntry(g_io, prev.sha256)) {
             stderr.print("nb: store entry for previous version of '{s}' is missing\n", .{name}) catch {};
+            had_error = true;
+            continue;
+        }
+
+        // Entries recorded without a sha (`nb migrate`, heal paths) have no
+        // store payload: only a keg still in the Cellar can be restored.
+        var ver_buf: [256]u8 = undefined;
+        if (prev.sha256.len == 0 and nb.cellar.detectKegVersion(name, prev.version, &ver_buf) == null) {
+            stderr.print("nb: the payload for {s} {s} is no longer on disk; try `nb install {s}@{s}`\n", .{ name, prev.version, name, prev.version }) catch {};
+            had_error = true;
             continue;
         }
 
         stdout.print("==> Rolling back {s} ({s} -> {s})\n", .{ name, keg.version, prev.version }) catch {};
 
-        nb.linker.unlinkKeg(name, keg.version) catch {};
-        nb.cellar.remove(name, keg.version) catch {};
-
+        // Restore the previous keg before touching the current one, so a
+        // failure leaves the current version installed and linked.
         if (prev.sha256.len > 0) {
             nb.cellar.materialize(g_io, prev.sha256, name, prev.version) catch |err| {
                 stderr.print("nb: {s}: materialize failed: {}\n", .{ name, err }) catch {};
+                had_error = true;
                 continue;
             };
         }
 
-        var ver_buf: [256]u8 = undefined;
         const actual_ver = nb.cellar.detectKegVersion(name, prev.version, &ver_buf) orelse prev.version;
         platform.relocate.relocateKeg(alloc, g_io, name, actual_ver) catch {};
         platform.relocate.replaceKegPlaceholders(g_io, name, actual_ver, &.{});
         platform.relocate.sealKegBundles(alloc, g_io, name, actual_ver);
-        nb.linker.linkKeg(name, actual_ver) catch {};
+        nb.linker.unlinkKeg(name, keg.version) catch {};
+        nb.linker.linkKeg(name, actual_ver) catch |err| {
+            stderr.print("nb: {s}: link failed: {}\n", .{ name, err }) catch {};
+            nb.linker.linkKeg(name, keg.version) catch {};
+            had_error = true;
+            continue;
+        };
+        // A same-version history entry re-materializes into the current keg dir.
+        if (!std.mem.eql(u8, keg.version, actual_ver)) nb.cellar.remove(name, keg.version) catch {};
         db.recordInstall(name, prev.version, prev.sha256) catch {};
         stdout.print("==> Rolled back {s} to {s}\n", .{ name, prev.version }) catch {};
+    }
+    if (had_error) {
+        // process.exit skips the deferred close: keep the records of the
+        // packages that did roll back.
+        db.flush() catch |err| {
+            stderr.print("nb: WARNING: failed to save package database: {}\n", .{err}) catch {};
+        };
+        std.process.exit(1);
     }
 }
 
