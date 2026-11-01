@@ -99,6 +99,7 @@ comptime {
     _ = tar;
     _ = native_tar;
     _ = certs;
+    _ = postinstall;
     _ = linker;
     _ = cellar;
     _ = @import("platform/copy.zig");
