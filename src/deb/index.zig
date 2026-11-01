@@ -8,6 +8,7 @@
 // all parsed package data at once.
 
 const std = @import("std");
+const version_cmp = @import("../version.zig");
 
 pub const DebPackage = struct {
     name: []const u8,
@@ -155,11 +156,17 @@ pub fn debUrl(base_url: []const u8, filename: []const u8, buf: []u8) []const u8 
     return std.fmt.bufPrint(buf, "{s}/{s}", .{ base_url, filename }) catch "";
 }
 
-/// Build a package index into a name → DebPackage lookup map.
+/// Build a package index into a name → DebPackage lookup map. When a name
+/// appears more than once (several sources, or several versions in one
+/// Packages file), the newest version wins, as in apt without pins; on a tie
+/// the first one listed wins.
 pub fn buildIndex(alloc: std.mem.Allocator, packages: []const DebPackage) !std.StringHashMap(DebPackage) {
     var map = std.StringHashMap(DebPackage).init(alloc);
     for (packages) |pkg| {
-        map.put(pkg.name, pkg) catch continue;
+        const gop = map.getOrPut(pkg.name) catch continue;
+        if (!gop.found_existing or version_cmp.compareDebVersions(pkg.version, gop.value_ptr.version) == .gt) {
+            gop.value_ptr.* = pkg;
+        }
     }
     return map;
 }
@@ -467,6 +474,29 @@ pub fn invalidateCache() void {
 }
 
 const testing = std.testing;
+
+test "buildIndex - newest version wins across sources, first wins on a tie" {
+    const alloc = testing.allocator;
+    const P = struct {
+        fn curl(version: []const u8, mirror: []const u8) DebPackage {
+            return .{ .name = "curl", .version = version, .depends = "", .provides = "", .filename = "pool/main/c/curl.deb", .sha256 = "", .size = 0, .description = "", .mirror = mirror };
+        }
+    };
+    const updates = P.curl("8.5.0-2ubuntu10.6", "http://archive.ubuntu.com/ubuntu");
+    const security = P.curl("8.5.0-2ubuntu10.5", "http://security.ubuntu.com/ubuntu");
+
+    // Stock noble ubuntu.sources lists noble-updates before noble-security.
+    for ([_][2]DebPackage{ .{ updates, security }, .{ security, updates } }) |pkgs| {
+        var idx = try buildIndex(alloc, &pkgs);
+        defer idx.deinit();
+        try testing.expectEqualStrings("8.5.0-2ubuntu10.6", idx.get("curl").?.version);
+    }
+
+    const tie = [_]DebPackage{ P.curl("1.0-1", "http://first"), P.curl("1.0-1", "http://second") };
+    var idx = try buildIndex(alloc, &tie);
+    defer idx.deinit();
+    try testing.expectEqualStrings("http://first", idx.get("curl").?.mirror);
+}
 
 test "buildProvidesMap - first provider wins" {
     const alloc = testing.allocator;

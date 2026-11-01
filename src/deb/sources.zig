@@ -10,9 +10,10 @@
 //   * /etc/apt/sources.list.d/*.sources      (deb822 multi-line format)
 //
 // Pin priorities in /etc/apt/preferences[.d/*] are *not* parsed yet — when
-// the same package appears in multiple sources we pick the first one that
-// resolves cleanly. That matches the previous single-mirror behaviour and
-// keeps this PR scoped; pin-priority handling is a follow-up.
+// the same package appears in multiple sources, deb/index.zig `buildIndex`
+// picks the newest version (apt's rule when every source has the default
+// priority) and, on a tie, the first source listed. Pin-priority handling is
+// a follow-up.
 
 const std = @import("std");
 const builtin = @import("builtin");
