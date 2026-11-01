@@ -11,6 +11,7 @@ const DownloadFormat = @import("../api/cask.zig").DownloadFormat;
 const paths = @import("../platform/paths.zig");
 const fetch = @import("../net/fetch.zig");
 const telemetry = @import("../telemetry/client.zig");
+const ownedBinary = @import("upgrade.zig").ownedBinary;
 const builtin = @import("builtin");
 
 const PREFIX = paths.PREFIX;
@@ -657,16 +658,13 @@ pub fn removeCask(
     // 1. Delete apps from /Applications/
     try removeAppsIn(lib_io, "/Applications", apps);
 
-    // 2. Delete binary symlinks from prefix/bin/
-    for (binaries) |bin| {
-        var buf: [512]u8 = undefined;
-        const path = std.fmt.bufPrint(&buf, "{s}/bin/{s}", .{ PREFIX, bin }) catch continue;
-        std.Io.Dir.deleteFileAbsolute(lib_io, path) catch {};
-    }
-
-    // 3. Delete Caskroom entry
     var caskroom_buf: [512]u8 = undefined;
     const ver_dir = std.fmt.bufPrint(&caskroom_buf, "{s}/Caskroom/{s}/{s}", .{ PREFIX, safe_token, version }) catch return;
+
+    // 2. Delete binary symlinks from prefix/bin/
+    removeBinariesIn(lib_io, PREFIX ++ "/bin", ver_dir, "/Applications", apps, binaries);
+
+    // 3. Delete Caskroom entry
     std.Io.Dir.cwd().deleteTree(lib_io, ver_dir) catch {};
 
     // Try to remove parent dir if empty
@@ -691,6 +689,22 @@ fn removeAppsIn(io: std.Io, applications_dir: []const u8, apps: []const []const 
         };
     }
     if (failed) return error.AppRemovalFailed;
+}
+
+/// The record lists every binary name, including ones install skipped, so a
+/// name may now be another package's link: delete only links into this cask.
+fn removeBinariesIn(io: std.Io, bin_dir: []const u8, payload: []const u8, applications_dir: []const u8, apps: []const []const u8, binaries: []const []const u8) void {
+    for (binaries) |bin| {
+        var buf: [512]u8 = undefined;
+        const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ bin_dir, bin }) catch continue;
+        if (ownedBinary(io, path, apps, payload, applications_dir)) {
+            std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+        } else if (std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false })) |_| {
+            var _b: [1024]u8 = undefined;
+            const _m = std.fmt.bufPrint(&_b, "nb: leaving {s}: it does not link into this cask\n", .{path}) catch "nb: leaving a binary link this cask does not own\n";
+            std.Io.File.stderr().writeStreamingAll(io, _m) catch {};
+        } else |_| {}
+    }
 }
 
 fn downloadArtifact(alloc: std.mem.Allocator, io: std.Io, url: []const u8, dest: []const u8, cask: Cask) !bool {
@@ -1836,4 +1850,29 @@ test "removeAppsIn removes the installed app when the record keeps its subfolder
 
     try removeAppsIn(io, applications_dir, &.{"Sub/Foo.app"});
     try std.testing.expect(!try pathExistsNoFollow(io, dst));
+}
+
+test "removeBinariesIn keeps recorded binary links the cask does not own" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "bin");
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp.dir.realPath(io, &root_buf)];
+    var bufs: [5][std.fs.max_path_bytes]u8 = undefined;
+    const bin_dir = try std.fmt.bufPrint(&bufs[0], "{s}/bin", .{root});
+    const payload = try std.fmt.bufPrint(&bufs[1], "{s}/Caskroom/tool/1.0", .{root});
+    const applications = try std.fmt.bufPrint(&bufs[2], "{s}/Applications", .{root});
+    const payload_bin = try std.fmt.bufPrint(&bufs[3], "{s}/tool", .{payload});
+    const app_bin = try std.fmt.bufPrint(&bufs[4], "{s}/Tool.app/Contents/MacOS/tool-app", .{applications});
+    try tmp.dir.symLink(io, payload_bin, "bin/tool", .{});
+    try tmp.dir.symLink(io, app_bin, "bin/tool-app", .{});
+    // Install skipped `mono` but recorded it; a formula linked bin/mono later.
+    try tmp.dir.symLink(io, "../Cellar/mono/6.12/bin/mono", "bin/mono", .{});
+
+    removeBinariesIn(io, bin_dir, payload, applications, &.{"Tool.app"}, &.{ "tool", "tool-app", "mono", "never-linked" });
+
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "bin/tool", .{ .follow_symlinks = false }));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "bin/tool-app", .{ .follow_symlinks = false }));
+    _ = try tmp.dir.statFile(io, "bin/mono", .{ .follow_symlinks = false });
 }

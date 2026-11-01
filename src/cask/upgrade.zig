@@ -3,7 +3,6 @@ const builtin = @import("builtin");
 const paths = @import("../platform/paths.zig");
 const Cask = @import("../api/cask.zig").Cask;
 const Database = @import("../db/database.zig").Database;
-const CaskRecord = @import("../db/database.zig").CaskRecord;
 const installer = @import("install.zig");
 pub const transaction = @import("transaction.zig");
 
@@ -68,13 +67,15 @@ fn within(path: []const u8, root: []const u8) bool {
     return path.len > root.len and std.mem.startsWith(u8, path, root) and path[root.len] == '/';
 }
 
-fn ownedBinary(io: std.Io, link: []const u8, old: CaskRecord, old_payload: []const u8, applications: []const u8) bool {
+/// True when `link` is a symlink into the cask's payload or one of its apps.
+/// Upgrade and remove both use it so neither touches another package's link.
+pub fn ownedBinary(io: std.Io, link: []const u8, old_apps: []const []const u8, old_payload: []const u8, applications: []const u8) bool {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = std.Io.Dir.readLinkAbsolute(io, link, &buf) catch return false;
     const target = buf[0..n];
     if (!relative(std.mem.trimStart(u8, target, "/"))) return false;
     if (within(target, old_payload)) return true;
-    for (old.apps) |app| {
+    for (old_apps) |app| {
         var app_buf: [std.fs.max_path_bytes]u8 = undefined;
         const root = std.fmt.bufPrint(&app_buf, "{s}/{s}", .{ applications, std.fs.path.basename(app) }) catch return false;
         if (within(target, root)) return true;
@@ -160,7 +161,7 @@ pub fn upgradeWithHooks(alloc: std.mem.Allocator, io: std.Io, requested: []const
     for (cask.artifacts) |art| switch (art) {
         .binary => |bin| {
             const destination = try std.fs.path.join(a, &.{ locations.bin, bin.target });
-            const owned = contains(old.binaries, bin.target) and ownedBinary(io, destination, old, old_payload, locations.applications);
+            const owned = contains(old.binaries, bin.target) and ownedBinary(io, destination, old.apps, old_payload, locations.applications);
             try addStep(a, io, &steps, destination, owned, false);
             try bins.append(a, bin.target);
         },
@@ -172,7 +173,7 @@ pub fn upgradeWithHooks(alloc: std.mem.Allocator, io: std.Io, requested: []const
         if (!component(bin)) return error.UnsafePath;
         if (!contains(bins.items, bin)) {
             const destination = try std.fs.path.join(a, &.{ locations.bin, bin });
-            try addStep(a, io, &steps, destination, ownedBinary(io, destination, old, old_payload, locations.applications), true);
+            try addStep(a, io, &steps, destination, ownedBinary(io, destination, old.apps, old_payload, locations.applications), true);
         }
     }
     for (old.apps) |app| {

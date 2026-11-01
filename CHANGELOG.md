@@ -5,6 +5,7 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- `nb remove --cask` deletes a recorded `bin/` link only when it points into that cask's Caskroom payload or one of its apps, the same ownership rule `nb upgrade --cask` uses. A name the cask recorded but never linked (for example a binary install refused) is left alone when another package now owns it, and nanobrew says so. (#477)
 - `nb remove --cask` now removes an app the cask names inside a subfolder (`app "Sub/Foo.app"`). Install copies it to `/Applications/Foo.app`; the record and the post-install probe now use that basename, and removal also handles records written by older versions. (#433)
 - `nb switch` with several specs now saves the new version of each package that switched, even when another spec fails. Before, `state.json` kept the old version while the links pointed at the new keg. (#475)
 - `nb install name@version` now saves the pin even when another package in the same command fails. "Pinned" prints only when the pin was written. A pinned package whose own install failed is not pinned at its older keg. (#429)
