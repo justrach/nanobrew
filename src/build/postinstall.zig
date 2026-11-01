@@ -58,13 +58,11 @@ fn runPostInstallScript(alloc: std.mem.Allocator, io: std.Io, formula: Formula) 
     const eff_ver = formula.effectiveVersion(&ver_buf);
 
     // Fetch Ruby formula source
-    const first_letter = if (formula.name.len > 0) formula.name[0..1] else return;
-    const url = std.fmt.allocPrint(alloc, "https://raw.githubusercontent.com/Homebrew/homebrew-core/HEAD/Formula/{s}/{s}.rb", .{
-        first_letter, formula.name,
-    }) catch return error.OutOfMemory;
+    if (formula.name.len == 0) return;
+    const url = coreFormulaUrl(alloc, formula.name) catch return error.OutOfMemory;
     defer alloc.free(url);
 
-    const ruby_src = formula_cache.getVerifiedFormula(alloc, formula.name, eff_ver, url) catch return;
+    const ruby_src = try formula_cache.getVerifiedFormula(alloc, formula.name, eff_ver, url);
     defer alloc.free(ruby_src);
 
     if (ruby_src.len == 0) return;
@@ -94,6 +92,27 @@ fn runPostInstallScript(alloc: std.mem.Allocator, io: std.Io, formula: Formula) 
                 ({ const _tmp = std.fmt.allocPrint(std.heap.smp_allocator, "nb: {s}: post-install command failed (exit {d})\n", .{ formula.name, result.term.exited }) catch ""; defer std.heap.smp_allocator.free(_tmp); std.Io.File.stderr().writeStreamingAll(lib_io, _tmp) catch {}; });
             }
         }
+    }
+}
+
+/// homebrew-core shards Formula/ by first letter, except that every "lib*"
+/// formula lives in Formula/lib/ (Formula/lib/libpng.rb, not Formula/l/).
+fn coreFormulaUrl(alloc: std.mem.Allocator, name: []const u8) ![]u8 {
+    const shard: []const u8 = if (std.mem.startsWith(u8, name, "lib")) "lib" else name[0..1];
+    return std.fmt.allocPrint(alloc, "https://raw.githubusercontent.com/Homebrew/homebrew-core/HEAD/Formula/{s}/{s}.rb", .{ shard, name });
+}
+
+test "coreFormulaUrl - homebrew-core shard paths" {
+    const a = std.testing.allocator;
+    const cases = [_][2][]const u8{
+        .{ "libpng", "https://raw.githubusercontent.com/Homebrew/homebrew-core/HEAD/Formula/lib/libpng.rb" },
+        .{ "jq", "https://raw.githubusercontent.com/Homebrew/homebrew-core/HEAD/Formula/j/jq.rb" },
+        .{ "lima", "https://raw.githubusercontent.com/Homebrew/homebrew-core/HEAD/Formula/l/lima.rb" },
+    };
+    for (cases) |c| {
+        const url = try coreFormulaUrl(a, c[0]);
+        defer a.free(url);
+        try std.testing.expectEqualStrings(c[1], url);
     }
 }
 
