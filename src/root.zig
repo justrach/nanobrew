@@ -61,9 +61,6 @@ pub const deb_extract = @import("deb/extract.zig");
 pub const deb_distro = @import("deb/distro.zig");
 pub const deb_sources = @import("deb/sources.zig");
 
-// Reused from zigrep
-pub const arena = @import("mem/arena.zig");
-
 // Force Zig to discover tests in all imported modules
 pub const security_test = @import("security_test.zig");
 comptime {
