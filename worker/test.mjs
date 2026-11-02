@@ -13,10 +13,10 @@ for (const path of ['/v0.1.190', '/v0.1.191', '/v0.1.192', '/v0.1.193']) {
 for (const payload of [new Response('', { status: 503 }), Response.json({}), Response.json({ tag_name: 'unexpected' })]) {
   globalThis.fetch = async () => payload;
   const response = await worker.fetch(new Request('https://example.test/version'));
-  assert.equal(await response.text(), '0.1.212');
+  assert.equal(await response.text(), '0.1.215');
 }
 globalThis.fetch = async () => Response.json({ tag_name: 'v0.1.210' });
 assert.equal(await (await worker.fetch(new Request('https://example.test/version'))).text(), '0.1.210');
 const installScript = await (await worker.fetch(new Request('https://example.test/install'))).text();
-assert.match(installScript, /^FALLBACK_RELEASE="v0\.1\.212"$/m);
+assert.match(installScript, /^FALLBACK_RELEASE="v0\.1\.215"$/m);
 console.log('Worker: release routes, forward navigation, cache TTL, current-version fallback and live version passed');
