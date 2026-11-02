@@ -20,7 +20,7 @@ Following a confirmed supply-chain attack attempt via an external pull request, 
 2. The maintainer will evaluate it, ask questions if needed, and implement it directly — or explain why it will not be addressed.
 3. If you want credit, say so in the issue. Contributions will be attributed in commit messages and release notes.
 
-If you have found a **security vulnerability**, do not open a public issue. Email the maintainer directly or use GitHub's private vulnerability reporting.
+If you have found a **security vulnerability**, do not open a public issue. Report it through GitHub's private vulnerability reporting: [Security → Report a vulnerability](https://github.com/justrach/nanobrew/security/advisories/new). See [SECURITY.md](SECURITY.md).
 
 ---
 This codebase moves quickly across Zig runtime code, packaging logic, platform-specific install flows, and CI. Small, current, issue-linked PRs are much easier to review and much less likely to regress behavior.
