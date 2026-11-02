@@ -4,6 +4,17 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+## [0.1.215] - 2026-11-02
+
+### Fixed
+- `nb rollback` restores the previous keg before it removes the current one. It refuses, and leaves the current version installed, when the previous version's payload is gone; it exits 1 on any failure instead of printing "Rolled back". (#427)
+- A failed `nb install --cask` removes the Caskroom version dir it created, so a later install can no longer adopt a hand-installed app that `nb remove --cask` would then delete. (#451)
+
+### Changed
+- `SECURITY.md` and `CONTRIBUTING.md` give one instruction for security reports: GitHub private vulnerability reporting, now enabled. (#426)
+
+v0.1.213 and v0.1.214 were tagged but not published as GitHub Releases; this is the first published release that includes their changes. Items #426, #427 and #451 were reported by @Rex57.
+
 ## [0.1.214] - 2026-10-14
 
 ### Fixed
