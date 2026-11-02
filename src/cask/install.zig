@@ -103,6 +103,47 @@ pub fn ownedCaskVersionOnDisk(
     return null;
 }
 
+/// The `<Caskroom>/<token>/<version>` dir an install writes into.
+/// Paths may be absolute (production) or relative (tests).
+const CaskroomEntry = struct {
+    token_dir: []const u8,
+    version_dir: []const u8,
+    /// False when the version dir already held an earlier install's payload.
+    disposable: bool,
+
+    fn open(io: std.Io, token_dir: []const u8, version_dir: []const u8) !CaskroomEntry {
+        const cwd = std.Io.Dir.cwd();
+        cwd.createDir(io, token_dir, .default_dir) catch {};
+        cwd.access(io, token_dir, .{ .write = true }) catch return error.CaskroomUnavailable;
+        const created = if (cwd.createDir(io, version_dir, .default_dir)) |_| true else |_| false;
+        const entry: CaskroomEntry = .{
+            .token_dir = token_dir,
+            .version_dir = version_dir,
+            // An empty leftover (a failed install from before this cleanup
+            // existed) holds no payload, so it is safe to remove as well.
+            .disposable = created or dirIsEmpty(io, version_dir),
+        };
+        errdefer entry.discard(io);
+        cwd.access(io, version_dir, .{ .write = true }) catch return error.CaskroomUnavailable;
+        return entry;
+    }
+
+    /// Undo a failed install. ownedCaskVersionOnDisk takes any version dir as
+    /// proof that nanobrew installed the app, so a failure must not leave one.
+    fn discard(self: CaskroomEntry, io: std.Io) void {
+        if (!self.disposable) return;
+        std.Io.Dir.cwd().deleteTree(io, self.version_dir) catch {};
+        std.Io.Dir.cwd().deleteDir(io, self.token_dir) catch {}; // only when empty
+    }
+
+    fn dirIsEmpty(io: std.Io, path: []const u8) bool {
+        var dir = std.Io.Dir.cwd().openDir(io, path, .{ .iterate = true }) catch return false;
+        defer dir.close(io);
+        var iter = dir.iterate();
+        return (iter.next(io) catch return false) == null;
+    }
+};
+
 pub fn installCask(alloc: std.mem.Allocator, io: std.Io, cask: Cask) !void {
     const lib_io = io;
 
@@ -156,10 +197,8 @@ pub fn installCask(alloc: std.mem.Allocator, io: std.Io, cask: Cask) !void {
     std.Io.Dir.accessAbsolute(lib_io, CASKROOM_DIR, .{ .write = true }) catch return error.CaskroomUnavailable;
     var token_dir_buf: [512]u8 = undefined;
     const token_dir = std.fmt.bufPrint(&token_dir_buf, "{s}/{s}", .{ CASKROOM_DIR, safe_token }) catch return error.PathTooLong;
-    std.Io.Dir.createDirAbsolute(lib_io, token_dir, .default_dir) catch {};
-    std.Io.Dir.accessAbsolute(lib_io, token_dir, .{ .write = true }) catch return error.CaskroomUnavailable;
-    std.Io.Dir.createDirAbsolute(lib_io, caskroom_path, .default_dir) catch {};
-    std.Io.Dir.accessAbsolute(lib_io, caskroom_path, .{ .write = true }) catch return error.CaskroomUnavailable;
+    const caskroom_entry = try CaskroomEntry.open(lib_io, token_dir, caskroom_path);
+    errdefer caskroom_entry.discard(lib_io);
     traceCaskPhase(trace_enabled, cask.token, "caskroom", phase_timer.read());
 
     // 3. Mount/extract based on format
@@ -1696,6 +1735,63 @@ test "ownedCaskVersionOnDisk uses the basename for third-party tap tokens" {
     const v = ownedCaskVersionOnDisk(std.testing.io, caskroom_dir, "indaco/tap/sley", "1.2.3", &ver_buf);
     try std.testing.expect(v != null);
     try std.testing.expectEqualStrings("1.2.3", v.?);
+}
+
+/// Opens and discards a Caskroom entry for foo 1.0 under `tmp`, as
+/// installCask's errdefer does when a later step fails.
+fn failCaskInstallIn(io: std.Io, tmp: std.testing.TmpDir, caskroom_buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
+    const caskroom_dir = try std.fmt.bufPrint(caskroom_buf, ".zig-cache/tmp/{s}", .{tmp.sub_path[0..]});
+    var token_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const token_dir = try std.fmt.bufPrint(&token_buf, "{s}/foo", .{caskroom_dir});
+    var version_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const version_dir = try std.fmt.bufPrint(&version_buf, "{s}/foo/1.0", .{caskroom_dir});
+    const entry = try CaskroomEntry.open(io, token_dir, version_dir);
+    entry.discard(io);
+    return caskroom_dir;
+}
+
+test "failed cask install leaves no Caskroom entry for adoption (#451)" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+
+    var caskroom_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const caskroom_dir = try failCaskInstallIn(io, tmp, &caskroom_buf);
+
+    // Otherwise a hand-installed Foo.app would be adopted, and `nb remove` would delete it.
+    var ver_buf: [256]u8 = undefined;
+    try std.testing.expect(ownedCaskVersionOnDisk(io, caskroom_dir, "foo", "1.0", &ver_buf) == null);
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "foo", .{}));
+}
+
+test "failed cask install removes an empty leftover version dir (#451)" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "foo/1.0");
+
+    var caskroom_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const caskroom_dir = try failCaskInstallIn(io, tmp, &caskroom_buf);
+
+    var ver_buf: [256]u8 = undefined;
+    try std.testing.expect(ownedCaskVersionOnDisk(io, caskroom_dir, "foo", "1.0", &ver_buf) == null);
+}
+
+test "failed cask install keeps the Caskroom payload of an earlier install (#451)" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "foo/1.0");
+    try tmp.dir.writeFile(io, .{ .sub_path = "foo/1.0/foo-cli", .data = "payload" });
+
+    var caskroom_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const caskroom_dir = try failCaskInstallIn(io, tmp, &caskroom_buf);
+
+    var ver_buf: [256]u8 = undefined;
+    const v = ownedCaskVersionOnDisk(io, caskroom_dir, "foo", "1.0", &ver_buf);
+    try std.testing.expect(v != null);
+    try std.testing.expectEqualStrings("1.0", v.?);
+    try tmp.dir.access(io, "foo/1.0/foo-cli", .{});
 }
 
 test "archive staging preserves helpers resources and literal font names (#371 #373 #376)" {

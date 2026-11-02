@@ -2,7 +2,7 @@
 
 ## Reporting Vulnerabilities
 
-If you find a security vulnerability in nanobrew, please email **security@trilok.ai** or open a GitHub issue.
+If you find a security vulnerability in nanobrew, **do not open a public issue**. Report it privately through GitHub's private vulnerability reporting: [Security → Report a vulnerability](https://github.com/justrach/nanobrew/security/advisories/new).
 
 We take security seriously — in v0.1.073 alone we found and fixed 21 vulnerabilities through adversarial self-auditing.
 

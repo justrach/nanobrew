@@ -2,7 +2,7 @@ import { handleOutcomes, aggregateOutcomes } from "./outcomes.js";
 const REPO = "justrach/nanobrew";
 // Latest *published* release. Served by /version and used by the install
 // script when GitHub is unreachable; bump after each release is published.
-const LAST_RELEASE = "0.1.212";
+const LAST_RELEASE = "0.1.215";
 
 const INSTALL_SCRIPT = `#!/bin/bash
 set -euo pipefail
