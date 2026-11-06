@@ -219,12 +219,12 @@ pub fn main(init: std.process.Init) !void {
 
     switch (cmd) {
         .init => runInit(),
-        .install => runInstall(alloc, args[2..]),
+        .install => runInstall(alloc, args[2..], false),
         .remove => if (!runRemove(alloc, args[2..])) std.process.exit(1),
         .reinstall => {
             // A package that is not installed yet still gets installed.
-            _ = runRemove(alloc, args[2..]);
-            runInstall(alloc, args[2..]);
+            if (reinstallRemovesFirst(args[2..])) _ = runRemove(alloc, args[2..]);
+            runInstall(alloc, args[2..], true);
         },
         .list => runList(alloc, args[2..]),
         .leaves => runLeaves(alloc, args[2..]),
@@ -777,7 +777,7 @@ fn resolveVersionPin(
     return base;
 }
 
-fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
+fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: bool) void {
     const stderr = StderrWriter{};
 
     g_min_trust = trust.minTrust(alloc) catch |err| {
@@ -936,7 +936,11 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         };
     }
     resolver.resolveMany(roots.items) catch |err| {
-        stderr.print("nb: dependency resolution failed: {}\n", .{err}) catch {};
+        if (resolver.fetch_failed) |name| {
+            stderr.print("nb: failed to fetch formula '{s}': {}\n", .{ name, err }) catch {};
+        } else {
+            stderr.print("nb: dependency resolution failed: {}\n", .{err}) catch {};
+        }
         std.process.exit(1);
     };
 
@@ -1000,6 +1004,12 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
     var to_install: std.ArrayList(nb.formula.Formula) = .empty;
     defer to_install.deinit(alloc);
     for (all_formulae) |f| {
+        // Reinstall replaces a named keg in place (materialize overwrites it),
+        // so a failed resolve or download keeps the old keg and its DB record.
+        if (reinstall and isRequestedFormulaName(f.name, formulae.items)) {
+            to_install.append(alloc, f) catch {};
+            continue;
+        }
         var expected_buf: [256]u8 = undefined;
         const expected_ver = f.effectiveVersion(&expected_buf);
         var ver_buf: [256]u8 = undefined;
@@ -1322,6 +1332,14 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
                 }
                 continue;
             }
+            // Reinstall onto a newer version: drop the old keg only now that
+            // the new one landed, as `nb upgrade` does (#153).
+            if (reinstall and installed_successfully and !std.mem.eql(u8, keg.version, actual_ver) and
+                isRequestedFormulaName(f.name, formulae.items))
+            {
+                nb.linker.unlinkKeg(f.name, keg.version) catch {};
+                nb.cellar.remove(f.name, keg.version) catch {};
+            }
         }
 
         var recorded = true;
@@ -1601,6 +1619,9 @@ fn fullInstallOne(
     const stderr = StderrWriter{};
     const bench: bool = std.c.getenv("NB_BENCH") != null;
     var bench_t: i64 = 0;
+    // A same-version reinstall parks the old keg (cellar.replaceKeg): drop it
+    // when this install is done, put it back when any later step failed.
+    defer nb.cellar.settlePrevious(g_io, f.name, phase.load(.acquire) == @intFromEnum(Phase.done));
 
     const is_source_build = f.bottle_url.len == 0 and f.source_url.len > 0;
     var expected_ver_buf: [256]u8 = undefined;
@@ -1890,6 +1911,26 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) bool {
         stdout.print("==> Removed {s}\n", .{name}) catch {};
     }
     return !had_error;
+}
+
+/// Cask and deb reinstall keep their remove-then-install flow; these are the
+/// only flags runRemove understands.
+fn reinstallRemovesFirst(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--cask") or std.mem.eql(u8, arg, "--deb")) return true;
+    }
+    return false;
+}
+
+test "reinstall removes first only for cask and deb packages" {
+    // Removing a formula first lost the keg and its pin when the install then failed.
+    try std.testing.expect(!reinstallRemovesFirst(&.{"wget"}));
+    try std.testing.expect(!reinstallRemovesFirst(&.{ "user/tap/jq", "--shims" }));
+    try std.testing.expect(reinstallRemovesFirst(&.{ "--cask", "firefox" }));
+    try std.testing.expect(reinstallRemovesFirst(&.{ "cowsay", "--deb" }));
+    // Only the named kegs are replaced; their dependencies keep their kegs.
+    try std.testing.expect(isRequestedFormulaName("jq", &.{"user/tap/jq"}));
+    try std.testing.expect(!isRequestedFormulaName("oniguruma", &.{"user/tap/jq"}));
 }
 
 // ── nb list ──
@@ -3558,7 +3599,7 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
             // Install new keg first; remove old tree only after upgrade succeeds (#153).
             const old_keg = db.findKeg(pkg.name);
             const names_slice: []const []const u8 = &.{pkg.name};
-            runInstall(alloc, names_slice);
+            runInstall(alloc, names_slice, false);
 
             if (old_keg) |keg| {
                 var ver_buf: [256]u8 = undefined;
@@ -5662,7 +5703,7 @@ fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: any
     stdout.print("==> Installing from bundle: {d} formulae, {d} casks ({d} already installed)\n", .{ needs_formula.items.len, needs_cask.items.len, total_parsed - total_needed }) catch {};
 
     if (needs_formula.items.len > 0) {
-        runInstall(alloc, needs_formula.items);
+        runInstall(alloc, needs_formula.items, false);
     }
     if (needs_cask.items.len > 0) {
         runCaskInstall(alloc, needs_cask.items);

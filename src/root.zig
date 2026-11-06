@@ -94,13 +94,19 @@ comptime {
     _ = upstream_github;
     _ = search_api;
     _ = bulk_versions;
+    _ = deps;
     _ = telemetry;
     _ = tar;
     _ = native_tar;
     _ = certs;
     _ = linker;
+    _ = cellar;
     _ = @import("platform/copy.zig");
     _ = @import("platform/placeholder.zig");
     _ = @import("platform/short_prefix.zig");
+    // The relocators are only reachable through platform/relocate.zig on
+    // their own OS, so their tests need an explicit reference here.
+    if (@import("builtin").os.tag == .macos) _ = @import("macho/relocate.zig");
+    if (@import("builtin").os.tag == .linux) _ = @import("elf/relocate.zig");
     _ = security_test;
 }
