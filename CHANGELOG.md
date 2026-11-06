@@ -6,6 +6,8 @@ All notable changes to nanobrew are documented here.
 
 ### Fixed
 - A binary the relocator could not open, read or write back is now counted as incomplete, so the install fails and the keg is not cached instead of silently shipping a half-rewritten binary. `zig build test` now also runs the ELF (Linux) and Mach-O (macOS) relocator tests. (#465)
+- A bottle is extracted into a private staging directory and published as `store/<sha256>` with one rename, so an interrupted or concurrent install can no longer leave a half-extracted store entry that later installs link as complete. (#437)
+- `zig build test` also compiles and runs the tests in `src/main.zig` (not on Windows, where `src/windows_main.zig` is the exe root). (#481)
 
 ## [0.1.215] - 2026-11-02
 
