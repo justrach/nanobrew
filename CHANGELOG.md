@@ -4,6 +4,9 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- `nb install`/`nb upgrade` no longer replace a pinned formula that is pulled in as a dependency, whether by a newer version or a rebuilt bottle. They keep the pinned keg, its links and its database record, and print a note. An explicit `name@version` request still overrides the pin. (#439)
+
 ## [0.1.215] - 2026-11-02
 
 ### Fixed
