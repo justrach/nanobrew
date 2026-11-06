@@ -114,9 +114,10 @@ pub fn ensureShortPrefixLink(io: std.Io) bool {
 
 /// Per-thread count of files whose relocation was knowingly left incomplete
 /// because /opt/nb was unavailable (.rodata fallback, skipped static
-/// archives). Each install worker relocates its keg on one thread, so
-/// main.zig brackets relocateKeg with reset/read to decide whether the keg
-/// may be snapshot-cached or reported as successfully installed (#355/#356).
+/// archives) or hit an I/O error (noteFailedFile). Each install worker
+/// relocates its keg on one thread, so main.zig brackets relocateKeg with
+/// reset/read to decide whether the keg may be snapshot-cached or reported
+/// as successfully installed (#355/#356).
 threadlocal var incomplete_file_count: usize = 0;
 
 pub fn resetIncompleteCount() void {
@@ -129,6 +130,16 @@ pub fn incompleteCount() usize {
 
 pub fn noteIncompleteFile() void {
     incomplete_file_count += 1;
+}
+
+/// A confirmed binary could not be opened, read or written back (EMFILE,
+/// out of memory, ENOSPC while an APFS clone gets its own blocks). It may
+/// keep foreign paths or be half rewritten, so count it and say why.
+pub fn noteFailedFile(io: std.Io, path: []const u8, err: anyerror) void {
+    noteIncompleteFile();
+    var buf: [std.fs.max_path_bytes + 64]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "nb: {s}: relocation failed: {s}\n", .{ path, @errorName(err) }) catch return;
+    std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
 }
 
 /// Overwrite every occurrence of `needle` in `data` with `replacement`,
