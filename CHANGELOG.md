@@ -5,6 +5,7 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Bottle maintenance: `nb_bottles.py repackage` writes a fixed gzip timestamp, so a rerun for the same version builds the same digest and can finish a partly pushed version instead of stopping with "refusing to overwrite tag". Reported by @Rex57. (#455)
 - Bottle maintenance: `nb_bottles.py scan --all` keeps going when one package gets an HTTP error (for example a GHCR 404 or 5xx). That package gets a `SCAN-ERROR` entry and still fails the gate; the packages after it are scanned and `dist/scan/summary.json` is written. Reported by @Rex57. (#453)
 - `nb install`/`nb upgrade` no longer replace a pinned formula that is pulled in as a dependency, whether by a newer version or a rebuilt bottle. They keep the pinned keg, its links and its database record, and print a note. An explicit `name@version` request still overrides the pin. (#439)
 - `nb upgrade` no longer stops at the first keg that fails to install. It tries the remaining kegs, prints the summary, and exits 1. An upgrade that installs a version newer than the cached index advertised now counts as upgraded instead of failed. (#445)
