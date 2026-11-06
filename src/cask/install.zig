@@ -674,6 +674,16 @@ fn copyFromVolume(alloc: std.mem.Allocator, io: std.Io, volume: []const u8, dire
     const source = try std.fs.path.join(alloc, &.{ volume, relative });
     defer alloc.free(source);
     std.Io.Dir.accessAbsolute(io, source, .{}) catch return error.ArtifactFailed;
+    // The image's own symlinks must not lead the copy out of the volume
+    // (for example `dir -> /Applications` with an artifact `dir/Other.app`).
+    var source_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const source_len = std.Io.Dir.cwd().realPathFile(io, source, &source_buf) catch return error.ArtifactFailed;
+    var volume_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const volume_len = std.Io.Dir.cwd().realPathFile(io, volume, &volume_buf) catch return error.ArtifactFailed;
+    const real_source = source_buf[0..source_len];
+    const real_volume = volume_buf[0..volume_len];
+    if (!(real_source.len > real_volume.len and std.mem.startsWith(u8, real_source, real_volume) and real_source[real_volume.len] == '/'))
+        return error.ArtifactFailed;
     const target = try std.fs.path.join(alloc, &.{ directory, relative });
     defer alloc.free(target);
     try std.Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(target).?);
