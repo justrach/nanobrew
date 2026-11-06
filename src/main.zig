@@ -777,6 +777,11 @@ fn resolveVersionPin(
     return base;
 }
 
+fn containsName(names: []const []const u8, name: []const u8) bool {
+    for (names) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
+}
+
 fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: bool) void {
     if (!installFormulae(alloc, args, reinstall)) std.process.exit(1);
 }
@@ -1009,6 +1014,10 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall
     // Filter out already-installed packages (keg exists in Cellar)
     var to_install: std.ArrayList(nb.formula.Formula) = .empty;
     defer to_install.deinit(alloc);
+    // Pinned kegs held back below: their records must not move to the
+    // resolved version, even when an unpinned keg of it is in the Cellar.
+    var held_pins: std.ArrayList([]const u8) = .empty;
+    defer held_pins.deinit(alloc);
     for (all_formulae) |f| {
         // Reinstall replaces a named keg in place (materialize overwrites it),
         // so a failed resolve or download keeps the old keg and its DB record.
@@ -1019,50 +1028,38 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall
         var expected_buf: [256]u8 = undefined;
         const expected_ver = f.effectiveVersion(&expected_buf);
         var ver_buf: [256]u8 = undefined;
-        const actual_ver = nb.cellar.detectKegVersion(f.name, expected_ver, &ver_buf) orelse expected_ver;
-        var keg_buf: [512]u8 = undefined;
-        const keg_path = std.fmt.bufPrint(&keg_buf, "/opt/nanobrew/prefix/Cellar/{s}/{s}/bin", .{ f.name, actual_ver }) catch {
-            to_install.append(alloc, f) catch {};
-            continue;
-        };
-        // Check if keg has content (bin/ dir or at least the version dir exists)
-        var check_buf: [512]u8 = undefined;
-        const ver_dir = std.fmt.bufPrint(&check_buf, "/opt/nanobrew/prefix/Cellar/{s}/{s}", .{ f.name, actual_ver }) catch {
-            to_install.append(alloc, f) catch {};
-            continue;
-        };
-        _ = keg_path;
-        if (std.Io.Dir.openDirAbsolute(g_io, ver_dir, .{})) |d| {
-            var dir = d;
-            dir.close(g_io);
-            const expected_sha = formulaArtifactSha(f);
-            var strict_identity = g_min_trust > 0;
-            for (pinned_names.items) |name| {
-                if (std.mem.eql(u8, name, f.name)) strict_identity = true;
+        const keg_ver = nb.cellar.detectKegVersion(f.name, expected_ver, &ver_buf);
+        const installed = if (filter_db) |*loaded| loaded.findKeg(f.name) else null;
+        var explicit_version = false;
+        for (pinned_names.items) |name| {
+            if (std.mem.eql(u8, name, f.name)) explicit_version = true;
+        }
+        if (keg_ver != null and (g_min_trust > 0 or explicit_version)) {
+            if (installed == null or !trust.validSha(installed.?.sha256)) {
+                stderr.print("nb: cannot certify existing unrecorded bytes for {s}; reinstall it before requiring trust\n", .{f.name}) catch {};
+                return false;
             }
-            if (strict_identity) {
-                const installed = if (filter_db) |*loaded| loaded.findKeg(f.name) else null;
-                if (installed == null or !trust.validSha(installed.?.sha256)) {
-                    stderr.print("nb: cannot certify existing unrecorded bytes for {s}; reinstall it before requiring trust\n", .{f.name}) catch {};
+        }
+        switch (nb.database.installAction(installed, keg_ver, formulaArtifactSha(f), explicit_version)) {
+            .install => to_install.append(alloc, f) catch {},
+            .keep => if (formulaLinkNeedsRepair(f.name, keg_ver.?, use_shims, formulae.items)) {
+                linkFormulaKeg(alloc, f.name, keg_ver.?, use_shims, formulae.items, all_formulae) catch {};
+            },
+            .keep_pinned => {
+                const pinned = installed.?;
+                var pin_buf: [256]u8 = undefined;
+                // A pin whose keg left the Cellar holds nothing back.
+                if (nb.cellar.detectKegVersion(f.name, pinned.version, &pin_buf) == null) {
+                    to_install.append(alloc, f) catch {};
+                    continue;
+                }
+                if (g_min_trust > 0) {
+                    stderr.print("nb: refusing {s}: pinned {s} is not the trusted artifact; run `nb unpin {s}` first\n", .{ f.name, pinned.version, f.name }) catch {};
                     return false;
                 }
-            }
-            const artifact_changed = if (filter_db) |*db| blk: {
-                const installed = db.findKeg(f.name) orelse break :blk false;
-                break :blk expected_sha.len > 0 and
-                    std.mem.eql(u8, installed.version, actual_ver) and
-                    installed.sha256.len > 0 and
-                    !std.mem.eql(u8, installed.sha256, expected_sha);
-            } else false;
-            if (artifact_changed) {
-                to_install.append(alloc, f) catch {};
-                continue;
-            }
-            if (formulaLinkNeedsRepair(f.name, actual_ver, use_shims, formulae.items)) {
-                linkFormulaKeg(alloc, f.name, actual_ver, use_shims, formulae.items, all_formulae) catch {};
-            }
-        } else |_| {
-            to_install.append(alloc, f) catch {};
+                held_pins.append(alloc, f.name) catch {};
+                stdout.print("==> {s} is pinned; keeping {s} (run `nb unpin {s}` to allow upgrades)\n", .{ f.name, pinned.version, f.name }) catch {};
+            },
         }
     }
     const install_order = to_install.items;
@@ -1076,6 +1073,7 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall
         for (all_formulae) |f| {
             var expected_buf: [256]u8 = undefined;
             const expected_ver = f.effectiveVersion(&expected_buf);
+            if (containsName(held_pins.items, f.name)) continue;
             var ver_buf6: [256]u8 = undefined;
             const actual_ver = nb.cellar.detectKegVersion(f.name, expected_ver, &ver_buf6) orelse expected_ver;
             const existing = db.findKeg(f.name);
@@ -1308,6 +1306,7 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall
         // skipping here avoids writing phantom DB entries that later trip up
         // `nb doctor` / `nb cleanup --prune-kegs` (#311).
         const actual_ver = nb.cellar.detectKegVersion(f.name, expected_ver, &ver_buf6) orelse continue;
+        if (containsName(held_pins.items, f.name)) continue;
 
         var queued = false;
         var installed_successfully = false;
