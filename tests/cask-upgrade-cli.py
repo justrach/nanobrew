@@ -13,6 +13,7 @@ import sys
 import tarfile
 import tempfile
 import uuid
+import zipfile
 
 nb = str(pathlib.Path(sys.argv[1]).resolve())
 root = pathlib.Path("/opt/nanobrew")
@@ -141,8 +142,33 @@ def app_zip(temp, version, xattr_file=None):
         subprocess.check_call(["xattr", "-w", "dev.nanobrew.test", "1", str(app / xattr_file)])
     subprocess.check_call(["codesign", "--verify", "--deep", "--strict", str(app)])
     archive = temp / (version + ".zip")
-    subprocess.check_call(["ditto", "-c", "-k", "--keepParent", str(app), str(archive)])
+    # --sequesterRsrc puts the AppleDouble data under __MACOSX/ (documented in ditto(1));
+    # inline_apple_double then moves it next to each file.
+    subprocess.check_call(["ditto", "-c", "-k", "--sequesterRsrc", "--keepParent", str(app), str(archive)])
+    if xattr_file:
+        inline_apple_double(archive)
     return archive
+
+
+def inline_apple_double(archive):
+    """Store AppleDouble entries next to their files (`dir/._name`), as release
+    zips such as hiddenbar's do, whether or not ditto sequestered them."""
+    with zipfile.ZipFile(archive) as z:
+        entries = [(info, z.read(info)) for info in z.infolist()]
+    with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as z:
+        for info, data in entries:
+            name = info.filename
+            if name.startswith("__MACOSX/"):
+                name = name[len("__MACOSX/"):]
+                if not name or name.endswith("/"):
+                    continue
+            copy = zipfile.ZipInfo(name, info.date_time)
+            copy.external_attr = info.external_attr
+            copy.create_system = info.create_system
+            copy.compress_type = zipfile.ZIP_DEFLATED
+            z.writestr(copy, data)
+    names = zipfile.ZipFile(archive).namelist()
+    assert any(pathlib.PurePosixPath(n).name.startswith("._") for n in names), names
 
 
 def publish_app(temp, version, auto_updates, xattr_file=None):
@@ -186,6 +212,21 @@ with tempfile.TemporaryDirectory(prefix="nb-cask-app-") as temp:
         output = app_run("outdated", "--cask", app_token)
         assert "==> 1 outdated package(s)" in output and "2.0" in output, output
         print("PASS CLI auto-updating app is not downgraded (#449)")
+        # A zip with AppleDouble entries must still install a validly signed
+        # app (#425). First show that plain unzip damages this very fixture.
+        app_run("remove", "--cask", app_token)
+        assert not installed_app.exists()
+        archive = publish_app(temp, "4.0", False, xattr_file="Contents/Resources/en.lproj/Main.strings")
+        raw = temp / "raw-unzip"
+        subprocess.check_call(["unzip", "-q", str(archive), "-d", str(raw)])
+        raw_app = raw / (app_token + ".app")
+        assert list(raw_app.rglob("._*")), "fixture should make unzip write AppleDouble files"
+        assert subprocess.run(["codesign", "--verify", "--deep", "--strict", str(raw_app)], capture_output=True).returncode != 0
+        output = app_run("install", "--cask", app_token)
+        assert "codesign verification failed" not in output and "cask probe passed" in output, output
+        assert not list(installed_app.rglob("._*"))
+        subprocess.check_call(["codesign", "--verify", "--deep", "--strict", str(installed_app)])
+        print("PASS CLI zip with AppleDouble entries installs a validly signed app (#425)")
     finally:
         subprocess.run([nb, "remove", "--cask", app_token], env=env, capture_output=True, timeout=30)
         if installed_app.exists():

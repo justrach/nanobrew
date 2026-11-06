@@ -1567,37 +1567,30 @@ fn extractZip(alloc: std.mem.Allocator, io: std.Io, zip_path: []const u8, dest: 
     const lib_io = io;
     try ensureZipSafe(alloc, lib_io, zip_path);
 
-    // Primary extractor: BSD `unzip`. Fast and ubiquitous.
-    const result = std.process.run(alloc, lib_io, .{
-        .argv = &.{ "unzip", "-o", "-q", zip_path, "-d", dest },
+    // On macOS, Apple's `ditto` goes first, as in Homebrew. It folds AppleDouble
+    // `._*` entries back into extended attributes. BSD `unzip` exits 0 but
+    // writes them into the bundle as plain files, which breaks the app's code
+    // signature (#425). ditto also reads zip variants unzip rejects (#224).
+    if (comptime builtin.os.tag == .macos) {
+        if (try runExtractor(alloc, lib_io, &.{ "ditto", "-x", "-k", zip_path, dest })) return;
+    }
+    // Elsewhere, or if ditto failed: BSD/Info-ZIP `unzip`.
+    if (!try runExtractor(alloc, lib_io, &.{ "unzip", "-o", "-q", zip_path, "-d", dest })) return error.ExtractFailed;
+}
+
+/// Runs an archive extractor; true when it exited 0.
+fn runExtractor(alloc: std.mem.Allocator, io: std.Io, argv: []const []const u8) !bool {
+    const result = std.process.run(alloc, io, .{
+        .argv = argv,
         .stdout_limit = .limited(4096),
         .stderr_limit = .limited(16 * 1024),
     }) catch return error.ExtractFailed;
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
-    if (switch (result.term) {
-        .exited => |c| c != 0,
-        else => true,
-    }) {
-        // Fallback to Apple's `ditto` on macOS — handles extended attributes,
-        // code-signature resources, and zip variants that BSD unzip rejects
-        // (seen on some notarized .app zips — issue #224, PureMac).
-        if (comptime builtin.os.tag == .macos) {
-            const ditto = std.process.run(alloc, lib_io, .{
-                .argv = &.{ "ditto", "-x", "-k", zip_path, dest },
-                .stdout_limit = .limited(4096),
-                .stderr_limit = .limited(16 * 1024),
-            }) catch return error.ExtractFailed;
-            defer alloc.free(ditto.stdout);
-            defer alloc.free(ditto.stderr);
-            if (switch (ditto.term) {
-                .exited => |c| c != 0,
-                else => true,
-            }) return error.ExtractFailed;
-            return;
-        }
-        return error.ExtractFailed;
-    }
+    return switch (result.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
 }
 
 fn ensureZipSafe(alloc: std.mem.Allocator, io: std.Io, zip_path: []const u8) !void {
