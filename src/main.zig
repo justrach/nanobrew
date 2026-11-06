@@ -220,9 +220,10 @@ pub fn main(init: std.process.Init) !void {
     switch (cmd) {
         .init => runInit(),
         .install => runInstall(alloc, args[2..], false),
-        .remove => runRemove(alloc, args[2..]),
+        .remove => if (!runRemove(alloc, args[2..])) std.process.exit(1),
         .reinstall => {
-            if (reinstallRemovesFirst(args[2..])) runRemove(alloc, args[2..]);
+            // A package that is not installed yet still gets installed.
+            if (reinstallRemovesFirst(args[2..])) _ = runRemove(alloc, args[2..]);
             runInstall(alloc, args[2..], true);
         },
         .list => runList(alloc, args[2..]),
@@ -239,8 +240,8 @@ pub fn main(init: std.process.Init) !void {
         .doctor => runDoctor(alloc, args[2..]),
         .cleanup => runCleanup(alloc, args[2..]),
         .outdated => runOutdated(alloc, args[2..]),
-        .pin => runPin(alloc, args[2..], true),
-        .unpin => runPin(alloc, args[2..], false),
+        .pin => if (!runPin(alloc, args[2..], true)) std.process.exit(1),
+        .unpin => if (!runPin(alloc, args[2..], false)) std.process.exit(1),
         .rollback => runRollback(alloc, args[2..]),
         .switch_version => runSwitch(alloc, args[2..]),
         .link => runLink(alloc, args[2..]),
@@ -1858,7 +1859,10 @@ fn fileExists(path: []const u8) bool {
     std.Io.Dir.accessAbsolute(g_io, path, .{}) catch return false;
     return true;
 }
-fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
+/// Returns false when a named package was not removed. The caller exits 1
+/// only after this returns, so the deferred db.close() saves the removals
+/// that did happen (`std.process.exit` skips defers).
+fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) bool {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
 
@@ -1882,15 +1886,8 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
         std.process.exit(1);
     }
 
-    if (is_cask) {
-        runCaskRemove(alloc, tokens.items);
-        return;
-    }
-
-    if (is_deb) {
-        runDebRemove(alloc, tokens.items);
-        return;
-    }
+    if (is_cask) return runCaskRemove(alloc, tokens.items);
+    if (is_deb) return runDebRemove(alloc, tokens.items);
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: could not open database\n", .{}) catch {};
@@ -1898,11 +1895,13 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
     };
     defer db.close();
 
+    var had_error = false;
     for (tokens.items) |raw_name| {
         // Support tap refs: "user/tap/formula" -> look up "formula"
         const name = if (std.mem.lastIndexOfScalar(u8, raw_name, '/')) |pos| raw_name[pos + 1 ..] else raw_name;
         const keg = db.findKeg(name) orelse {
             stderr.print("nb: '{s}' is not installed\n", .{raw_name}) catch {};
+            had_error = true;
             continue;
         };
 
@@ -1911,6 +1910,7 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
         db.recordRemoval(name, alloc) catch {};
         stdout.print("==> Removed {s}\n", .{name}) catch {};
     }
+    return !had_error;
 }
 
 /// Cask and deb reinstall keep their remove-then-install flow; these are the
@@ -2876,9 +2876,10 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
     var client: std.http.Client = .{ .allocator = alloc, .io = g_io };
     defer client.deinit();
 
+    var had_error = false;
     for (names.items) |name| {
         if (is_cask) {
-            showCaskInfo(alloc, stdout, stderr, name, if (db) |*d| d else null);
+            if (!showCaskInfo(alloc, stdout, stderr, name, if (db) |*d| d else null)) had_error = true;
         } else {
             // Try formula first; on failure, try cask as fallback for a hint.
             const f = nb.api_client.fetchFormulaWithClientAndUpstreamRegistry(
@@ -2895,6 +2896,7 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
                 } else |_| {
                     stderr.print("nb: formula '{s}' not found\n", .{name}) catch {};
                 }
+                had_error = true;
                 continue;
             };
             defer f.deinit(alloc);
@@ -2979,12 +2981,15 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
             }
         }
     }
+    // info only reads the database, so skipping the deferred close loses nothing.
+    if (had_error) std.process.exit(1);
 }
 
-fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name: []const u8, db: ?*nb.database.Database) void {
+/// Returns false when the cask was not found.
+fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name: []const u8, db: ?*nb.database.Database) bool {
     const cask = nb.api_client.fetchCask(alloc, name) catch {
         stderr.print("nb: cask '{s}' not found\n", .{name}) catch {};
-        return;
+        return false;
     };
     defer cask.deinit(alloc);
 
@@ -3075,6 +3080,7 @@ fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name
             }
         }
     }
+    return true;
 }
 
 fn printCaskSecurityWarnings(writer: anytype, indent: []const u8, cask: *const nb.cask.Cask) void {
@@ -4446,7 +4452,7 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
 
 // ── nb remove --cask ──
 
-fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) void {
+fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) bool {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
 
@@ -4456,21 +4462,25 @@ fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) void {
     };
     defer db.close();
 
+    var had_error = false;
     for (tokens) |token| {
         const record = db.findCask(token) orelse {
             stderr.print("nb: cask '{s}' is not installed\n", .{token}) catch {};
+            had_error = true;
             continue;
         };
 
         const caskroom_token = if (record.canonical_token.len > 0) record.canonical_token else record.token;
         nb.cask_installer.removeCask(alloc, g_io, caskroom_token, record.version, record.apps, record.binaries) catch |err| {
             stderr.print("nb: failed to remove cask '{s}': {}\n", .{ token, err }) catch {};
+            had_error = true;
             continue;
         };
 
         db.recordCaskRemoval(token, alloc) catch {};
         stdout.print("==> Removed {s}\n", .{token}) catch {};
     }
+    return !had_error;
 }
 
 // ── Version display (compile-time; remote latest is only for `checkForUpdate`) ──
@@ -5564,7 +5574,7 @@ fn runBundleDump(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype) voi
 fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: anytype, stderr: anytype) void {
     const file_content = std.Io.Dir.cwd().readFileAlloc(g_io, file_path, alloc, .limited(1024 * 1024)) catch {
         stderr.print("nb: could not read '{s}'\n", .{file_path}) catch {};
-        return;
+        std.process.exit(1);
     };
     defer alloc.free(file_content);
 
@@ -5845,7 +5855,9 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
 
 // ── nb pin / nb unpin ──
 
-fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) void {
+/// Returns false when a named package could not be (un)pinned; like
+/// runRemove, the caller exits 1 after the deferred db.close() saves the rest.
+fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) bool {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
 
@@ -5861,6 +5873,7 @@ fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) void {
     };
     defer db.close();
 
+    var had_error = false;
     for (args) |name| {
         db.setPinned(name, pin) catch |err| {
             if (err == error.NotFound) {
@@ -5868,6 +5881,7 @@ fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) void {
             } else {
                 stderr.print("nb: failed to update '{s}': {}\n", .{ name, err }) catch {};
             }
+            had_error = true;
             continue;
         };
         if (pin) {
@@ -5876,6 +5890,7 @@ fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) void {
             stdout.print("==> Unpinned {s}\n", .{name}) catch {};
         }
     }
+    return !had_error;
 }
 
 // ── nb deps ──
@@ -6795,7 +6810,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
     if (installed != resolved.len) std.process.exit(1);
 }
 
-fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
+fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) bool {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
 
@@ -6805,9 +6820,11 @@ fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
     };
     defer db.close();
 
+    var had_error = false;
     for (packages) |name| {
         const record = db.findDeb(name) orelse {
             stderr.print("nb: '{s}' is not installed (deb)\n", .{name}) catch {};
+            had_error = true;
             continue;
         };
 
@@ -6847,6 +6864,7 @@ fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
             alloc.free(r.stderr);
         }
     }
+    return !had_error;
 }
 
 fn runDebUpgrade(alloc: std.mem.Allocator) void {
