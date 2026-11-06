@@ -5,6 +5,7 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- When several APT sources list the same package, `nb install --deb`, `nb outdated` and deb upgrades now use the newest version (dpkg ordering), as APT does with default priorities, and the first source listed on a tie. Before, the source listed last won, so on stock Ubuntu `-security` could hide a newer `-updates` build. Pin priorities are still not read. Reported by @Rex57. (#457)
 - `nb install`/`nb upgrade` no longer replace a pinned formula that is pulled in as a dependency, whether by a newer version or a rebuilt bottle. They keep the pinned keg, its links and its database record, and print a note. An explicit `name@version` request still overrides the pin. (#439)
 - `nb upgrade` no longer stops at the first keg that fails to install. It tries the remaining kegs, prints the summary, and exits 1. An upgrade that installs a version newer than the cached index advertised now counts as upgraded instead of failed. (#445)
 - `nb remove` (also `--cask` and `--deb`), `nb pin`/`nb unpin`, `nb info` (also `--cask`) and `nb bundle install` now exit 1 when a named package, cask or file is missing or its removal fails. Removals and pins that succeeded in the same command are still saved. `nb reinstall` of a package that is not installed still installs it. (#463)
