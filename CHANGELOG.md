@@ -4,6 +4,9 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- A bottle is extracted into a private staging directory and published as `store/<sha256>` with one rename, so an interrupted or concurrent install can no longer leave a half-extracted store entry that later installs link as complete. (#437)
+
 ## [0.1.215] - 2026-11-02
 
 ### Fixed
