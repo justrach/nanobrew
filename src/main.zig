@@ -161,13 +161,29 @@ const ROOT = paths.ROOT;
 const PREFIX = paths.PREFIX;
 const VERSION = "0.1.215";
 
-fn acquireCommandLock() !?std.Io.File {
+/// Which operation lock a command takes. Commands that only read installed
+/// state share the lock, so one slow read (for example `nb outdated` on a bad
+/// network) no longer blocks the other reads (#503). They still wait for, and
+/// block, every command that changes state, which keep the exclusive lock.
+const CommandLock = enum { none, shared, exclusive };
+
+fn commandLock(cmd: Command, args: []const []const u8) CommandLock {
+    return switch (cmd) {
+        // Autoupdate dispatches child nb processes, which lock for themselves.
+        .help, .version, .completions, .autoupdate => .none,
+        .list, .leaves, .info, .search, .where, .outdated, .deps => .shared,
+        .services => if (args.len == 0 or std.mem.eql(u8, args[0], "list")) .shared else .exclusive,
+        else => .exclusive,
+    };
+}
+
+fn acquireCommandLock(mode: std.Io.File.Lock) !?std.Io.File {
     const path = paths.DB_PATH ++ ".operation.lock";
-    // Advisory exclusive locks do not require a writable descriptor. Opening
-    // an existing lock read-only keeps list/info usable after a sudo command.
-    return std.Io.Dir.openFileAbsolute(g_io, path, .{ .lock = .exclusive }) catch |err| {
+    // Advisory locks do not require a writable descriptor. Opening an
+    // existing lock read-only keeps list/info usable after a sudo command.
+    return std.Io.Dir.openFileAbsolute(g_io, path, .{ .lock = mode }) catch |err| {
         if (err != error.FileNotFound) return err;
-        return std.Io.Dir.createFileAbsolute(g_io, path, .{ .truncate = false, .lock = .exclusive }) catch |create_err| {
+        return std.Io.Dir.createFileAbsolute(g_io, path, .{ .truncate = false, .lock = mode }) catch |create_err| {
             if (create_err == error.FileNotFound) return null; // before nb init
             return create_err;
         };
@@ -207,11 +223,22 @@ pub fn main(init: std.process.Init) !void {
     // Serialize commands that can inspect or mutate installed state while a
     // multi-path cask activation is in flight. Autoupdate dispatches child nb
     // processes, which acquire the lock themselves.
-    const command_lock: ?std.Io.File = if (cmd == .help or cmd == .version or cmd == .completions or cmd == .autoupdate)
-        null
-    else
-        try acquireCommandLock();
+    const lock_kind = commandLock(cmd, args[2..]);
+    var command_lock: ?std.Io.File = switch (lock_kind) {
+        .none => null,
+        .shared => try acquireCommandLock(.shared),
+        .exclusive => try acquireCommandLock(.exclusive),
+    };
     defer if (command_lock) |lock| lock.close(g_io);
+    // Recovering an interrupted cask upgrade changes state, so a reader that
+    // finds a journal trades its shared lock for the exclusive one first.
+    if (lock_kind == .shared and command_lock != null and
+        (nb.cask_upgrade.journalExists(g_io, .{}) catch true))
+    {
+        command_lock.?.close(g_io);
+        command_lock = null;
+        command_lock = try acquireCommandLock(.exclusive);
+    }
     if (command_lock != null) {
         _ = nb.cask_upgrade.recover(alloc, g_io, .{}) catch |err| {
             const stderr = StderrWriter{};
@@ -7584,4 +7611,19 @@ test "isAppMainExecutable matches only the bundle's CFBundleExecutable (#494)" {
     try std.testing.expect(!isAppMainExecutable(alloc, root, &.{"electerm.app"}, cli));
     try std.testing.expect(!isAppMainExecutable(alloc, root, &.{"electerm.app"}, res));
     try std.testing.expect(!isAppMainExecutable(alloc, root, &.{"Other.app"}, main_exe));
+}
+
+test "read-only commands share the operation lock; changes keep it exclusive (#503)" {
+    const none: []const []const u8 = &.{};
+    try std.testing.expectEqual(CommandLock.shared, commandLock(.outdated, &.{"--cask"}));
+    try std.testing.expectEqual(CommandLock.shared, commandLock(.list, none));
+    try std.testing.expectEqual(CommandLock.shared, commandLock(.info, &.{ "--cask", "x" }));
+    try std.testing.expectEqual(CommandLock.shared, commandLock(.services, none));
+    try std.testing.expectEqual(CommandLock.shared, commandLock(.services, &.{"list"}));
+    try std.testing.expectEqual(CommandLock.exclusive, commandLock(.services, &.{ "start", "x" }));
+    try std.testing.expectEqual(CommandLock.exclusive, commandLock(.install, &.{"x"}));
+    try std.testing.expectEqual(CommandLock.exclusive, commandLock(.upgrade, none));
+    try std.testing.expectEqual(CommandLock.exclusive, commandLock(.doctor, none));
+    try std.testing.expectEqual(CommandLock.exclusive, commandLock(.cleanup, none));
+    try std.testing.expectEqual(CommandLock.none, commandLock(.version, none));
 }
