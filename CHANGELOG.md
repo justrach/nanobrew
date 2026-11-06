@@ -5,6 +5,7 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- The post-install step now fetches a `lib*` formula's Ruby source from homebrew-core's `Formula/lib/` folder. Before, it used `Formula/l/` (a 404), and the step was skipped with no message. A failed fetch now prints the `post-install script failed` warning. Fix by @Rex57. (#471)
 - `nb remove` (also `--cask` and `--deb`), `nb pin`/`nb unpin`, `nb info` (also `--cask`) and `nb bundle install` now exit 1 when a named package, cask or file is missing or its removal fails. Removals and pins that succeeded in the same command are still saved. `nb reinstall` of a package that is not installed still installs it. (#463)
 - `nb reinstall <formula>` no longer removes the keg and its record first: a failed lookup or download leaves the installed keg, its links and its pin as they were. A newer version's keg replaces the old one only after it is installed. (#441)
 - A same-version reinstall copies the new keg beside the old one and swaps it in; the old keg is kept until the install finishes and put back if any step fails. (#489)
