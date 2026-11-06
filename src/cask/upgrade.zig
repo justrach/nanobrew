@@ -72,10 +72,15 @@ pub fn outdated(recorded: []const u8, candidate: []const u8, auto_updates: bool,
 
 /// CFBundleShortVersionString of an installed app; null when it cannot be read.
 pub fn bundleShortVersion(alloc: std.mem.Allocator, io: std.Io, app: []const u8) ?[]u8 {
+    return bundleInfoString(alloc, io, app, "CFBundleShortVersionString");
+}
+
+/// A string value from an installed app's Info.plist; null when it cannot be read.
+pub fn bundleInfoString(alloc: std.mem.Allocator, io: std.Io, app: []const u8, key: []const u8) ?[]u8 {
     const plist = std.fmt.allocPrint(alloc, "{s}/Contents/Info.plist", .{app}) catch return null;
     defer alloc.free(plist);
     const res = std.process.run(alloc, io, .{
-        .argv = &.{ "/usr/bin/plutil", "-extract", "CFBundleShortVersionString", "raw", "-o", "-", plist },
+        .argv = &.{ "/usr/bin/plutil", "-extract", key, "raw", "-o", "-", plist },
         .stdout_limit = .limited(4096),
         .stderr_limit = .limited(4096),
     }) catch return null;

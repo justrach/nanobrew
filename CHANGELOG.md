@@ -5,6 +5,7 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Active probes no longer leave helper processes running. Each probed command runs in its own process group, and a timeout kills the whole group. A Ctrl-C, SIGTERM or SIGHUP during a probe also kills the probe's group before nb exits. A cask binary that is its app's main executable (`<app>/Contents/MacOS/<CFBundleExecutable>`) is no longer run with `--version`: the app's codesign check covers it. For example, `electerm --version` starts the whole GUI and never exits. (#494)
 - On macOS, cask zip archives are now extracted with `ditto -x -k` first, as Homebrew does, with `unzip` as the fallback. Before, BSD `unzip` wrote AppleDouble `._*` entries into app bundles as plain files, which broke the code signature ("app is damaged"), for example with hiddenbar. The zip path-traversal pre-check and the checksum check are unchanged. (#425)
 - `nb outdated`/`nb upgrade` no longer downgrade an `auto_updates` cask whose app already updated itself. If `CFBundleShortVersionString` in the installed app's `Info.plist` is at or past the published version, the cask is skipped with a note. If the plist cannot be read, the recorded version decides as before. (#449)
 - `nb upgrade --cask` no longer fails with `DestinationAlreadyExists` when the new version drops a binary whose `bin/` link the user has replaced with their own file or link. Only the cask's own link is removed; the user's file is left alone and is not put in the upgrade journal. (#467)
