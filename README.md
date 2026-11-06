@@ -178,6 +178,8 @@ nb install indirect/tap/bpb   # taps with bottles work too
 
 nanobrew fetches the Ruby formula directly from GitHub, parses it, and installs — no `brew tap` step needed. Supports bottles, source builds, and pre-built binaries.
 
+A cask can also live in a project's own repository: `nb install --cask user/repo/name` reads `Casks/name.rb` from `github.com/user/repo` when `github.com/user/homebrew-repo` has no such cask (e.g. `nb install --cask justrach/nanolight/nanolight`).
+
 ### macOS Apps (Casks)
 
 ```bash

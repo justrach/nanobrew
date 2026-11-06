@@ -86,9 +86,41 @@ pub fn getWithHeaders(alloc: std.mem.Allocator, url: []const u8, extra_headers: 
     return getWithClientHeaders(alloc, &client, url, extra_headers);
 }
 
+/// Like `get`, but says why a fetch failed: `error.NotFound` only for a
+/// 404/410, `error.AuthFailed` for 401/403, `error.RateLimited` for 429, and
+/// `error.FetchFailed` for anything else. For lookups that try another
+/// location only when the first one definitely isn't there.
+pub fn getOrNotFound(alloc: std.mem.Allocator, url: []const u8) ![]u8 {
+    var client: std.http.Client = .{ .allocator = alloc, .io = paths.safe_io };
+    defer client.deinit();
+    if (proxy.enabled()) {
+        return proxy.request(alloc, url, null, &.{}, null) catch |err| switch (err) {
+            error.BottleNotFound => error.NotFound,
+            else => err,
+        };
+    }
+    return getInner(alloc, &client, url, &.{}, true);
+}
+
+/// The error a non-200 answer means to `getOrNotFound`.
+pub const StatusError = error{ NotFound, AuthFailed, RateLimited, FetchFailed };
+
+pub fn statusError(status: std.http.Status) StatusError {
+    return switch (status) {
+        .not_found, .gone => error.NotFound,
+        .unauthorized, .forbidden => error.AuthFailed,
+        .too_many_requests => error.RateLimited,
+        else => error.FetchFailed,
+    };
+}
+
 /// Fetch using an existing client plus additional headers.
 pub fn getWithClientHeaders(alloc: std.mem.Allocator, client: *std.http.Client, url: []const u8, extra_headers: []const std.http.Header) ![]u8 {
     if (proxy.enabled()) return proxy.request(alloc, url, null, extra_headers, null);
+    return getInner(alloc, client, url, extra_headers, false);
+}
+
+fn getInner(alloc: std.mem.Allocator, client: *std.http.Client, url: []const u8, extra_headers: []const std.http.Header, distinct: bool) ![]u8 {
     const uri = std.Uri.parse(url) catch return error.InvalidUrl;
     const split = splitUserAgent(alloc, extra_headers);
     defer if (split.rest.ptr != extra_headers.ptr and split.rest.len > 0) alloc.free(split.rest);
@@ -106,7 +138,7 @@ pub fn getWithClientHeaders(alloc: std.mem.Allocator, client: *std.http.Client, 
     };
     if (response.head.status != .ok) {
         req.deinit();
-        return error.FetchFailed;
+        return if (distinct) statusError(response.head.status) else error.FetchFailed;
     }
 
     // Stream raw response body to memory
@@ -380,4 +412,14 @@ test "requestOptions: sets user_agent override when UA present" {
         .override => |v| try std.testing.expectEqualStrings("Homebrew/4 (nanobrew)", v),
         else => try std.testing.expect(false),
     }
+}
+
+test "statusError: only 404 and 410 are not-found" {
+    try std.testing.expectEqual(error.NotFound, statusError(.not_found));
+    try std.testing.expectEqual(error.NotFound, statusError(.gone));
+    try std.testing.expectEqual(error.AuthFailed, statusError(.unauthorized));
+    try std.testing.expectEqual(error.AuthFailed, statusError(.forbidden));
+    try std.testing.expectEqual(error.RateLimited, statusError(.too_many_requests));
+    try std.testing.expectEqual(error.FetchFailed, statusError(.internal_server_error));
+    try std.testing.expectEqual(error.FetchFailed, statusError(.bad_gateway));
 }

@@ -2940,9 +2940,21 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
     }
 }
 
+/// "not found" only when the cask really isn't there; a failed, refused or
+/// rate-limited lookup says so instead of claiming the cask doesn't exist.
+fn printCaskFetchError(stderr: anytype, name: []const u8, err: anyerror) void {
+    switch (err) {
+        error.CaskNotFound, error.NotFound => stderr.print("nb: cask '{s}' not found\n", .{name}) catch {},
+        error.InvalidTapName => stderr.print("nb: '{s}' is not a valid user/tap/cask name\n", .{name}) catch {},
+        error.RateLimited => stderr.print("nb: cask '{s}': GitHub rate limit reached; try again later\n", .{name}) catch {},
+        error.AuthFailed => stderr.print("nb: cask '{s}': access refused (401/403)\n", .{name}) catch {},
+        else => stderr.print("nb: cask '{s}': lookup failed ({s})\n", .{ name, @errorName(err) }) catch {},
+    }
+}
+
 fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name: []const u8, db: ?*nb.database.Database) void {
-    const cask = nb.api_client.fetchCask(alloc, name) catch {
-        stderr.print("nb: cask '{s}' not found\n", .{name}) catch {};
+    const cask = nb.api_client.fetchCask(alloc, name) catch |err| {
+        printCaskFetchError(stderr, name, err);
         return;
     };
     defer cask.deinit(alloc);
@@ -4232,8 +4244,8 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
                 stderr.print("nb: no fresh signed install evidence for cask {s}\n", .{token}) catch {};
                 std.process.exit(1);
             }
-            break :blk nb.api_client.fetchCask(alloc, token) catch {
-                stderr.print("nb: cask '{s}' not found\n", .{token}) catch {};
+            break :blk nb.api_client.fetchCask(alloc, token) catch |err| {
+                printCaskFetchError(stderr, token, err);
                 had_error = true;
                 continue;
             };
