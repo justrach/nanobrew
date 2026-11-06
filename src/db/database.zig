@@ -21,6 +21,23 @@ pub const Keg = struct {
     probe_platform: u32 = 0,
 };
 
+pub const InstallAction = enum { install, keep, keep_pinned };
+
+/// How `nb install` treats a resolved formula. `recorded` is its DB record,
+/// `keg_ver` the Cellar keg found for the resolved version (null if none),
+/// `sha256` the resolved artifact digest, and `explicit_version` is set for a
+/// `name@version` / `name@trusted` request.
+pub fn installAction(recorded: ?Keg, keg_ver: ?[]const u8, sha256: []const u8, explicit_version: bool) InstallAction {
+    const keg = recorded orelse return if (keg_ver == null) .install else .keep;
+    const same_keg = if (keg_ver) |ver| std.mem.eql(u8, keg.version, ver) else false;
+    const artifact_changed = same_keg and sha256.len > 0 and
+        keg.sha256.len > 0 and !std.mem.eql(u8, keg.sha256, sha256);
+    // A pin holds the recorded keg against newer versions and rebuilt bottles,
+    // also when it is only a dependency of what the user asked for.
+    if (keg.pinned and !explicit_version and (!same_keg or artifact_changed)) return .keep_pinned;
+    return if (keg_ver == null or artifact_changed) .install else .keep;
+}
+
 pub const CaskRecord = struct {
     token: []const u8,
     canonical_token: []const u8 = "",
@@ -972,6 +989,57 @@ test "recordInstall keeps an existing pin" {
     try testing.expect(db.findKeg("pkg").?.pinned);
     try db.recordInstall("other", "1.0", "abc");
     try testing.expect(!db.findKeg("other").?.pinned);
+}
+
+test "a pin set after the last flush is lost when the process exits without close()" {
+    const io = testing.io;
+    const path = try std.fmt.allocPrint(testing.allocator, "/tmp/nb-test-db-pin-{d}.json", .{std.c.getpid()});
+    defer testing.allocator.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const lock_path = try std.fmt.allocPrint(testing.allocator, "{s}.lock", .{path});
+    defer testing.allocator.free(lock_path);
+    defer std.Io.Dir.deleteFileAbsolute(io, lock_path) catch {};
+
+    // runInstall on a failed batch: flush, then std.process.exit (no close()).
+    {
+        var db = try Database.openAt(testing.allocator, path);
+        try db.recordInstall("before", "1.0", "abc");
+        try db.recordInstall("after", "1.0", "abc");
+        try db.setPinned("before", true);
+        try db.flush();
+        try db.setPinned("after", true);
+        db.dirty = false; // std.process.exit skips close()'s save
+        db.close();
+    }
+
+    var db = try Database.openAt(testing.allocator, path);
+    defer db.close();
+    try testing.expect(db.findKeg("before").?.pinned);
+    try testing.expect(!db.findKeg("after").?.pinned);
+}
+
+test "installAction keeps a pinned keg" {
+    const old: Keg = .{ .name = "openssl@3", .version = "3.3.0", .sha256 = "aaa" };
+    var pinned = old;
+    pinned.pinned = true;
+    var pinned_new = pinned;
+    pinned_new.version = "3.4.0";
+
+    // Unpinned kegs follow the resolved formula.
+    try testing.expectEqual(InstallAction.install, installAction(old, null, "bbb", false));
+    try testing.expectEqual(InstallAction.install, installAction(old, "3.3.0", "bbb", false));
+    try testing.expectEqual(InstallAction.keep, installAction(old, "3.3.0", "aaa", false));
+    try testing.expectEqual(InstallAction.keep, installAction(null, "3.4.0", "bbb", false));
+
+    // A pinned keg is never replaced as a newer version or a rebuilt bottle.
+    try testing.expectEqual(InstallAction.keep_pinned, installAction(pinned, null, "bbb", false));
+    try testing.expectEqual(InstallAction.keep_pinned, installAction(pinned, "3.4.0", "bbb", false));
+    try testing.expectEqual(InstallAction.keep_pinned, installAction(pinned, "3.3.0", "bbb", false));
+    try testing.expectEqual(InstallAction.keep, installAction(pinned, "3.3.0", "aaa", false));
+    try testing.expectEqual(InstallAction.keep, installAction(pinned_new, "3.4.0", "", false));
+
+    // `name@version` is an explicit request that overrides the pin.
+    try testing.expectEqual(InstallAction.install, installAction(pinned, null, "bbb", true));
 }
 
 test "unparseable state.json is never overwritten" {
