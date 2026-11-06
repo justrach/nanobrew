@@ -175,13 +175,16 @@ fn acquireCommandLock() !?std.Io.File {
 }
 
 pub fn main(init: std.process.Init) !void {
-    g_io = init.io;
+    // Bound every std.http.Client TCP connect (30 s, cancelable), like the
+    // curl transport's connect-timeout (#503).
+    const io = nb.connect.withConnectTimeout(init.io);
+    g_io = io;
     // Publish a process-wide threadsafe Io for code paths called from
     // worker threads (downloader workers, api/client cache writers,
     // leaves/outdated checkers, etc.) that previously hit
     // `paths.safe_io` and crashed under
     // concurrent use. See paths.zig for the full rationale.
-    paths.safe_io = init.io;
+    paths.safe_io = io;
     nb.proxy.environment = init.environ_map;
     const alloc = init.gpa;
 
@@ -3342,6 +3345,8 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
         new_ver_buf: [128]u8 = undefined,
         new_ver_len: usize = 0,
         has_update: bool = false,
+        /// The live lookup failed (for example a connect timeout, #503).
+        failed: ?anyerror = null,
     };
 
     const version_results = alloc.alloc(VersionResult, to_check.items.len) catch return result;
@@ -3399,7 +3404,10 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
                 const item = ctx.items[idx];
 
                 if (item.is_cask) {
-                    const cask = nb.api_client.fetchCask(ctx.alloc_, item.name) catch continue;
+                    const cask = nb.api_client.fetchCask(ctx.alloc_, item.name) catch |err| {
+                        ctx.results[idx].failed = err;
+                        continue;
+                    };
                     defer cask.deinit(ctx.alloc_);
                     if (nb.version.isNewer(cask.version, item.old_ver)) {
                         const len = @min(cask.version.len, 128);
@@ -3413,7 +3421,10 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
                     // the normal live freshness cross-check for correctness.
                     const formula = nb.api_client.fetchFormulaWithClientOptions(ctx.alloc_, &client, item.name, .{
                         .check_upstream_freshness = !request.proven_bulk_miss,
-                    }) catch continue;
+                    }) catch |err| {
+                        ctx.results[idx].failed = err;
+                        continue;
+                    };
                     defer formula.deinit(ctx.alloc_);
                     var latest_buf: [256]u8 = undefined;
                     const latest = formula.effectiveVersion(&latest_buf);
@@ -3447,6 +3458,14 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
             spawned += 1;
         }
         for (threads[0..spawned]) |t| t.join();
+    }
+
+    // Say which packages could not be checked instead of dropping them silently.
+    for (to_check.items, 0..) |item, i| {
+        if (version_results[i].failed) |err| {
+            const stderr = StderrWriter{};
+            stderr.print("nb: could not check {s} for updates: {s}\n", .{ item.name, @errorName(err) }) catch {};
+        }
     }
 
     // Collect results

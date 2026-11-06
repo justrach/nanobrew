@@ -23,6 +23,7 @@ pub const deps = @import("resolve/deps.zig");
 pub const downloader = @import("net/downloader.zig");
 pub const proxy = @import("net/proxy.zig");
 pub const fetch = @import("net/fetch.zig");
+pub const connect = @import("net/connect.zig");
 pub const telemetry = @import("telemetry/client.zig");
 pub const tar = @import("extract/tar.zig");
 pub const native_tar = @import("extract/native_tar.zig");
@@ -87,6 +88,7 @@ comptime {
     _ = deb_sources;
     _ = version;
     _ = downloader;
+    _ = connect;
     _ = autoupdate;
     _ = trust_probe;
     _ = trust_evidence;
