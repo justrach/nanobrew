@@ -7,8 +7,13 @@
 // without any Ruby: argv only, every path resolved from the step's `base` and
 // `{{token}}` templates against nanobrew's own prefix.
 //
-// Supported: mkdir_p, touch, symlink, warn, and run when the command is a
-// file inside the formula's own keg. Guards: `on` (macos/linux), if_exists
+// Supported: mkdir_p, touch, symlink, warn; run when the command is a file
+// inside the formula's own keg or in an installed formula's
+// `<prefix>/opt/<formula>/bin`; the cache rebuilds Homebrew defines as fixed
+// tool calls (compile_gsettings_schemas, gio_querymodules,
+// gdk_pixbuf_query_loaders, gtk_update_icon_cache, update_mime_database,
+// update_desktop_database); and init_data_dir for postgresql/mysql/mariadb,
+// which runs the keg's own initialiser once per data dir. Guards: `on` (macos/linux), if_exists
 // and unless_exists (with `{a,b}` alternatives). Anything else — another
 // step type, an unknown base or template, a glob, `..`, a write outside the
 // prefix, or run options such as env/chdir/stdin_path/stdout_path/sudo — is
@@ -17,7 +22,8 @@
 //
 // The JSON comes from the same formula metadata that names the bottle and
 // its sha256, so it is trusted as much as the bottle is. `run` only executes
-// files from that verified keg; writes stay under the prefix.
+// files from that verified keg or from another installed keg (an opt link
+// must resolve into the Cellar); writes stay under the prefix.
 
 const std = @import("std");
 const builtin = @import("builtin");
@@ -49,7 +55,45 @@ pub const Action = union(enum) {
     symlink: struct { source: []const u8, target: []const u8, force: bool },
     warn: []const u8,
     run: struct { argv: []const []const u8, allow_failure: bool },
+    /// A tool from an installed formula, `<prefix>/opt/<formula>/bin/<exe>`.
+    /// The first candidate whose formula is installed is used; the last one
+    /// is used otherwise (as brew does for gtk4 / gtk+3).
+    tool: struct { candidates: []const Tool, args: []const []const u8 },
+    init_data_dir: struct { path: []const u8, using: Initialiser, locale: []const u8, keg: []const u8, user: []const u8 },
 };
+
+pub const Tool = struct { formula: []const u8, exe: []const u8 };
+
+pub const Initialiser = enum {
+    postgresql_initdb,
+    mysql_initialize,
+    mariadb_install_db,
+
+    /// File whose presence means the data dir is already set up.
+    fn marker(self: Initialiser) []const u8 {
+        return switch (self) {
+            .postgresql_initdb => "PG_VERSION",
+            .mysql_initialize => "mysql/general_log.CSM",
+            .mariadb_install_db => "mysql/user.frm",
+        };
+    }
+};
+
+/// Cache rebuilds, from brew's install_steps.rb (`run_install_step`).
+const Rebuild = struct { type_name: []const u8, candidates: []const Tool, args: []const []const u8, path: bool };
+const rebuilds = [_]Rebuild{
+    .{ .type_name = "compile_gsettings_schemas", .candidates = &.{.{ .formula = "glib", .exe = "glib-compile-schemas" }}, .args = &.{}, .path = true },
+    .{ .type_name = "gio_querymodules", .candidates = &.{.{ .formula = "glib", .exe = "gio-querymodules" }}, .args = &.{}, .path = true },
+    .{ .type_name = "gdk_pixbuf_query_loaders", .candidates = &.{.{ .formula = "gdk-pixbuf", .exe = "gdk-pixbuf-query-loaders" }}, .args = &.{"--update-cache"}, .path = false },
+    .{ .type_name = "gtk_update_icon_cache", .candidates = &.{ .{ .formula = "gtk4", .exe = "gtk4-update-icon-cache" }, .{ .formula = "gtk+3", .exe = "gtk3-update-icon-cache" } }, .args = &.{ "-q", "-t", "-f" }, .path = true },
+    .{ .type_name = "update_mime_database", .candidates = &.{.{ .formula = "shared-mime-info", .exe = "update-mime-database" }}, .args = &.{}, .path = true },
+    .{ .type_name = "update_desktop_database", .candidates = &.{.{ .formula = "desktop-file-utils", .exe = "update-desktop-database" }}, .args = &.{}, .path = true },
+};
+
+fn findRebuild(type_name: []const u8) ?Rebuild {
+    for (rebuilds) |r| if (std.mem.eql(u8, r.type_name, type_name)) return r;
+    return null;
+}
 
 pub const Step = struct {
     type_name: []const u8,
@@ -131,6 +175,8 @@ fn allowedKeys(type_name: []const u8) ?[]const []const u8 {
     if (t(u8, type_name, "symlink")) return &.{ "type", "guards", "source", "target", "force", "overwrite" };
     if (t(u8, type_name, "warn")) return &.{ "type", "guards", "message" };
     if (t(u8, type_name, "run")) return &.{ "type", "guards", "command", "args", "allow_failure", "print_stdout", "suppress_stderr", "network_access", "sudo" };
+    if (t(u8, type_name, "init_data_dir")) return &.{ "type", "guards", "path", "using", "locale" };
+    if (findRebuild(type_name)) |r| return if (r.path) &.{ "type", "guards", "path" } else &.{ "type", "guards" };
     return null;
 }
 
@@ -169,11 +215,33 @@ fn resolveAction(arena: std.mem.Allocator, obj: std.json.ObjectMap, type_name: [
             .force = boolean(obj, "force") or boolean(obj, "overwrite"),
         } };
     }
+    if (findRebuild(type_name)) |r| {
+        var args: std.ArrayList([]const u8) = .empty;
+        try args.appendSlice(arena, r.args);
+        if (r.path) try args.append(arena, try writablePath(arena, obj.get("path") orelse return error.BadStep, env));
+        return .{ .tool = .{ .candidates = r.candidates, .args = try args.toOwnedSlice(arena) } };
+    }
+    if (std.mem.eql(u8, type_name, "init_data_dir")) {
+        const using = std.meta.stringToEnum(Initialiser, str(obj, "using") orelse return error.BadStep) orelse return error.UnsupportedOption;
+        const locale = if (obj.get("locale")) |l| switch (l) {
+            .string => |v| v,
+            .null => "en_US.UTF-8",
+            else => return error.BadStep,
+        } else "en_US.UTF-8";
+        const user = if (using == .postgresql_initdb) (env.user orelse "") else (env.user orelse return error.NoUser);
+        return .{ .init_data_dir = .{
+            .path = try writablePath(arena, obj.get("path") orelse return error.BadStep, env),
+            .using = using,
+            .locale = locale,
+            .keg = env.keg,
+            .user = user,
+        } };
+    }
     // run
     if (obj.get("sudo")) |s| if (!(s == .bool and !s.bool)) return error.UnsupportedOption;
     if (obj.get("network_access")) |n| if (n != .bool) return error.BadStep;
     const command = try resolvePath(arena, obj.get("command") orelse return error.BadStep, env);
-    if (!under(command, env.keg)) return error.OutsideKeg;
+    if (!under(command, env.keg) and optBinTool(command, env) == null) return error.OutsideKeg;
     var argv: std.ArrayList([]const u8) = .empty;
     try argv.append(arena, command);
     if (obj.get("args")) |args| {
@@ -184,6 +252,19 @@ fn resolveAction(arena: std.mem.Allocator, obj: std.json.ObjectMap, type_name: [
         }
     }
     return .{ .run = .{ .argv = try argv.toOwnedSlice(arena), .allow_failure = boolean(obj, "allow_failure") } };
+}
+
+/// `<prefix>/opt/<formula>/bin/<exe>` (one component each) to its parts.
+fn optBinTool(command: []const u8, env: Env) ?Tool {
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const opt = std.fmt.bufPrint(&buf, "{s}/opt/", .{env.prefix}) catch return null;
+    if (!std.mem.startsWith(u8, command, opt)) return null;
+    var parts = std.mem.splitScalar(u8, command[opt.len..], '/');
+    const formula = parts.next() orelse return null;
+    const bin = parts.next() orelse return null;
+    const exe = parts.next() orelse return null;
+    if (parts.next() != null or formula.len == 0 or exe.len == 0 or !std.mem.eql(u8, bin, "bin")) return null;
+    return .{ .formula = formula, .exe = exe };
 }
 
 fn writablePath(arena: std.mem.Allocator, spec: std.json.Value, env: Env) PlanError![]const u8 {
@@ -408,7 +489,7 @@ pub fn runAll(alloc: std.mem.Allocator, io: std.Io, steps_json: []const u8, env:
             };
             if (!ok) continue :steps;
         }
-        const ok = execute(arena, io, action, out);
+        const ok = execute(arena, io, action, env, out);
         if (ok) result.ran += 1 else {
             result.failed += 1;
             out.print("nb: {s}: post-install step {d} ({s}) failed\n", .{ env.name, idx + 1, step.type_name }) catch {};
@@ -417,7 +498,7 @@ pub fn runAll(alloc: std.mem.Allocator, io: std.Io, steps_json: []const u8, env:
     return result;
 }
 
-fn execute(arena: std.mem.Allocator, io: std.Io, action: Action, out: anytype) bool {
+fn execute(arena: std.mem.Allocator, io: std.Io, action: Action, env: Env, out: anytype) bool {
     switch (action) {
         .warn => |msg| {
             out.print("Warning: {s}\n", .{msg}) catch {};
@@ -432,8 +513,69 @@ fn execute(arena: std.mem.Allocator, io: std.Io, action: Action, out: anytype) b
             const flags: []const u8 = if (l.force) "-sfn" else "-s";
             return runArgv(arena, io, &.{ "ln", flags, l.source, l.target }, false);
         },
-        .run => |r| return runArgv(arena, io, r.argv, true) or r.allow_failure,
+        .run => |r| {
+            // A tool from another keg runs only when its opt link really
+            // leads into the Cellar, i.e. nanobrew installed that formula.
+            if (!under(r.argv[0], env.keg)) {
+                if (!installedTool(arena, io, r.argv[0], env)) {
+                    out.print("nb: {s}: {s} is not an installed formula's tool\n", .{ env.name, r.argv[0] }) catch {};
+                    return r.allow_failure;
+                }
+            }
+            return runArgv(arena, io, r.argv, true) or r.allow_failure;
+        },
+        .tool => |t| {
+            const chosen = for (t.candidates, 0..) |c, i| {
+                if (i + 1 == t.candidates.len) break c;
+                const keg_dir = std.fmt.allocPrint(arena, "{s}/{s}", .{ env.cellar, c.formula }) catch return false;
+                if (std.Io.Dir.accessAbsolute(io, keg_dir, .{})) |_| break c else |_| {}
+            } else unreachable;
+            const tool = std.fmt.allocPrint(arena, "{s}/opt/{s}/bin/{s}", .{ env.prefix, chosen.formula, chosen.exe }) catch return false;
+            if (!installedTool(arena, io, tool, env)) {
+                // brew fails the step the same way: the tool's formula is missing.
+                out.print("nb: {s}: needs {s} from {s}, which is not installed\n", .{ env.name, chosen.exe, chosen.formula }) catch {};
+                return false;
+            }
+            var argv: std.ArrayList([]const u8) = .empty;
+            argv.append(arena, tool) catch return false;
+            argv.appendSlice(arena, t.args) catch return false;
+            return runArgv(arena, io, argv.items, true);
+        },
+        .init_data_dir => |d| {
+            if (!runArgv(arena, io, &.{ "mkdir", "-p", d.path }, false)) return false;
+            const marker = std.fmt.allocPrint(arena, "{s}/{s}", .{ d.path, d.using.marker() }) catch return false;
+            // Already initialised: leave existing data alone.
+            if (std.Io.Dir.accessAbsolute(io, marker, .{})) |_| return true else |_| {}
+            const datadir = std.fmt.allocPrint(arena, "--datadir={s}", .{d.path}) catch return false;
+            const basedir = std.fmt.allocPrint(arena, "--basedir={s}", .{d.keg}) catch return false;
+            const user = std.fmt.allocPrint(arena, "--user={s}", .{d.user}) catch return false;
+            const argv: []const []const u8 = switch (d.using) {
+                .postgresql_initdb => &.{
+                    std.fmt.allocPrint(arena, "{s}/bin/initdb", .{d.keg}) catch return false,
+                    std.fmt.allocPrint(arena, "--locale={s}", .{d.locale}) catch return false,
+                    "-E",
+                    "UTF-8",
+                    d.path,
+                },
+                // brew clears TMPDIR for these two; env(1) does it without a shell.
+                .mysql_initialize => &.{ "env", "-u", "TMPDIR", std.fmt.allocPrint(arena, "{s}/bin/mysqld", .{d.keg}) catch return false, "--initialize-insecure", user, basedir, datadir, "--tmpdir=/tmp" },
+                .mariadb_install_db => &.{ "env", "-u", "TMPDIR", std.fmt.allocPrint(arena, "{s}/bin/mysql_install_db", .{d.keg}) catch return false, "--verbose", user, basedir, datadir, "--tmpdir=/tmp" },
+            };
+            return runArgv(arena, io, argv, true);
+        },
     }
+}
+
+/// An executable whose real path is inside the Cellar.
+fn installedTool(arena: std.mem.Allocator, io: std.Io, tool: []const u8, env: Env) bool {
+    var tool_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = std.Io.Dir.cwd().realPathFile(io, tool, &tool_buf) catch return false;
+    var cellar_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const c = std.Io.Dir.cwd().realPathFile(io, env.cellar, &cellar_buf) catch return false;
+    if (!under(tool_buf[0..n], cellar_buf[0..c])) return false;
+    std.Io.Dir.accessAbsolute(io, tool, .{ .execute = true }) catch return false;
+    _ = arena;
+    return true;
 }
 
 fn runArgv(arena: std.mem.Allocator, io: std.Io, argv: []const []const u8, show_stderr: bool) bool {
@@ -534,10 +676,22 @@ test "post_install_steps: real path steps and templates (#493)" {
 }
 
 test "post_install_steps: unsupported forms are refused, not guessed (#493)" {
-    // glib-networking: a command from another formula.
+    // A command elsewhere in another formula's tree, or not under opt/<f>/bin.
     try expectUnsupported(
-        \\[{"command":{"path":"{{HOMEBREW_PREFIX}}/opt/glib/bin/gio-querymodules"},"type":"run","args":["{{HOMEBREW_PREFIX}}/lib/gio/modules"]}]
+        \\[{"command":{"path":"{{HOMEBREW_PREFIX}}/opt/glib/libexec/tool"},"type":"run"}]
     , "command is not inside the formula's keg");
+    try expectUnsupported(
+        \\[{"command":{"path":"/usr/bin/true"},"type":"run"}]
+    , "command is not inside the formula's keg");
+    try expectUnsupported(
+        \\[{"type":"init_data_dir","path":{"base":"var","path":"db"},"using":"sqlite_magic"}]
+    , "step uses an option nanobrew does not support");
+    try expectUnsupported(
+        \\[{"type":"gdk_pixbuf_query_loaders","path":{"base":"homebrew_prefix","path":"lib"}}]
+    , "step uses an option nanobrew does not support");
+    try expectUnsupported(
+        \\[{"type":"update_mime_database","path":{"path":"/usr/share/mime"}}]
+    , "writes outside the nanobrew prefix");
     // janet: env and chdir.
     try expectUnsupported(
         \\[{"command":{"base":"bin","path":"janet"},"chdir":{"path":"{{libexec}}/jpm"},"type":"run","args":["bootstrap.janet"],"env":{"PREFIX":"{{prefix}}"}}]
@@ -547,7 +701,7 @@ test "post_install_steps: unsupported forms are refused, not guessed (#493)" {
         \\[{"command":{"base":"bin","path":"gtk-query-immodules-3.0"},"stdout_path":{"path":"{{HOMEBREW_PREFIX}}/lib/gtk-3.0/3.0.0/immodules.cache"},"type":"run"}]
     , "step uses an option nanobrew does not support");
     try expectUnsupported(
-        \\[{"type":"compile_gsettings_schemas","path":{"base":"homebrew_prefix","path":"share/glib-2.0/schemas"}}]
+        \\[{"type":"bootstrap_cpython"}]
     , "step type is not supported by nanobrew yet");
     try expectUnsupported(
         \\[{"source":{"base":"prefix","path":"lib/*.dylib"},"target":{"base":"homebrew_prefix","path":"lib"},"force":true,"source_glob":true,"type":"symlink"}]
@@ -666,4 +820,150 @@ test "post_install_steps: one unsupported step means none run (#493)" {
     try testing.expect(std.mem.indexOf(u8, lines.items, "step 1 (move) is not supported") != null);
     try testing.expect(std.mem.indexOf(u8, lines.items, "post-install not run") != null);
     try testing.expectError(error.FileNotFound, tmp.dir.access(io, "migrated", .{}));
+}
+
+test "post_install_steps: cache rebuilds, opt tools and data dirs plan like brew (#493)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    // 29 formulae (e.g. gsettings-desktop-schemas)
+    const gs = try planOne(a,
+        \\[{"path":{"base":"homebrew_prefix","path":"share/glib-2.0/schemas"},"type":"compile_gsettings_schemas"}]
+    , test_env);
+    try testing.expectEqualStrings("glib", gs.plan.action.tool.candidates[0].formula);
+    try testing.expectEqualStrings("glib-compile-schemas", gs.plan.action.tool.candidates[0].exe);
+    try testing.expectEqualStrings("/opt/nanobrew/prefix/share/glib-2.0/schemas", gs.plan.action.tool.args[0]);
+    // 24 formulae (e.g. adwaita-icon-theme): gtk4 when installed, else gtk+3.
+    const icons = try planOne(a,
+        \\[{"path":{"base":"homebrew_prefix","path":"share/icons/hicolor"},"type":"gtk_update_icon_cache"}]
+    , test_env);
+    try testing.expectEqual(@as(usize, 2), icons.plan.action.tool.candidates.len);
+    try testing.expectEqualStrings("gtk4-update-icon-cache", icons.plan.action.tool.candidates[0].exe);
+    try testing.expectEqualStrings("gtk3-update-icon-cache", icons.plan.action.tool.candidates[1].exe);
+    try testing.expectEqualStrings("-q", icons.plan.action.tool.args[0]);
+    try testing.expectEqualStrings("/opt/nanobrew/prefix/share/icons/hicolor", icons.plan.action.tool.args[3]);
+    const pixbuf = try planOne(a,
+        \\[{"type":"gdk_pixbuf_query_loaders"}]
+    , test_env);
+    try testing.expectEqualStrings("--update-cache", pixbuf.plan.action.tool.args[0]);
+    // glib-networking: another formula's tool, through its opt link.
+    const gio = try planOne(a,
+        \\[{"command":{"path":"{{HOMEBREW_PREFIX}}/opt/glib/bin/gio-querymodules"},"type":"run","args":["{{HOMEBREW_PREFIX}}/lib/gio/modules"]}]
+    , test_env);
+    try testing.expectEqualStrings("/opt/nanobrew/prefix/opt/glib/bin/gio-querymodules", gio.plan.action.run.argv[0]);
+    // postgresql@16 / mysql
+    const pg = try planOne(a,
+        \\[{"path":{"base":"var","path":"postgresql@16"},"type":"init_data_dir","using":"postgresql_initdb"}]
+    , test_env);
+    try testing.expectEqual(Initialiser.postgresql_initdb, pg.plan.action.init_data_dir.using);
+    try testing.expectEqualStrings("/opt/nanobrew/prefix/var/postgresql@16", pg.plan.action.init_data_dir.path);
+    try testing.expectEqualStrings("en_US.UTF-8", pg.plan.action.init_data_dir.locale);
+    const pg12 = try planOne(a,
+        \\[{"locale":"C","path":{"base":"var","path":"postgresql@12"},"type":"init_data_dir","using":"postgresql_initdb"}]
+    , test_env);
+    try testing.expectEqualStrings("C", pg12.plan.action.init_data_dir.locale);
+    const my = try planOne(a,
+        \\[{"path":{"base":"var","path":"mysql"},"type":"init_data_dir","using":"mysql_initialize"}]
+    , test_env);
+    try testing.expectEqualStrings("rach", my.plan.action.init_data_dir.user);
+    var no_user = test_env;
+    no_user.user = null;
+    const my_no_user = try planOne(a,
+        \\[{"path":{"base":"var","path":"mysql"},"type":"init_data_dir","using":"mysql_initialize"}]
+    , no_user);
+    try testing.expectEqualStrings("{{user}} needs $USER", my_no_user.plan.unsupported);
+}
+
+test "post_install_steps: rebuild tools and initialisers run from installed kegs only (#493)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = testing.io;
+    var tmp = testing.tmpDir(.{});
+    defer tmp.cleanup();
+    const recorder = "#!/bin/sh\necho \"$(basename \"$0\") $*\" >> \"$(dirname \"$0\")/../../../../calls\"\n";
+    // glib 2.0 installed, linked through opt like nanobrew does.
+    try tmp.dir.createDirPath(io, "Cellar/glib/2.0/bin");
+    try tmp.dir.createDirPath(io, "Cellar/gtk+3/3.0/bin");
+    try tmp.dir.createDirPath(io, "Cellar/demo/16.1/bin");
+    try tmp.dir.createDirPath(io, "opt");
+    try tmp.dir.createDirPath(io, "elsewhere/bin");
+    inline for (.{ "Cellar/glib/2.0/bin/glib-compile-schemas", "Cellar/glib/2.0/bin/gio-querymodules", "Cellar/gtk+3/3.0/bin/gtk3-update-icon-cache", "elsewhere/bin/update-mime-database" }) |path| {
+        var f = try tmp.dir.createFile(io, path, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, recorder);
+        try f.setPermissions(io, .executable_file);
+    }
+    {
+        // initdb: creates the marker, records the call.
+        var f = try tmp.dir.createFile(io, "Cellar/demo/16.1/bin/initdb", .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io, "#!/bin/sh\nfor last; do :; done\necho \"initdb $*\" >> \"$(dirname \"$0\")/../../../../calls\"\ntouch \"$last/PG_VERSION\"\n");
+        try f.setPermissions(io, .executable_file);
+    }
+    try tmp.dir.symLink(io, "../Cellar/glib/2.0", "opt/glib", .{});
+    try tmp.dir.symLink(io, "../Cellar/gtk+3/3.0", "opt/gtk+3", .{});
+    // An opt link that leads outside the Cellar is not an installed formula.
+    try tmp.dir.symLink(io, "../elsewhere", "opt/shared-mime-info", .{});
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp.dir.realPath(io, &root_buf)];
+    var keg_buf: [std.fs.max_path_bytes]u8 = undefined;
+    var cellar_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const env: Env = .{
+        .prefix = root,
+        .cellar = try std.fmt.bufPrint(&cellar_buf, "{s}/Cellar", .{root}),
+        .keg = try std.fmt.bufPrint(&keg_buf, "{s}/Cellar/demo/16.1", .{root}),
+        .name = "demo",
+        .version = "16.1",
+    };
+    var lines: std.ArrayList(u8) = .empty;
+    defer lines.deinit(testing.allocator);
+    const Collect = struct {
+        list: *std.ArrayList(u8),
+        pub fn print(self: @This(), comptime fmt: []const u8, args: anytype) !void {
+            const s = try std.fmt.allocPrint(testing.allocator, fmt, args);
+            defer testing.allocator.free(s);
+            try self.list.appendSlice(testing.allocator, s);
+        }
+    };
+    const good =
+        \\[{"path":{"base":"homebrew_prefix","path":"share/glib-2.0/schemas"},"type":"compile_gsettings_schemas"},
+        \\ {"path":{"base":"homebrew_prefix","path":"share/icons/hicolor"},"type":"gtk_update_icon_cache"},
+        \\ {"command":{"path":"{{HOMEBREW_PREFIX}}/opt/glib/bin/gio-querymodules"},"type":"run","args":["{{HOMEBREW_PREFIX}}/lib/gio/modules"]},
+        \\ {"path":{"base":"var","path":"{{formula_name}}"},"type":"init_data_dir","using":"postgresql_initdb"}]
+    ;
+    var outcome = try runAll(testing.allocator, io, good, env, Collect{ .list = &lines });
+    try testing.expectEqual(@as(usize, 4), outcome.ran);
+    try testing.expectEqual(@as(usize, 0), outcome.failed);
+    // A second run leaves the initialised data dir alone (marker present).
+    outcome = try runAll(testing.allocator, io, good, env, Collect{ .list = &lines });
+    try testing.expectEqual(@as(usize, 4), outcome.ran);
+    try testing.expectEqualStrings("", lines.items);
+    var buf: [2048]u8 = undefined;
+    const calls = try tmp.dir.readFile(io, "calls", &buf);
+    var expect_buf: [2048]u8 = undefined;
+    const once = try std.fmt.bufPrint(&expect_buf,
+        \\glib-compile-schemas {0s}/share/glib-2.0/schemas
+        \\gtk3-update-icon-cache -q -t -f {0s}/share/icons/hicolor
+        \\gio-querymodules {0s}/lib/gio/modules
+        \\initdb --locale=en_US.UTF-8 -E UTF-8 {0s}/var/demo
+        \\glib-compile-schemas {0s}/share/glib-2.0/schemas
+        \\gtk3-update-icon-cache -q -t -f {0s}/share/icons/hicolor
+        \\gio-querymodules {0s}/lib/gio/modules
+        \\
+    , .{root});
+    try testing.expectEqualStrings(once, calls);
+
+    // Missing formula, and an opt link outside the Cellar: the step fails
+    // with a message and nothing outside the Cellar runs.
+    const bad =
+        \\[{"type":"gdk_pixbuf_query_loaders"},
+        \\ {"path":{"base":"homebrew_prefix","path":"share/mime"},"type":"update_mime_database"}]
+    ;
+    lines.clearRetainingCapacity();
+    outcome = try runAll(testing.allocator, io, bad, env, Collect{ .list = &lines });
+    try testing.expectEqual(@as(usize, 0), outcome.ran);
+    try testing.expectEqual(@as(usize, 2), outcome.failed);
+    try testing.expect(std.mem.indexOf(u8, lines.items, "needs gdk-pixbuf-query-loaders from gdk-pixbuf, which is not installed") != null);
+    try testing.expect(std.mem.indexOf(u8, lines.items, "needs update-mime-database from shared-mime-info, which is not installed") != null);
+    const after = try tmp.dir.readFile(io, "calls", &buf);
+    try testing.expectEqual(once.len, after.len);
 }
