@@ -4,6 +4,9 @@
 // Input: "user/tap/formula" (e.g. "steipete/tap/sag")
 // Repo:  github.com/<user>/homebrew-<tap>/Formula/<name>.rb
 //        github.com/<user>/homebrew-<tap>/Casks/<name>.rb
+//        github.com/<user>/<tap>/Casks/<name>.rb (casks only, when the
+//        homebrew-<tap> lookups all answer 404 — a project that is its own
+//        tap, as `brew tap <user>/<tap> https://github.com/<user>/<tap>`)
 
 const std = @import("std");
 const Formula = @import("formula.zig").Formula;
@@ -44,20 +47,56 @@ pub fn fetchTapFormula(alloc: std.mem.Allocator, client: ?*std.http.Client, name
 /// name must be "user/tap/cask" format (exactly 2 slashes).
 pub fn fetchTapCask(alloc: std.mem.Allocator, name: []const u8) !Cask {
     const ref = parseTapRef(name) orelse return error.CaskNotFound;
-
-    const urls = try tapCaskUrls(alloc, ref);
-    defer for (urls) |u| alloc.free(u);
-
-    var ruby_src: ?[]u8 = null;
-    for (urls) |url| {
-        ruby_src = fetch.get(alloc, url) catch null;
-        if (ruby_src != null) break;
-    }
-
-    const src = ruby_src orelse return error.CaskNotFound;
+    const src = try resolveTapCaskSource(alloc, ref, null, liveGet);
     defer alloc.free(src);
-
     return parseRubyCask(alloc, name, src);
+}
+
+/// Fetches one URL; `error.NotFound` only for a definite 404/410.
+const GetFn = *const fn (ctx: ?*anyopaque, alloc: std.mem.Allocator, url: []const u8) anyerror![]u8;
+
+fn liveGet(_: ?*anyopaque, alloc: std.mem.Allocator, url: []const u8) anyerror![]u8 {
+    return fetch.getOrNotFound(alloc, url);
+}
+
+/// The cask's Ruby source: the standard homebrew-<tap> repository first, then
+/// <user>/<tap> itself. Only a definite not-found moves on to the next URL; a
+/// network, auth or rate-limit failure is returned as is, so it can never make
+/// a lookup fall through to another repository.
+fn resolveTapCaskSource(alloc: std.mem.Allocator, ref: TapRef, ctx: ?*anyopaque, get: GetFn) ![]u8 {
+    if (!validTapRef(ref)) return error.InvalidTapName;
+    const standard = try tapCaskUrls(alloc, ref);
+    defer for (standard) |u| alloc.free(u);
+    const direct = try directRepoCaskUrls(alloc, ref);
+    defer for (direct) |u| alloc.free(u);
+    for (standard ++ direct) |url| {
+        if (get(ctx, alloc, url)) |src| return src else |err| switch (err) {
+            error.NotFound => continue,
+            else => return err,
+        }
+    }
+    return error.CaskNotFound;
+}
+
+/// A GitHub owner (letters, digits, single hyphens inside), a repository
+/// name, and a cask token: nothing that could change the URL's path.
+fn validTapRef(ref: TapRef) bool {
+    if (ref.user.len == 0 or ref.user.len > 39) return false;
+    if (ref.user[0] == '-' or ref.user[ref.user.len - 1] == '-') return false;
+    for (ref.user) |c| if (!(std.ascii.isAlphanumeric(c) or c == '-')) return false;
+    if (!validPathPart(ref.tap, "._-")) return false;
+    if (!validPathPart(ref.formula, "._-@+")) return false;
+    return true;
+}
+
+fn validPathPart(part: []const u8, extra: []const u8) bool {
+    if (part.len == 0 or part.len > 100 or part[0] == '.') return false;
+    if (std.mem.indexOf(u8, part, "..") != null) return false;
+    for (part) |c| {
+        if (std.ascii.isAlphanumeric(c)) continue;
+        if (std.mem.indexOfScalar(u8, extra, c) == null) return false;
+    }
+    return true;
 }
 
 /// Parse a Ruby cask file into a Cask struct.
@@ -252,6 +291,13 @@ fn tapCaskUrls(alloc: std.mem.Allocator, ref: TapRef) ![2][]const u8 {
     return .{
         try std.fmt.allocPrint(alloc, "https://raw.githubusercontent.com/{s}/homebrew-{s}/HEAD/Casks/{s}.rb", .{ ref.user, ref.tap, ref.formula }),
         try std.fmt.allocPrint(alloc, "https://raw.githubusercontent.com/{s}/homebrew-{s}/HEAD/Casks/{c}/{s}.rb", .{ ref.user, ref.tap, ref.formula[0], ref.formula }),
+    };
+}
+
+fn directRepoCaskUrls(alloc: std.mem.Allocator, ref: TapRef) ![2][]const u8 {
+    return .{
+        try std.fmt.allocPrint(alloc, "https://raw.githubusercontent.com/{s}/{s}/HEAD/Casks/{s}.rb", .{ ref.user, ref.tap, ref.formula }),
+        try std.fmt.allocPrint(alloc, "https://raw.githubusercontent.com/{s}/{s}/HEAD/Casks/{c}/{s}.rb", .{ ref.user, ref.tap, ref.formula[0], ref.formula }),
     };
 }
 
@@ -944,6 +990,126 @@ test "tapCaskUrls keeps Casks lookup order" {
     try testing.expectEqual(@as(usize, 2), urls.len);
     try testing.expectEqualStrings("https://raw.githubusercontent.com/farion1231/homebrew-ccswitch/HEAD/Casks/cc-switch.rb", urls[0]);
     try testing.expectEqualStrings("https://raw.githubusercontent.com/farion1231/homebrew-ccswitch/HEAD/Casks/c/cc-switch.rb", urls[1]);
+}
+
+const FakeGet = struct {
+    /// URLs that answer with a body; every other URL answers `miss`.
+    hits: []const []const u8 = &.{},
+    miss: anyerror = error.NotFound,
+    /// One URL that answers `fail` instead of being found or missing.
+    fail_url: ?[]const u8 = null,
+    fail: anyerror = error.RateLimited,
+    asked_buf: [8][160]u8 = undefined,
+    asked_len: [8]usize = undefined,
+    n: usize = 0,
+
+    fn asked(f: *const FakeGet, i: usize) []const u8 {
+        return f.asked_buf[i][0..f.asked_len[i]];
+    }
+
+    fn get(ctx: ?*anyopaque, alloc: std.mem.Allocator, url: []const u8) anyerror![]u8 {
+        const f: *FakeGet = @ptrCast(@alignCast(ctx.?));
+        if (f.n < f.asked_buf.len and url.len <= f.asked_buf[0].len) {
+            @memcpy(f.asked_buf[f.n][0..url.len], url);
+            f.asked_len[f.n] = url.len;
+        }
+        f.n += 1;
+        if (f.fail_url) |u| if (std.mem.eql(u8, u, url)) return f.fail;
+        for (f.hits) |h| if (std.mem.eql(u8, h, url)) return alloc.dupe(u8, url);
+        return f.miss;
+    }
+};
+
+const std_cask = "https://raw.githubusercontent.com/justrach/homebrew-nanolight/HEAD/Casks/nanolight.rb";
+const std_sharded = "https://raw.githubusercontent.com/justrach/homebrew-nanolight/HEAD/Casks/n/nanolight.rb";
+const direct_cask = "https://raw.githubusercontent.com/justrach/nanolight/HEAD/Casks/nanolight.rb";
+const direct_sharded = "https://raw.githubusercontent.com/justrach/nanolight/HEAD/Casks/n/nanolight.rb";
+
+test "tap cask: a standard homebrew-<tap> cask wins and the repo itself is never asked" {
+    var f: FakeGet = .{ .hits = &.{ std_cask, direct_cask } };
+    const src = try resolveTapCaskSource(testing.allocator, parseTapRef("justrach/nanolight/nanolight").?, &f, FakeGet.get);
+    defer testing.allocator.free(src);
+    try testing.expectEqualStrings(std_cask, src);
+    try testing.expectEqual(@as(usize, 1), f.n);
+}
+
+test "tap cask: the sharded standard path still comes before the repo itself" {
+    var f: FakeGet = .{ .hits = &.{ std_sharded, direct_cask } };
+    const src = try resolveTapCaskSource(testing.allocator, parseTapRef("justrach/nanolight/nanolight").?, &f, FakeGet.get);
+    defer testing.allocator.free(src);
+    try testing.expectEqualStrings(std_sharded, src);
+}
+
+test "tap cask: a project that is its own tap is found in <user>/<tap>" {
+    var f: FakeGet = .{ .hits = &.{direct_cask} };
+    const src = try resolveTapCaskSource(testing.allocator, parseTapRef("justrach/nanolight/nanolight").?, &f, FakeGet.get);
+    defer testing.allocator.free(src);
+    try testing.expectEqualStrings(direct_cask, src);
+    try testing.expectEqual(@as(usize, 3), f.n);
+    try testing.expectEqualStrings(std_cask, f.asked(0));
+    try testing.expectEqualStrings(std_sharded, f.asked(1));
+    try testing.expectEqualStrings(direct_cask, f.asked(2));
+}
+
+test "tap cask: the repo's sharded Casks path is the last place looked" {
+    var f: FakeGet = .{ .hits = &.{direct_sharded} };
+    const src = try resolveTapCaskSource(testing.allocator, parseTapRef("justrach/nanolight/nanolight").?, &f, FakeGet.get);
+    defer testing.allocator.free(src);
+    try testing.expectEqualStrings(direct_sharded, src);
+    try testing.expectEqual(@as(usize, 4), f.n);
+}
+
+test "tap cask: missing everywhere is CaskNotFound" {
+    var f: FakeGet = .{};
+    try testing.expectError(error.CaskNotFound, resolveTapCaskSource(testing.allocator, parseTapRef("justrach/nanolight/nanolight").?, &f, FakeGet.get));
+    try testing.expectEqual(@as(usize, 4), f.n);
+}
+
+test "tap cask: a rate limit on the standard tap never falls through to the repo" {
+    var f: FakeGet = .{ .hits = &.{direct_cask}, .fail_url = std_cask, .fail = error.RateLimited };
+    try testing.expectError(error.RateLimited, resolveTapCaskSource(testing.allocator, parseTapRef("justrach/nanolight/nanolight").?, &f, FakeGet.get));
+    try testing.expectEqual(@as(usize, 1), f.n);
+}
+
+test "tap cask: auth and network failures are returned, not treated as missing" {
+    inline for (.{ error.AuthFailed, error.FetchFailed }) |e| {
+        var f: FakeGet = .{ .hits = &.{direct_cask}, .miss = e };
+        try testing.expectError(e, resolveTapCaskSource(testing.allocator, parseTapRef("justrach/nanolight/nanolight").?, &f, FakeGet.get));
+        try testing.expectEqual(@as(usize, 1), f.n);
+    }
+    var f: FakeGet = .{ .fail_url = direct_cask, .fail = error.FetchFailed };
+    try testing.expectError(error.FetchFailed, resolveTapCaskSource(testing.allocator, parseTapRef("justrach/nanolight/nanolight").?, &f, FakeGet.get));
+}
+
+test "tap cask: names that could change the URL path are refused before any fetch" {
+    const bad = [_][]const u8{
+        "justrach/../nanolight",
+        "justrach/nanolight/..",
+        "justrach/nanolight/.hidden",
+        "justrach/nano light/nanolight",
+        "justrach/nanolight/nano?x",
+        "justrach/nanolight/nano#x",
+        "justrach/nanolight/nano%2f",
+        "-justrach/nanolight/nanolight",
+        "just_rach/nanolight/nanolight",
+    };
+    for (bad) |name| {
+        var f: FakeGet = .{ .hits = &.{direct_cask} };
+        try testing.expectError(error.InvalidTapName, resolveTapCaskSource(testing.allocator, parseTapRef(name).?, &f, FakeGet.get));
+        try testing.expectEqual(@as(usize, 0), f.n);
+    }
+}
+
+test "tap cask: ordinary tap names stay valid" {
+    const good = [_][]const u8{ "justrach/nanolight/nanolight", "farion1231/ccswitch/cc-switch", "J-x-Z/tap/cocoa-way", "user/my.tap_x/font-fira@3", "user/tap/c++" };
+    for (good) |name| try testing.expect(validTapRef(parseTapRef(name).?));
+}
+
+test "directRepoCaskUrls point at the repository itself" {
+    const urls = try directRepoCaskUrls(testing.allocator, parseTapRef("justrach/nanolight/nanolight").?);
+    defer for (urls) |u| testing.allocator.free(u);
+    try testing.expectEqualStrings(direct_cask, urls[0]);
+    try testing.expectEqualStrings(direct_sharded, urls[1]);
 }
 
 test "parseRubyCask - binary target defaults to basename and honors target override" {

@@ -4,6 +4,9 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+### Added
+- `nb install --cask user/tap/name` also finds a cask in the `user/tap` repository itself (`Casks/name.rb`) when `homebrew-tap` has none, as `brew tap user/tap https://github.com/user/tap` does. `homebrew-tap` is still looked up first; only a definite 404 moves on, so a rate limit, refused request or network failure is reported as such instead of "not found". Tap names that could change the URL path are refused.
+
 ## [0.1.215] - 2026-11-02
 
 ### Fixed
