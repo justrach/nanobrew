@@ -4,6 +4,9 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+### Added
+- `nb list --json` and `nb outdated --json` (also with `--cask`, `--deb`, `--versions` and package names) print one JSON document, `{"schema":1,"packages":[...]}`, instead of text. `nb outdated --json` also reports whether `nb upgrade` can replace each package and, when it cannot, the reason it would print. The text output is unchanged. See `docs/json-output.md`. Requested by @Rex57. (#495)
+
 ### Fixed
 - `nb install name@version` now saves the pin even when another package in the same command fails. "Pinned" prints only when the pin was written. A pinned package whose own install failed is not pinned at its older keg. (#429)
 - `nb install`/`nb upgrade` no longer replace a pinned formula that is pulled in as a dependency, whether by a newer version or a rebuilt bottle. They keep the pinned keg, its links and its database record, and print a note. An explicit `name@version` request still overrides the pin. (#439)

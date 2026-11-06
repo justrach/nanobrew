@@ -455,7 +455,7 @@ License: [Apache 2.0](./LICENSE)
 | `nb install user/tap/formula` | | Install from a third-party tap |
 | `nb remove <pkg>` | `nb ui` | Uninstall packages |
 | `nb remove --deb <pkg>` | | Remove a .deb package (Linux/Docker) |
-| `nb list [--versions\|--names]` | `nb ls` | List installed packages, version history, or names-only output |
+| `nb list [--versions\|--names] [--json]` | `nb ls` | List installed packages, version history, or names-only output; `--json` prints [JSON](docs/json-output.md) |
 | `nb leaves [--tree]` | | List installed formulae with no dependents |
 | `nb where <pattern>` | `nb wh` | Show installed kegs, prefix files, and index hits matching pattern |
 | `nb info <pkg>` | | Show package details |
@@ -463,7 +463,7 @@ License: [Apache 2.0](./LICENSE)
 | `nb search <query>` | `nb s` | Search formulas and casks |
 | `nb upgrade [pkg]` | | Upgrade packages |
 | `nb upgrade --deb` | | Upgrade all installed .deb packages |
-| `nb outdated [pkg...]` | `--cask`, `--deb` | List outdated packages, optionally filtered by name or type |
+| `nb outdated [pkg...]` | `--cask`, `--deb`, `--json` | List outdated packages, optionally filtered by name or type; `--json` prints [JSON](docs/json-output.md) with whether `nb upgrade` can replace each one |
 | `nb pin <pkg>` | | Prevent upgrades |
 | `nb unpin <pkg>` | | Allow upgrades |
 | `nb rollback <pkg>` | `nb rb` | Revert to previous version |

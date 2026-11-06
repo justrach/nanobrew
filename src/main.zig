@@ -1956,6 +1956,52 @@ test "reinstall removes first only for cask and deb packages" {
     try std.testing.expect(!isRequestedFormulaName("oniguruma", &.{"user/tap/jq"}));
 }
 
+// ── --json output (#495) ──
+//
+// `nb list --json` and `nb outdated --json` print one JSON document on stdout:
+// `{"schema":1,"packages":[...]}`. Errors still go to stderr with exit 1.
+// Fields are only added under schema 1; a removed or renamed field or a
+// changed meaning bumps `schema`, so tools can refuse a format they do not know.
+
+const json_schema_version: u32 = 1;
+
+const JsonVersionRow = struct { version: []const u8, switchable: bool };
+
+const JsonListEntry = struct {
+    name: []const u8,
+    kind: []const u8,
+    version: []const u8,
+    pinned: bool,
+    /// Only with --versions: newest first, like the text output.
+    versions: ?[]const JsonVersionRow = null,
+};
+
+const JsonOutdatedEntry = struct {
+    name: []const u8,
+    kind: []const u8,
+    installed: []const u8,
+    latest: []const u8,
+    pinned: bool,
+    /// What `nb upgrade` would do with this entry now. Pinned entries are
+    /// skipped by upgrade too, but keep `upgrade_supported` for the package
+    /// itself; `unsupported_reason` is the text upgrade prints.
+    upgrade_supported: bool,
+    unsupported_reason: ?[]const u8,
+};
+
+fn jsonDocument(alloc: std.mem.Allocator, packages: anytype, emit_null: bool) ![]u8 {
+    return std.json.Stringify.valueAlloc(alloc, .{ .schema = json_schema_version, .packages = packages }, .{ .emit_null_optional_fields = emit_null });
+}
+
+fn printJsonDocument(alloc: std.mem.Allocator, packages: anytype, emit_null: bool) void {
+    const bytes = jsonDocument(alloc, packages, emit_null) catch {
+        StderrWriter.print(.{}, "nb: out of memory while writing JSON\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer alloc.free(bytes);
+    StdoutWriter.print(.{}, "{s}\n", .{bytes}) catch {};
+}
+
 // ── nb list ──
 
 /// One readdir of the content-addressed store into a sha256 set, replacing
@@ -1996,18 +2042,25 @@ fn runList(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     var show_versions = false;
     var names_only = false;
+    var json = false;
     for (args) |a| {
         if (std.mem.eql(u8, a, "--versions")) {
             show_versions = true;
         } else if (std.mem.eql(u8, a, "--names")) {
             names_only = true;
+        } else if (std.mem.eql(u8, a, "--json")) {
+            json = true;
         } else {
-            stderr.print("nb: unknown list option '{s}'\nUsage: nb list [--versions|--names]\n", .{a}) catch {};
+            stderr.print("nb: unknown list option '{s}'\nUsage: nb list [--versions|--names] [--json]\n", .{a}) catch {};
             std.process.exit(1);
         }
     }
     if (show_versions and names_only) {
-        stderr.print("nb: --versions and --names cannot be combined\nUsage: nb list [--versions|--names]\n", .{}) catch {};
+        stderr.print("nb: --versions and --names cannot be combined\nUsage: nb list [--versions|--names] [--json]\n", .{}) catch {};
+        std.process.exit(1);
+    }
+    if (json and names_only) {
+        stderr.print("nb: --json and --names cannot be combined\nUsage: nb list [--versions|--names] [--json]\n", .{}) catch {};
         std.process.exit(1);
     }
 
@@ -2109,6 +2162,44 @@ fn runList(alloc: std.mem.Allocator, args: []const []const u8) void {
                 }
             }
         }
+    }
+
+    if (json) {
+        var arena = std.heap.ArenaAllocator.init(alloc);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const entries = a.alloc(JsonListEntry, kegs.len + casks.len + debs.len) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        var n: usize = 0;
+        for (kegs, 0..) |keg, ki| {
+            var versions: ?[]const JsonVersionRow = null;
+            if (show_versions) {
+                const rows = if (version_rows) |vrs| vrs[ki] orelse &.{} else &.{};
+                const out = a.alloc(JsonVersionRow, rows.len) catch {
+                    stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+                    std.process.exit(1);
+                };
+                for (out, 0..) |*o, i| {
+                    const row = rows[rows.len - 1 - i];
+                    o.* = .{ .version = row.version, .switchable = row.switchable };
+                }
+                versions = out;
+            }
+            entries[n] = .{ .name = keg.name, .kind = "formula", .version = keg.version, .pinned = keg.pinned, .versions = versions };
+            n += 1;
+        }
+        for (casks) |c| {
+            entries[n] = .{ .name = c.token, .kind = "cask", .version = c.version, .pinned = false };
+            n += 1;
+        }
+        for (debs) |d| {
+            entries[n] = .{ .name = d.name, .kind = "deb", .version = d.version, .pinned = false };
+            n += 1;
+        }
+        printJsonDocument(alloc, entries[0..n], false);
+        return;
     }
 
     if (kegs.len == 0 and casks.len == 0 and debs.len == 0) {
@@ -3205,7 +3296,7 @@ const Outdated = struct {
     }
 };
 
-fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filter_names: []const []const u8, check_casks: bool, check_kegs: bool) std.ArrayList(Outdated) {
+fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filter_names: []const []const u8, check_casks: bool, check_kegs: bool, progress: bool) std.ArrayList(Outdated) {
     const stdout = StdoutWriter{};
     var result: std.ArrayList(Outdated) = .empty;
 
@@ -3269,7 +3360,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
 
     if (to_check.items.len == 0) return result;
 
-    stdout.print("==> Checking {d} package(s) for updates...\n", .{to_check.items.len}) catch {};
+    if (progress) stdout.print("==> Checking {d} package(s) for updates...\n", .{to_check.items.len}) catch {};
 
     // Bulk fast path: resolve available versions from the cached Homebrew
     // bulk lists (one streaming scan each, shared with `nb search`, 1h TTL)
@@ -3525,7 +3616,7 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     const check_casks = is_cask or names.items.len == 0;
     const check_kegs = !is_cask;
-    var outdated = getOutdatedPackages(alloc, &db, names.items, check_casks, check_kegs);
+    var outdated = getOutdatedPackages(alloc, &db, names.items, check_casks, check_kegs, true);
     defer {
         for (outdated.items) |*pkg| pkg.deinit(alloc);
         outdated.deinit(alloc);
@@ -4545,7 +4636,7 @@ fn printUsage() void {
         \\  remove <formula>         Uninstall packages
         \\  remove --cask <app>      Uninstall macOS applications
         \\  remove --deb <pkg>       Uninstall .deb packages (Linux)
-        \\  list [--versions|--names]
+        \\  list [--versions|--names] [--json]
         \\                           List installed packages, casks, and debs
         \\  leaves [--tree]          List packages with no dependents
         \\  info <formula>           Show formula info from Homebrew API
@@ -4562,7 +4653,7 @@ fn printUsage() void {
         \\  version                  Print the installed version
         \\  doctor [--probe [pkg]]   Check installation health / probe installed packages
         \\  cleanup [--dry-run]      Remove stale caches and orphaned files
-        \\  outdated [--cask|--deb] [pkg...]  List packages with newer versions available
+        \\  outdated [--cask|--deb] [--json] [pkg...]  List packages with newer versions available
         \\  pin <package>            Pin a package (skip during upgrade)
         \\  unpin <package>          Unpin a package
         \\  rollback <package>       Rollback to previous version
@@ -5752,6 +5843,7 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     var is_cask = false;
     var is_deb = false;
+    var json = false;
     var names: std.ArrayList([]const u8) = .empty;
     defer names.deinit(alloc);
     for (args) |arg| {
@@ -5759,8 +5851,10 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
             is_cask = true;
         } else if (std.mem.eql(u8, arg, "--deb")) {
             is_deb = true;
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            json = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            stderr.print("nb: outdated: unknown flag '{s}' (supported: --cask, --deb)\n", .{arg}) catch {};
+            stderr.print("nb: outdated: unknown flag '{s}' (supported: --cask, --deb, --json)\n", .{arg}) catch {};
             std.process.exit(1);
         } else {
             names.append(alloc, arg) catch {
@@ -5788,8 +5882,8 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
         }
     }
 
-    stdout.print("==> Checking for outdated packages...\n", .{}) catch {};
-    var outdated = getOutdatedPackages(alloc, &db, names.items, !is_deb, !is_cask and !is_deb);
+    if (!json) stdout.print("==> Checking for outdated packages...\n", .{}) catch {};
+    var outdated = getOutdatedPackages(alloc, &db, names.items, !is_deb, !is_cask and !is_deb, !json);
     defer {
         for (outdated.items) |*pkg| pkg.deinit(alloc);
         outdated.deinit(alloc);
@@ -5797,6 +5891,10 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     // Also check deb packages
     var deb_outdated: usize = 0;
+    var json_arena = std.heap.ArenaAllocator.init(alloc);
+    defer json_arena.deinit();
+    const ja = json_arena.allocator();
+    var json_entries: std.ArrayList(JsonOutdatedEntry) = .empty;
     const installed_debs = db.listInstalledDebs(alloc) catch &.{};
     defer if (installed_debs.len > 0) alloc.free(installed_debs);
 
@@ -5861,11 +5959,50 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
             }
             if (idx.get(deb.name)) |idx_pkg| {
                 if (nb.version.compareDebVersions(idx_pkg.version, deb.version) == .gt) {
-                    stdout.print("{s} ({s} -> {s}) (deb)\n", .{ deb.name, deb.version, idx_pkg.version }) catch {};
+                    if (json) {
+                        json_entries.append(ja, .{
+                            .name = deb.name,
+                            .kind = "deb",
+                            .installed = deb.version,
+                            .latest = ja.dupe(u8, idx_pkg.version) catch "",
+                            .pinned = false,
+                            .upgrade_supported = true,
+                            .unsupported_reason = null,
+                        }) catch {};
+                    } else stdout.print("{s} ({s} -> {s}) (deb)\n", .{ deb.name, deb.version, idx_pkg.version }) catch {};
                     deb_outdated += 1;
                 }
             }
         }
+    }
+
+    if (json) {
+        // Keg and cask entries first, like the text output; debs were collected above.
+        var keg_and_cask: std.ArrayList(JsonOutdatedEntry) = .empty;
+        for (outdated.items) |pkg| {
+            var reason: ?[]const u8 = null;
+            if (pkg.is_cask_pkg) {
+                // The same decision `nb upgrade --cask` makes before it plans.
+                if (fetchCaskUpgradeCandidate(alloc, pkg.name)) |candidate| {
+                    defer candidate.deinit(alloc);
+                    if (nb.cask_upgrade.unsupportedReason(candidate)) |r| reason = r;
+                } else |err| {
+                    reason = std.fmt.allocPrint(ja, "cannot prepare cask upgrade ({s})", .{@errorName(err)}) catch "cannot prepare cask upgrade";
+                }
+            }
+            keg_and_cask.append(ja, .{
+                .name = pkg.name,
+                .kind = if (pkg.is_cask_pkg) "cask" else "formula",
+                .installed = pkg.old_ver,
+                .latest = pkg.new_ver,
+                .pinned = pkg.is_pinned,
+                .upgrade_supported = reason == null,
+                .unsupported_reason = reason,
+            }) catch {};
+        }
+        keg_and_cask.appendSlice(ja, json_entries.items) catch {};
+        printJsonDocument(alloc, keg_and_cask.items, true);
+        return;
     }
 
     if (outdated.items.len == 0 and deb_outdated == 0) {
@@ -7454,4 +7591,32 @@ fn trustCommand(alloc: std.mem.Allocator, args: []const []const u8) !void {
     const json = try std.json.Stringify.valueAlloc(alloc, entry, .{ .whitespace = .indent_2 });
     defer alloc.free(json);
     if (output) |path| try trust.write(path, json) else try std.Io.File.stdout().writeStreamingAll(g_io, json);
+}
+
+test "--json documents keep schema 1 and escape names (#495)" {
+    const alloc = std.testing.allocator;
+    const list = [_]JsonListEntry{
+        .{ .name = "node", .kind = "formula", .version = "26.13.0_2", .pinned = true, .versions = &.{ .{ .version = "26.13.0_2", .switchable = true }, .{ .version = "26.12.0", .switchable = false } } },
+        .{ .name = "Rex57/tap/nanobrew-ui", .kind = "cask", .version = "1.0.0", .pinned = false },
+        .{ .name = "we\"ird", .kind = "deb", .version = "1:2.3-4", .pinned = false },
+    };
+    const list_json = try jsonDocument(alloc, &list, false);
+    defer alloc.free(list_json);
+    try std.testing.expectEqualStrings(
+        \\{"schema":1,"packages":[{"name":"node","kind":"formula","version":"26.13.0_2","pinned":true,"versions":[{"version":"26.13.0_2","switchable":true},{"version":"26.12.0","switchable":false}]},{"name":"Rex57/tap/nanobrew-ui","kind":"cask","version":"1.0.0","pinned":false},{"name":"we\"ird","kind":"deb","version":"1:2.3-4","pinned":false}]}
+    , list_json);
+
+    const outdated = [_]JsonOutdatedEntry{
+        .{ .name = "node", .kind = "formula", .installed = "26.13.0_2", .latest = "26.14.0", .pinned = false, .upgrade_supported = true, .unsupported_reason = null },
+        .{ .name = "tool", .kind = "cask", .installed = "1.0", .latest = "2.0", .pinned = false, .upgrade_supported = false, .unsupported_reason = "external installers cannot be rolled back" },
+    };
+    const outdated_json = try jsonDocument(alloc, &outdated, true);
+    defer alloc.free(outdated_json);
+    try std.testing.expectEqualStrings(
+        \\{"schema":1,"packages":[{"name":"node","kind":"formula","installed":"26.13.0_2","latest":"26.14.0","pinned":false,"upgrade_supported":true,"unsupported_reason":null},{"name":"tool","kind":"cask","installed":"1.0","latest":"2.0","pinned":false,"upgrade_supported":false,"unsupported_reason":"external installers cannot be rolled back"}]}
+    , outdated_json);
+
+    const empty = try jsonDocument(alloc, @as([]const JsonOutdatedEntry, &.{}), true);
+    defer alloc.free(empty);
+    try std.testing.expectEqualStrings("{\"schema\":1,\"packages\":[]}", empty);
 }
