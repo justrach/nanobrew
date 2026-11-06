@@ -6,6 +6,14 @@ All notable changes to nanobrew are documented here.
 
 ### Fixed
 - `nb install`/`nb upgrade` no longer replace a pinned formula that is pulled in as a dependency, whether by a newer version or a rebuilt bottle. They keep the pinned keg, its links and its database record, and print a note. An explicit `name@version` request still overrides the pin. (#439)
+- `nb upgrade` no longer stops at the first keg that fails to install. It tries the remaining kegs, prints the summary, and exits 1. An upgrade that installs a version newer than the cached index advertised now counts as upgraded instead of failed. (#445)
+- `nb remove` (also `--cask` and `--deb`), `nb pin`/`nb unpin`, `nb info` (also `--cask`) and `nb bundle install` now exit 1 when a named package, cask or file is missing or its removal fails. Removals and pins that succeeded in the same command are still saved. `nb reinstall` of a package that is not installed still installs it. (#463)
+- `nb reinstall <formula>` no longer removes the keg and its record first: a failed lookup or download leaves the installed keg, its links and its pin as they were. A newer version's keg replaces the old one only after it is installed. (#441)
+- A same-version reinstall copies the new keg beside the old one and swaps it in; the old keg is kept until the install finishes and put back if any step fails. (#489)
+- `nb install`/`nb deps` no longer drop a dependency whose formula fetch timed out or got a 5xx and then report success. Only an HTTP 404/410 counts as "not a formula" (for example a `uses_from_macos` system library). Any other fetch error stops resolution and names the formula. The dependency resolver tests now run in `zig build test`. (#447)
+- A binary the relocator could not open, read or write back is now counted as incomplete, so the install fails and the keg is not cached instead of silently shipping a half-rewritten binary. `zig build test` now also runs the ELF (Linux) and Mach-O (macOS) relocator tests. (#465)
+- A bottle is extracted into a private staging directory and published as `store/<sha256>` with one rename, so an interrupted or concurrent install can no longer leave a half-extracted store entry that later installs link as complete. (#437)
+- `zig build test` also compiles and runs the tests in `src/main.zig` (not on Windows, where `src/windows_main.zig` is the exe root). (#481)
 
 ## [0.1.215] - 2026-11-02
 

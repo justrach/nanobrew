@@ -957,10 +957,12 @@ fn fetchAndCache(alloc: std.mem.Allocator, shared_client: ?*std.http.Client, nam
     var url_buf: [512]u8 = undefined;
     const url = std.fmt.bufPrint(&url_buf, "{s}{s}.json", .{ base, name }) catch return error.NameTooLong;
 
-    const body = if (shared_client) |c|
-        fetch.getWithClient(alloc, c, url) catch return error.FormulaNotFound
+    // Only a 404/410 means "no such formula"; a timeout or 5xx must stay an
+    // error, or the dependency resolver drops that dependency.
+    const body = (if (shared_client) |c|
+        fetch.getWithClient(alloc, c, url)
     else
-        fetch.get(alloc, url) catch return error.FormulaNotFound;
+        fetch.get(alloc, url)) catch |err| return if (err == error.BottleNotFound) error.FormulaNotFound else err;
 
     // Write to cache
     std.Io.Dir.createDirAbsolute(paths.safe_io, API_CACHE_DIR, .default_dir) catch {};

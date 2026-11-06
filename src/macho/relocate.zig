@@ -318,8 +318,9 @@ fn relocateFile(alloc: std.mem.Allocator, io: std.Io, path: []const u8) bool {
 
     const orig_mode = stat.permissions.toMode();
     const lifted = short.liftOwnerWrite(io, path, orig_mode);
-    var file = std.Io.Dir.openFileAbsolute(io, path, .{ .mode = .read_write }) catch {
+    var file = std.Io.Dir.openFileAbsolute(io, path, .{ .mode = .read_write }) catch |err| {
         if (lifted) short.restoreMode(io, path, orig_mode);
+        short.noteFailedFile(io, path, err);
         return false;
     };
     var file_open = true;
@@ -330,9 +331,15 @@ fn relocateFile(alloc: std.mem.Allocator, io: std.Io, path: []const u8) bool {
 
     const size: usize = @intCast(stat.size);
     const heap = std.heap.smp_allocator;
-    const buf = heap.alloc(u8, size) catch return false;
+    const buf = heap.alloc(u8, size) catch |err| {
+        short.noteFailedFile(io, path, err);
+        return false;
+    };
     defer heap.free(buf);
-    const read_n = file.readPositionalAll(io, buf, 0) catch return false;
+    const read_n = file.readPositionalAll(io, buf, 0) catch |err| {
+        short.noteFailedFile(io, path, err);
+        return false;
+    };
     const data = buf[0..read_n];
     if (data.len < 32) return false;
 
@@ -376,7 +383,10 @@ fn relocateFile(alloc: std.mem.Allocator, io: std.Io, path: []const u8) bool {
         // shrink in place) and neither is linkage-relevant — mirrors the ELF
         // relocator. Text-file shebangs/.pc are handled by the placeholder
         // walker, which skips binaries.
-        if (changed) file.writePositionalAll(io, data, 0) catch return false;
+        if (changed) file.writePositionalAll(io, data, 0) catch |err| {
+            short.noteFailedFile(io, path, err);
+            return false;
+        };
         // Static archives carry no code signature — report them unmodified so
         // the caller's batch codesign pass skips them (#357).
         if (is_archive) return false;
@@ -930,4 +940,66 @@ test "byte-pass - whole-file pass mirrors relocateFile (placeholder + literal)" 
     try testing.expect(std.mem.indexOf(u8, &buf, "/opt/homebrew/") == null);
     try testing.expect(std.mem.indexOf(u8, &buf, "openssl@3/3.6.2/lib/libssl.3.dylib") != null);
     try testing.expect(std.mem.indexOf(u8, &buf, "etc/openssl@3") != null);
+}
+
+// ── relocateFile I/O failures ─────────────────────────────────────────────
+// A confirmed Mach-O that cannot be opened, read or written back must count
+// as incomplete, so the #355 gate fails the keg instead of caching it.
+
+fn writeMachOFixture(dir: std.Io.Dir, name: []const u8, path_buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
+    var body = [_]u8{0} ** (64 * 1024);
+    std.mem.writeInt(u32, body[0..4], MH_MAGIC_64, .little);
+    @memcpy(body[32..][0..PLACEHOLDER_PREFIX.len], PLACEHOLDER_PREFIX);
+    const f = try dir.createFile(testing.io, name, .{});
+    defer f.close(testing.io);
+    try f.writeStreamingAll(testing.io, &body);
+    const n = try dir.realPathFile(testing.io, name, path_buf);
+    return path_buf[0..n];
+}
+
+test "relocateFile - a Mach-O it cannot open read-write counts as incomplete" {
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try writeMachOFixture(tmp_dir.dir, "locked", &path_buf);
+    const path_z = try testing.allocator.dupeZ(u8, path);
+    defer testing.allocator.free(path_z);
+
+    // UF_IMMUTABLE: the owner can still read the file, but the read-write
+    // open fails (and so would the write-bit lift).
+    const c = struct {
+        extern "c" fn chflags(path: [*:0]const u8, flags: c_uint) c_int;
+    };
+    try testing.expectEqual(@as(c_int, 0), c.chflags(path_z, 0x2));
+    defer _ = c.chflags(path_z, 0);
+
+    short.resetIncompleteCount();
+    try testing.expect(!relocateFile(testing.allocator, testing.io, path));
+    try testing.expectEqual(@as(usize, 1), short.incompleteCount());
+}
+
+test "relocateFile - a failed write-back counts as incomplete" {
+    // The write-back only runs in the /opt/nb byte pass. Never create
+    // /opt/nb from a test: skip where it is not already in place.
+    var target_buf: [std.fs.max_path_bytes]u8 = undefined;
+    if (short.status(testing.io, &target_buf).status != .ok) return error.SkipZigTest;
+
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = try writeMachOFixture(tmp_dir.dir, "full_disk", &path_buf);
+
+    // A file-size limit below the file size fails the in-place write
+    // part-way, like ENOSPC when an APFS clone needs its own blocks.
+    const ignore: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.IGN }, .mask = std.posix.sigemptyset(), .flags = 0 };
+    var old_action: std.posix.Sigaction = undefined;
+    std.posix.sigaction(.XFSZ, &ignore, &old_action);
+    defer std.posix.sigaction(.XFSZ, &old_action, null);
+    const old_limit = try std.posix.getrlimit(.FSIZE);
+    try std.posix.setrlimit(.FSIZE, .{ .cur = 4096, .max = old_limit.max });
+    defer std.posix.setrlimit(.FSIZE, old_limit) catch {};
+
+    short.resetIncompleteCount();
+    try testing.expect(!relocateFile(testing.allocator, testing.io, path));
+    try testing.expectEqual(@as(usize, 1), short.incompleteCount());
 }
