@@ -202,36 +202,31 @@ fn writeSchemaMarker(io: std.Io, dest_dir: []const u8) !void {
 /// Materialize a package from store-relocated/<sha256>/ into Cellar/<name>/<version>/.
 /// This is the fast reinstall path: no relocation needed.
 pub fn materializeFromRelocated(io: std.Io, sha256: []const u8, name: []const u8, version: []const u8) !void {
+    return materializeFromRelocatedAt(io, STORE_RELOCATED_DIR, CELLAR_DIR, sha256, name, version);
+}
+
+fn materializeFromRelocatedAt(io: std.Io, relocated_dir: []const u8, cellar_dir: []const u8, sha256: []const u8, name: []const u8, version: []const u8) !void {
     if (!isValidSha256(sha256)) return error.InvalidSha256;
 
     // src = store-relocated/<sha256>/
-    var src_buf: [512:0]u8 = undefined;
-    const src_dir = std.fmt.bufPrint(&src_buf, "{s}/{s}", .{ STORE_RELOCATED_DIR, sha256 }) catch return error.PathTooLong;
-    src_buf[src_dir.len] = 0;
+    var src_buf: [512]u8 = undefined;
+    const src_dir = std.fmt.bufPrint(&src_buf, "{s}/{s}", .{ relocated_dir, sha256 }) catch return error.PathTooLong;
 
     // dest = Cellar/<name>/<version>/
-    var dest_buf: [512:0]u8 = undefined;
-    const dest_dir = std.fmt.bufPrint(&dest_buf, "{s}/{s}/{s}", .{ CELLAR_DIR, name, version }) catch return error.PathTooLong;
-    dest_buf[dest_dir.len] = 0;
+    var dest_buf: [512]u8 = undefined;
+    const dest_dir = std.fmt.bufPrint(&dest_buf, "{s}/{s}/{s}", .{ cellar_dir, name, version }) catch return error.PathTooLong;
 
     // Ensure parent dir exists
     var parent_buf: [512]u8 = undefined;
-    const parent = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ CELLAR_DIR, name }) catch return error.PathTooLong;
+    const parent = std.fmt.bufPrint(&parent_buf, "{s}/{s}", .{ cellar_dir, name }) catch return error.PathTooLong;
     std.Io.Dir.createDirAbsolute(io, parent, .default_dir) catch |err| switch (err) {
         error.PathAlreadyExists => {},
         else => return err,
     };
 
-    // Remove existing keg if present (fresh reinstall; deferred removal)
-    const purge = @import("../platform/purge.zig");
-    if (std.Io.Dir.accessAbsolute(io, dest_dir, .{})) |_| {
-        purge.deferTreeRemoval(io, dest_dir);
-    } else |_| {}
-
-    const copy = @import("../platform/copy.zig");
-    if (!copy.cloneTree(&src_buf, &dest_buf)) {
-        try copy.cpFallback(io, src_dir, dest_dir);
-    }
+    // Fresh reinstall: the existing keg is parked, not deleted, until the
+    // install is done (cellar.settlePrevious).
+    try @import("../cellar/cellar.zig").replaceKeg(io, src_dir, dest_dir);
 
     // The schema marker is snapshot bookkeeping — keep it out of the keg.
     var marker_buf: [600]u8 = undefined;
@@ -274,4 +269,26 @@ test "entryPath - path traversal sha returns empty string" {
     var buf: [512]u8 = undefined;
     const p = entryPath("../../etc/passwd", &buf);
     try testing.expectEqualStrings("", p);
+}
+
+test "materializeFromRelocated - failed copy keeps the existing same-version keg" {
+    const io = testing.io;
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    try tmp_dir.dir.createDirPath(io, "Cellar/foo/1.0/bin");
+    try tmp_dir.dir.writeFile(io, .{ .sub_path = "Cellar/foo/1.0/bin/foo", .data = "old" });
+
+    var base_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const base = base_buf[0..try tmp_dir.dir.realPathFile(io, ".", &base_buf)];
+    var reloc_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const reloc_dir = try std.fmt.bufPrint(&reloc_buf, "{s}/store-relocated", .{base});
+    var cellar_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cellar_dir = try std.fmt.bufPrint(&cellar_buf, "{s}/Cellar", .{base});
+
+    // The snapshot is missing, so the clone and the cp fallback both fail.
+    const sha = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    try testing.expectError(error.CopyFailed, materializeFromRelocatedAt(io, reloc_dir, cellar_dir, sha, "foo", "1.0"));
+
+    var out: [16]u8 = undefined;
+    try testing.expectEqualStrings("old", try tmp_dir.dir.readFile(io, "Cellar/foo/1.0/bin/foo", &out));
 }
