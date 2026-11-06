@@ -4,6 +4,9 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- `nb install`/`nb deps` no longer drop a dependency whose formula fetch timed out or got a 5xx and then report success. Only an HTTP 404/410 counts as "not a formula" (for example a `uses_from_macos` system library). Any other fetch error stops resolution and names the formula. The dependency resolver tests now run in `zig build test`. (#447)
+
 ## [0.1.215] - 2026-11-02
 
 ### Fixed
