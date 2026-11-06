@@ -4,6 +4,9 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- A binary the relocator could not open, read or write back is now counted as incomplete, so the install fails and the keg is not cached instead of silently shipping a half-rewritten binary. `zig build test` now also runs the ELF (Linux) and Mach-O (macOS) relocator tests. (#465)
+
 ## [0.1.215] - 2026-11-02
 
 ### Fixed

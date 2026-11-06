@@ -260,8 +260,9 @@ fn relocateFile(alloc: std.mem.Allocator, io: std.Io, path: []const u8) void {
 
     const orig_mode = stat.permissions.toMode();
     const lifted = short.liftOwnerWrite(io, path, orig_mode);
-    const file = std.Io.Dir.openFileAbsolute(io, path, .{ .mode = .read_write }) catch {
+    const file = std.Io.Dir.openFileAbsolute(io, path, .{ .mode = .read_write }) catch |err| {
         if (lifted) short.restoreMode(io, path, orig_mode);
+        short.noteFailedFile(io, path, err);
         return;
     };
     var file_open = true;
@@ -272,9 +273,9 @@ fn relocateFile(alloc: std.mem.Allocator, io: std.Io, path: []const u8) void {
 
     const size: usize = @intCast(stat.size);
     const heap = std.heap.smp_allocator;
-    const buf = heap.alloc(u8, size) catch return;
+    const buf = heap.alloc(u8, size) catch |err| return short.noteFailedFile(io, path, err);
     defer heap.free(buf);
-    const read_n = file.readPositionalAll(io, buf, 0) catch return;
+    const read_n = file.readPositionalAll(io, buf, 0) catch |err| return short.noteFailedFile(io, path, err);
     const data = buf[0..read_n];
     if (data.len < 16 or !hasElfMagic(data)) return;
 
@@ -327,7 +328,7 @@ fn relocateFile(alloc: std.mem.Allocator, io: std.Io, path: []const u8) void {
     }
 
     if (changed) {
-        file.writePositionalAll(io, data, 0) catch return;
+        file.writePositionalAll(io, data, 0) catch |err| return short.noteFailedFile(io, path, err);
     }
     file.close(io);
     file_open = false;
@@ -548,7 +549,7 @@ test "fixInterpreterInPlace - swaps missing /opt/nb interpreter for system loade
     const ehdr_size = 64;
     const phdr_size = 56;
     const interp_off = ehdr_size + phdr_size;
-    const interp_sz = interp.len + 8; // room for NUL + padding
+    const interp_sz = 32; // room for the longer system loader path + NUL
     var img: [ehdr_size + phdr_size + interp_sz]u8 = @splat(0);
 
     @memcpy(img[0..4], &ELF_MAGIC);
@@ -592,4 +593,33 @@ test "fixInterpreterInPlace - leaves existing system interpreter alone" {
 
     try testing.expect(!fixInterpreterInPlace(testing.io, &img));
     try testing.expectEqualStrings(interp, std.mem.sliceTo(img[interp_off..], 0));
+}
+
+test "relocateFile - a failed write-back counts as incomplete" {
+    // A Linuxbrew literal is rewritten without /opt/nb, so this reaches the
+    // write-back on any host.
+    var body = [_]u8{0} ** (64 * 1024);
+    @memcpy(body[0..ELF_MAGIC.len], &ELF_MAGIC);
+    @memcpy(body[64..][0..LINUXBREW_LITERAL.len], LINUXBREW_LITERAL);
+    var tmp_dir = testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+    const f = try tmp_dir.dir.createFile(testing.io, "full_disk", .{});
+    try f.writeStreamingAll(testing.io, &body);
+    f.close(testing.io);
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = path_buf[0..try tmp_dir.dir.realPathFile(testing.io, "full_disk", &path_buf)];
+
+    // A file-size limit below the file size fails the in-place write
+    // part-way, like ENOSPC on a nearly full disk.
+    const ignore: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.IGN }, .mask = std.posix.sigemptyset(), .flags = 0 };
+    var old_action: std.posix.Sigaction = undefined;
+    std.posix.sigaction(.XFSZ, &ignore, &old_action);
+    defer std.posix.sigaction(.XFSZ, &old_action, null);
+    const old_limit = try std.posix.getrlimit(.FSIZE);
+    try std.posix.setrlimit(.FSIZE, .{ .cur = 4096, .max = old_limit.max });
+    defer std.posix.setrlimit(.FSIZE, old_limit) catch {};
+
+    short.resetIncompleteCount();
+    relocateFile(testing.allocator, testing.io, path);
+    try testing.expectEqual(@as(usize, 1), short.incompleteCount());
 }
