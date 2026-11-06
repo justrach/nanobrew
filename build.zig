@@ -63,6 +63,9 @@ pub fn build(b: *std.Build) void {
     const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
     test_step.dependOn(&run_unit_tests.step);
+    // src/main.zig is the exe root and is not reachable from src/root.zig,
+    // so its tests need their own artifact with the exe's imports.
+    if (!is_windows) test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = main_mod })).step);
 
     // ── Repository maintenance checks ──
     // Zig 0.17 removed in-process custom build steps. Keep the public step
