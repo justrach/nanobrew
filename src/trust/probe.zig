@@ -568,4 +568,5 @@ test "timeout kills the probe's helper processes too (#494)" {
         try std.Io.sleep(io, .fromMilliseconds(20), .awake);
     }
     try std.testing.expect(!processAlive(io, helper));
+    std.debug.print("NATIVE-PROOF #494 probe timeout os={s}: timed_out, helper pid {d} gone after {d} polls\n", .{ @tagName(builtin.os.tag), helper, waited });
 }

@@ -7611,6 +7611,7 @@ test "isAppMainExecutable matches only the bundle's CFBundleExecutable (#494)" {
     try std.testing.expect(!isAppMainExecutable(alloc, root, &.{"electerm.app"}, cli));
     try std.testing.expect(!isAppMainExecutable(alloc, root, &.{"electerm.app"}, res));
     try std.testing.expect(!isAppMainExecutable(alloc, root, &.{"Other.app"}, main_exe));
+    std.debug.print("NATIVE-PROOF #494 main-executable skip os={s}: CFBundleExecutable matched, cli/resources/other app not\n", .{@tagName(builtin.os.tag)});
 }
 
 test "read-only commands share the operation lock; changes keep it exclusive (#503)" {

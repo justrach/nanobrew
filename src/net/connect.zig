@@ -233,13 +233,17 @@ fn elapsedMs(io: std.Io, started: std.Io.Clock.Timestamp) i64 {
 test "a connect that never gets an answer gives up at the limit (#503)" {
     if (comptime !supported) return error.SkipZigTest;
     const io = std.testing.io;
-    var hole = try Blackhole.open(posix.AF.INET, 0);
+    var hole = Blackhole.open(posix.AF.INET, 0) catch |e| {
+        std.debug.print("NATIVE-PROOF-SKIP #503 blackhole ipv4: fixture {s}\n", .{@errorName(e)});
+        return e;
+    };
     defer hole.close();
     const address: net.IpAddress = .{ .ip4 = .loopback(hole.port) };
     const started = std.Io.Clock.Timestamp.now(io, .awake);
     try std.testing.expectError(error.Timeout, connectBounded(io, &address, 400));
     const ms = elapsedMs(io, started);
     try std.testing.expect(ms >= 350 and ms < 3000);
+    std.debug.print("NATIVE-PROOF #503 blackhole ipv4 os={s}: probe stayed pending, connectBounded(400ms) -> Timeout after {d} ms\n", .{ @tagName(builtin.os.tag), ms });
 }
 
 test "the bounded connect still connects and refuses like connect() (#503)" {
@@ -255,6 +259,7 @@ test "the bounded connect still connects and refuses like connect() (#503)" {
     // The old port has no listener now.
     const closed: net.IpAddress = .{ .ip4 = .loopback(port) };
     try std.testing.expectError(error.ConnectionRefused, connectBounded(io, &closed, 2000));
+    std.debug.print("NATIVE-PROOF #503 bounded connect os={s}: connected, then ConnectionRefused\n", .{@tagName(builtin.os.tag)});
 }
 
 test "a losing address family does not hold up the winner (#503)" {
@@ -265,18 +270,29 @@ test "a losing address family does not hold up the winner (#503)" {
     connect_timeout_ms = 20_000;
     // ::1 drops the SYN, 127.0.0.1 accepts, both on the same port: what a
     // dual-stack host with a dead IPv6 route looks like to HostName.connect.
-    var hole = try Blackhole.open(posix.AF.INET6, 0);
+    var hole = Blackhole.open(posix.AF.INET6, 0) catch |e| {
+        std.debug.print("NATIVE-PROOF-SKIP #503 dual-stack: ipv6 fixture {s}\n", .{@errorName(e)});
+        return e;
+    };
     defer hole.close();
-    var server = (net.IpAddress{ .ip4 = .loopback(hole.port) }).listen(io, .{ .reuse_address = true }) catch return error.SkipZigTest;
+    var server = (net.IpAddress{ .ip4 = .loopback(hole.port) }).listen(io, .{ .reuse_address = true }) catch |e| {
+        std.debug.print("NATIVE-PROOF-SKIP #503 dual-stack: ipv4 listen {s}\n", .{@errorName(e)});
+        return error.SkipZigTest;
+    };
     defer server.deinit(io);
     const host = try net.HostName.init("localhost");
     const started = std.Io.Clock.Timestamp.now(io, .awake);
     const stream = host.connect(io, hole.port, .{ .mode = .stream }) catch |err| {
         // No dual-stack "localhost" on this machine.
-        if (err == error.ConnectionRefused or err == error.UnknownHostName) return error.SkipZigTest;
+        if (err == error.ConnectionRefused or err == error.UnknownHostName) {
+            std.debug.print("NATIVE-PROOF-SKIP #503 dual-stack: localhost connect {s}\n", .{@errorName(err)});
+            return error.SkipZigTest;
+        }
         return err;
     };
     stream.close(io);
     // The IPv6 attempt is canceled within a slice instead of after 20 s.
-    try std.testing.expect(elapsedMs(io, started) < 3000);
+    const ms = elapsedMs(io, started);
+    try std.testing.expect(ms < 3000);
+    std.debug.print("NATIVE-PROOF #503 dual-stack os={s}: ::1 blackholed (probe pending), localhost connected via 127.0.0.1 in {d} ms with a 20 s limit\n", .{ @tagName(builtin.os.tag), ms });
 }

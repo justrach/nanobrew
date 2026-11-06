@@ -2002,6 +2002,7 @@ test "zip listing parser finds entries stored below a symlink (#425)" {
         \\-rw-r--r--  3.0 unx        6 tx defN 26-Jan-01 00:00 App.app/Contents/Frameworks/A.framework/CurrentX
         \\
     ));
+    std.debug.print("NATIVE-PROOF #425 zip listing parser os={s}\n", .{@tagName(builtin.os.tag)});
 }
 
 test "extractZip refuses an entry stored below a symlink, whatever the extractor (#425)" {
@@ -2023,4 +2024,5 @@ test "extractZip refuses an entry stored below a symlink, whatever the extractor
     try std.testing.expectError(error.UnsafePath, extractZip(a, io, zip, stage));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "escaped/pwned", .{}));
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "stage/App.app", .{}));
+    std.debug.print("NATIVE-PROOF #425 zip symlink guard os={s}: extractZip -> UnsafePath, nothing escaped or staged\n", .{@tagName(builtin.os.tag)});
 }
