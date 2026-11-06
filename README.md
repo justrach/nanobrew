@@ -455,12 +455,12 @@ License: [Apache 2.0](./LICENSE)
 | `nb install user/tap/formula` | | Install from a third-party tap |
 | `nb remove <pkg>` | `nb ui` | Uninstall packages |
 | `nb remove --deb <pkg>` | | Remove a .deb package (Linux/Docker) |
-| `nb list [--versions\|--names] [--json]` | `nb ls` | List installed packages, version history, or names-only output; `--json` prints [JSON](docs/json-output.md) |
-| `nb leaves [--tree]` | | List installed formulae with no dependents |
-| `nb where <pattern>` | `nb wh` | Show installed kegs, prefix files, and index hits matching pattern |
-| `nb info <pkg>` | | Show package details |
-| `nb info --cask <app>` | | Show cask details |
-| `nb search <query>` | `nb s` | Search formulas and casks |
+| `nb list [--versions\|--names] [--json]` | `nb ls` | List installed packages, version history, or names-only output; `--json` prints [JSON](docs/json-output.md) (also `info`, `search`, `leaves`, `deps`, `services list`, `where`) |
+| `nb leaves [--tree] [--json]` | | List installed formulae with no dependents |
+| `nb where <pattern> [--json]` | `nb wh` | Show installed kegs, prefix files, and index hits matching pattern |
+| `nb info [--json] <pkg>` | | Show package details |
+| `nb info --cask [--json] <app>` | | Show cask details |
+| `nb search <query> [--json]` | `nb s` | Search formulas and casks |
 | `nb upgrade [pkg]` | | Upgrade packages |
 | `nb upgrade --deb` | | Upgrade all installed .deb packages |
 | `nb outdated [pkg...]` | `--cask`, `--deb`, `--json` | List outdated packages, optionally filtered by name or type; `--json` prints [JSON](docs/json-output.md) with whether `nb upgrade` can replace each one |
@@ -471,8 +471,8 @@ License: [Apache 2.0](./LICENSE)
 | `nb bundle install` | | Import from bundle file |
 | `nb doctor` | `nb dr` | Health check |
 | `nb cleanup` | `nb clean` | Remove old caches |
-| `nb deps [--tree] <pkg>` | | Show dependencies |
-| `nb services` | | Manage services (launchctl/systemd) |
+| `nb deps [--tree] [--json] <pkg>` | | Show dependencies |
+| `nb services` | `list --json` | Manage services (launchctl/systemd) |
 | `nb completions <shell>` | | Print shell completions |
 | `nb telemetry [status\|on\|off]` | | View or change telemetry opt-in |
 | `nb nuke` | | Remove all of nanobrew's state |

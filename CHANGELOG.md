@@ -5,7 +5,7 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Added
-- `nb list --json` and `nb outdated --json` (also with `--cask`, `--deb`, `--versions` and package names) print one JSON document, `{"schema":1,"packages":[...]}`, instead of text. `nb outdated --json` also reports whether `nb upgrade` can replace each package and, when it cannot, the reason it would print. The text output is unchanged. See `docs/json-output.md`. Requested by @Rex57. (#495)
+- `--json` on `nb list`, `nb outdated` (also with `--cask`, `--deb`, `--versions` and package names), `nb info` (formula and `--cask`), `nb search`, `nb leaves [--tree]`, `nb deps [--tree]`, `nb services list` and `nb where` prints one schema-1 JSON document instead of text. `nb outdated --json` also reports whether `nb upgrade` can replace each package and, when it cannot, the reason it would print. `nb upgrade --cask` and `nb outdated` accept an installed tap cask by its short name (`nanobrew-ui` for `Rex57/tap/nanobrew-ui`) when no other installed tap cask shares it. The text output is unchanged. See `docs/json-output.md`. Requested by @Rex57. (#495)
 
 ### Fixed
 - `nb install name@version` now saves the pin even when another package in the same command fails. "Pinned" prints only when the pin was written. A pinned package whose own install failed is not pinned at its older keg. (#429)
