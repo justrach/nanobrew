@@ -35,6 +35,9 @@ pub const Formula = struct {
     install_bin_renames: []const BinRename = &.{},
     caveats: []const u8 = "",
     post_install_defined: bool = false,
+    /// The API's `post_install_steps` array as JSON text, "" when absent
+    /// (#493). Run by build/install_steps.zig.
+    post_install_steps: []const u8 = "",
     /// True when this metadata came from a revoked registry pin's fallback
     /// (previous known-good version). The registry is authoritative here:
     /// live-API freshness checks must not override a security revocation.
@@ -77,6 +80,7 @@ pub const Formula = struct {
         }
         if (self.install_bin_renames.len > 0) alloc.free(self.install_bin_renames);
         alloc.free(self.caveats);
+        if (self.post_install_steps.len > 0) alloc.free(self.post_install_steps);
     }
 
     /// Build the bottle URL for this formula.

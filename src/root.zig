@@ -37,6 +37,7 @@ pub const cask_upgrade = @import("cask/upgrade.zig");
 pub const cask_installer = @import("cask/install.zig");
 pub const source_builder = @import("build/source.zig");
 pub const postinstall = @import("build/postinstall.zig");
+pub const install_steps = @import("build/install_steps.zig");
 pub const certs = @import("build/certs.zig");
 pub const search_api = @import("api/search.zig");
 pub const bulk_versions = @import("api/bulk_versions.zig");
@@ -100,6 +101,7 @@ comptime {
     _ = native_tar;
     _ = certs;
     _ = postinstall;
+    _ = install_steps;
     _ = linker;
     _ = cellar;
     _ = @import("platform/copy.zig");

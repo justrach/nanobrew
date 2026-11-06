@@ -12,6 +12,8 @@ const fetch = @import("../net/fetch.zig");
 const sandbox = @import("sandbox.zig");
 const formula_cache = @import("formula_cache.zig");
 const certs = @import("certs.zig");
+const install_steps = @import("install_steps.zig");
+const paths = @import("../platform/paths.zig");
 
 pub const ParsedCommand = struct {
     argv: []const []const u8,
@@ -32,8 +34,15 @@ pub fn runPostInstall(alloc: std.mem.Allocator, io: std.Io, formula: Formula) !v
     // depend on a network round trip to raw.githubusercontent.com.
     certs.nativePostInstall(lib_io, formula.name);
 
-    // Execute post_install if defined
-    if (formula.post_install_defined) {
+    // The API now lists post-install actions as `post_install_steps` and
+    // sends post_install_defined = false for every formula (#493).
+    if (formula.post_install_steps.len > 0 and !certs.handlesPostInstall(formula.name)) {
+        ({ const _tmp = std.fmt.allocPrint(std.heap.smp_allocator, "==> Running post-install for {s}...\n", .{formula.name}) catch ""; defer std.heap.smp_allocator.free(_tmp); std.Io.File.stdout().writeStreamingAll(lib_io, _tmp) catch {}; });
+        runPostInstallSteps(alloc, lib_io, formula, paths.PREFIX) catch |err| {
+            ({ const _tmp = std.fmt.allocPrint(std.heap.smp_allocator, "nb: {s}: post-install steps failed: {}\n", .{ formula.name, err }) catch ""; defer std.heap.smp_allocator.free(_tmp); std.Io.File.stderr().writeStreamingAll(lib_io, _tmp) catch {}; });
+        };
+    } else if (formula.post_install_steps.len == 0 and formula.post_install_defined) {
+        // Older API data (cache or a mirror): the Ruby `def post_install`.
         ({ const _tmp = std.fmt.allocPrint(std.heap.smp_allocator, "==> Running post-install for {s}...\n", .{formula.name}) catch ""; defer std.heap.smp_allocator.free(_tmp); std.Io.File.stdout().writeStreamingAll(lib_io, _tmp) catch {}; });
         runPostInstallScript(alloc, lib_io, formula) catch |err| {
             ({ const _tmp = std.fmt.allocPrint(std.heap.smp_allocator, "nb: {s}: post-install script failed: {}\n", .{ formula.name, err }) catch ""; defer std.heap.smp_allocator.free(_tmp); std.Io.File.stderr().writeStreamingAll(lib_io, _tmp) catch {}; });
@@ -48,6 +57,27 @@ pub fn runPostInstall(alloc: std.mem.Allocator, io: std.Io, formula: Formula) !v
             ({ const _tmp = std.fmt.allocPrint(std.heap.smp_allocator, "\n", .{}) catch ""; defer std.heap.smp_allocator.free(_tmp); std.Io.File.stdout().writeStreamingAll(lib_io, _tmp) catch {}; });
         }
     }
+}
+
+/// Run the API `post_install_steps` for `formula`, installed under `prefix`.
+pub fn runPostInstallSteps(alloc: std.mem.Allocator, io: std.Io, formula: Formula, prefix: []const u8) !void {
+    var ver_buf: [128]u8 = undefined;
+    const eff_ver = formula.effectiveVersion(&ver_buf);
+    // Templates use the version without the revision suffix.
+    const plain = if (std.mem.lastIndexOfScalar(u8, eff_ver, '_')) |i| (if (formula.revision > 0) eff_ver[0..i] else eff_ver) else eff_ver;
+    var cellar_buf: [512]u8 = undefined;
+    const cellar = try std.fmt.bufPrint(&cellar_buf, "{s}/Cellar", .{prefix});
+    var keg_buf: [768]u8 = undefined;
+    const keg = try std.fmt.bufPrint(&keg_buf, "{s}/{s}/{s}", .{ cellar, formula.name, eff_ver });
+    const user: ?[]const u8 = if (std.c.getenv("USER")) |u| std.mem.sliceTo(u, 0) else null;
+    _ = try install_steps.runAll(alloc, io, formula.post_install_steps, .{
+        .prefix = prefix,
+        .cellar = cellar,
+        .keg = keg,
+        .name = formula.name,
+        .version = plain,
+        .user = user,
+    }, install_steps.Stderr{ .io = io });
 }
 
 fn runPostInstallScript(alloc: std.mem.Allocator, io: std.Io, formula: Formula) !void {

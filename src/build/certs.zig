@@ -38,6 +38,14 @@ const SYSTEM_BUNDLES = [_][]const u8{
 /// Post-install steps Homebrew implements in Ruby that the script parser
 /// can't run. Called for every installed formula; cheap no-op for names
 /// that don't participate in TLS trust.
+/// Formulae whose post-install TLS wiring `nativePostInstall` does itself.
+/// Their API post-install steps are not run on top (#493).
+pub fn handlesPostInstall(name: []const u8) bool {
+    return std.mem.eql(u8, name, "ca-certificates") or std.mem.eql(u8, name, "openssl") or
+        std.mem.startsWith(u8, name, "openssl@") or std.mem.eql(u8, name, "gnutls") or
+        std.mem.eql(u8, name, "libressl");
+}
+
 pub fn nativePostInstall(io: std.Io, name: []const u8) void {
     if (std.mem.eql(u8, name, "ca-certificates")) {
         _ = ensureCaStore(io);
