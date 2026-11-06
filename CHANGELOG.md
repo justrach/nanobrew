@@ -4,6 +4,9 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- `nb remove` (also `--cask` and `--deb`), `nb pin`/`nb unpin`, `nb info` (also `--cask`) and `nb bundle install` now exit 1 when a named package, cask or file is missing or its removal fails. Removals and pins that succeeded in the same command are still saved. `nb reinstall` of a package that is not installed still installs it. (#463)
+
 ## [0.1.215] - 2026-11-02
 
 ### Fixed
