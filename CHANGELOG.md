@@ -5,6 +5,7 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- `nb switch` with several specs now saves the new version of each package that switched, even when another spec fails. Before, `state.json` kept the old version while the links pointed at the new keg. (#475)
 - `nb install name@version` now saves the pin even when another package in the same command fails. "Pinned" prints only when the pin was written. A pinned package whose own install failed is not pinned at its older keg. (#429)
 - `nb install`/`nb upgrade` no longer replace a pinned formula that is pulled in as a dependency, whether by a newer version or a rebuilt bottle. They keep the pinned keg, its links and its database record, and print a note. An explicit `name@version` request still overrides the pin. (#439)
 - `nb upgrade` no longer stops at the first keg that fails to install. It tries the remaining kegs, prints the summary, and exits 1. An upgrade that installs a version newer than the cached index advertised now counts as upgraded instead of failed. (#445)
