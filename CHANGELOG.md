@@ -4,6 +4,10 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+### Fixed
+- `nb reinstall <formula>` no longer removes the keg and its record first: a failed lookup or download leaves the installed keg, its links and its pin as they were. A newer version's keg replaces the old one only after it is installed. (#441)
+- A same-version reinstall copies the new keg beside the old one and swaps it in; the old keg is kept until the install finishes and put back if any step fails. (#489)
+
 ## [0.1.215] - 2026-11-02
 
 ### Fixed
