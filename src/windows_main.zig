@@ -260,8 +260,10 @@ fn installPackage(alloc: std.mem.Allocator, dirs: Dirs, p: Package) !void {
     const archive_name = try std.fmt.bufPrint(&archive_name_buf, "{s}-{s}{s}", .{ p.name, p.version, ext });
     const archive = try join(alloc, &.{ dirs.cache, archive_name });
     defer alloc.free(archive);
-    if (!pathExists(archive)) try powershell(alloc, &.{ "Invoke-WebRequest", "-Uri", p.url, "-OutFile", archive });
-    try verifySha256(alloc, archive, p.sha256);
+    if (!cachedArchiveOk(alloc, archive, p.sha256)) {
+        try powershell(alloc, &.{ "Invoke-WebRequest", "-Uri", p.url, "-OutFile", archive });
+        try verifySha256(alloc, archive, p.sha256);
+    }
 
     const pkg_root = try join(alloc, &.{ dirs.cellar, p.name });
     defer alloc.free(pkg_root);
@@ -408,6 +410,35 @@ fn verifySha256(alloc: std.mem.Allocator, path: []const u8, expected: []const u8
         hex[idx * 2 + 1] = charset[byte & 0x0f];
     }
     if (!std.mem.eql(u8, &hex, expected)) return error.ChecksumMismatch;
+}
+
+// Invoke-WebRequest writes straight to the cache path, so a Ctrl-C or network
+// drop leaves a partial file there: trust it only when the sha256 matches.
+fn cachedArchiveOk(alloc: std.mem.Allocator, archive: []const u8, expected: []const u8) bool {
+    verifySha256(alloc, archive, expected) catch {
+        std.Io.Dir.cwd().deleteFile(io(), archive) catch {};
+        return false;
+    };
+    return true;
+}
+
+test "cached archive with a wrong sha256 is deleted so the next install downloads it again" {
+    g_io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPath(g_io, &buf);
+    const archive = try join(a, &.{ buf[0..n], "ripgrep-15.1.0.zip" });
+    defer a.free(archive);
+    const sha = "f858d195ddad478ac6ada256c7db6b3983ad780f94831f696d72b2bac92ed750"; // sha256("full archive")
+
+    try std.testing.expect(!cachedArchiveOk(a, archive, sha));
+    try writeFile(archive, "full"); // what a Ctrl-C mid-download leaves behind
+    try std.testing.expect(!cachedArchiveOk(a, archive, sha));
+    try std.testing.expect(!pathExists(archive));
+    try writeFile(archive, "full archive");
+    try std.testing.expect(cachedArchiveOk(a, archive, sha));
 }
 
 fn powershell(alloc: std.mem.Allocator, words: []const []const u8) !void {
