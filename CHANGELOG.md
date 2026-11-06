@@ -5,6 +5,9 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- `nb install --shims` links its dependencies' `lib`, `include`, `share` and `etc` into the prefix again. Only their executables stay out of `prefix/bin`, as documented. Since v0.1.203 the fast linker removed every link of a private dependency. (#435)
+
+### Fixed
 - `nb upgrade fortune` across a revision bump (for example `9708` -> `9708_1`) no longer deletes the new `bin/fortune` link. The old keg's unlink step now removes the link only when it points at that keg's own wrapper. (#443)
 
 ### Fixed

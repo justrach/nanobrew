@@ -888,12 +888,12 @@ fn runChunks(chunk_count: usize, leaf_count: usize, ctx: anytype, worker: fn (@T
     for (threads[0..spawned]) |t| t.join();
 }
 
-fn fastLinkKegGlobal(keg_dir: []const u8) void {
+fn fastLinkKegGlobal(keg_dir: []const u8, mappings: []const SubdirMapping) void {
     const bench = std.c.getenv("NB_BENCH") != null;
     var t0 = milliTimestamp();
     var plan = LinkPlan.init();
     defer plan.deinit();
-    for (subdir_mappings) |mapping| {
+    for (mappings) |mapping| {
         var sub_buf: [512]u8 = undefined;
         const keg_subdir = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ keg_dir, mapping.src }) catch continue;
         collectLinkBucket(&plan, keg_subdir, mapping.dest, mapping.preserve_user_edits);
@@ -1067,19 +1067,31 @@ pub fn linkKegWithOptions(name: []const u8, version: []const u8, options: LinkOp
         if (imageMagickNeedsEnv(keg_dir)) needs_env_shim = true;
     }
 
-    if (fast_link_posix and
-        ((options.mode == .global and !needs_env_shim) or options.mode == .private_dependency))
-    {
+    linkKegSubdirs(keg_dir, &subdir_mappings, options, needs_env_shim);
+
+    if (options.mode == .global) installManagedWrapper(name, keg_dir);
+
+    // Create opt/ symlink: prefix/opt/<name> -> Cellar/<name>/<version>
+    std.Io.Dir.createDirAbsolute(lib_io, OPT_DIR, .default_dir) catch {};
+    var opt_buf: [512]u8 = undefined;
+    const opt_link = std.fmt.bufPrint(&opt_buf, "{s}/{s}", .{ OPT_DIR, name }) catch return error.PathTooLong;
+    std.Io.Dir.deleteFileAbsolute(lib_io, opt_link) catch {};
+    std.Io.Dir.symLinkAbsolute(lib_io, keg_dir, opt_link, .{}) catch |err| {
+        var msg_buf: [512]u8 = undefined;
+        const msg = std.fmt.bufPrint(&msg_buf, "warning: failed to link {s}: {}\n", .{ name, err }) catch "warning: failed to link\n";
+        std.Io.File.stderr().writeStreamingAll(lib_io, msg) catch {};
+    };
+}
+
+/// `mappings` is a parameter so tests can link into a temp prefix.
+fn linkKegSubdirs(keg_dir: []const u8, mappings: []const SubdirMapping, options: LinkOptions, needs_env_shim: bool) void {
+    if (fast_link_posix and options.mode == .global and !needs_env_shim) {
         // Fast path: one keg scan, serial dir creation, parallel dirfd leaf
-        // work. Shim modes keep the serial walkers (bin/ is small and the
-        // wrapper logic lives there).
-        if (options.mode == .private_dependency) {
-            fastUnlinkKeg(keg_dir);
-        } else {
-            fastLinkKegGlobal(keg_dir);
-        }
+        // work. Shim and private-dependency modes keep the serial walkers:
+        // they treat bin/sbin differently from lib/include/share/etc.
+        fastLinkKegGlobal(keg_dir, mappings);
     } else {
-        for (subdir_mappings) |mapping| {
+        for (mappings) |mapping| {
             var sub_buf: [512]u8 = undefined;
             const keg_subdir = std.fmt.bufPrint(&sub_buf, "{s}/{s}", .{ keg_dir, mapping.src }) catch continue;
             if (isExecutableSubdir(mapping.src)) {
@@ -1106,19 +1118,6 @@ pub fn linkKegWithOptions(name: []const u8, version: []const u8, options: LinkOp
             }
         }
     }
-
-    if (options.mode == .global) installManagedWrapper(name, keg_dir);
-
-    // Create opt/ symlink: prefix/opt/<name> -> Cellar/<name>/<version>
-    std.Io.Dir.createDirAbsolute(lib_io, OPT_DIR, .default_dir) catch {};
-    var opt_buf: [512]u8 = undefined;
-    const opt_link = std.fmt.bufPrint(&opt_buf, "{s}/{s}", .{ OPT_DIR, name }) catch return error.PathTooLong;
-    std.Io.Dir.deleteFileAbsolute(lib_io, opt_link) catch {};
-    std.Io.Dir.symLinkAbsolute(lib_io, keg_dir, opt_link, .{}) catch |err| {
-        var msg_buf: [512]u8 = undefined;
-        const msg = std.fmt.bufPrint(&msg_buf, "warning: failed to link {s}: {}\n", .{ name, err }) catch "warning: failed to link\n";
-        std.Io.File.stderr().writeStreamingAll(lib_io, msg) catch {};
-    };
 }
 
 fn executableLinksNeedRepair(keg_subdir: []const u8, prefix_dest: []const u8, keg_dir: []const u8, mode: LinkMode, env_shim: bool) bool {
@@ -1563,6 +1562,50 @@ test "bottle payload: slow-path unlink removes keg symlinks, keeps non-keg (#347
     } else |_| {}
     const n_cert = try std.Io.Dir.readLinkAbsolute(lib_io, f.dest_cert, &tbuf);
     try std.testing.expectEqualStrings(f.elsewhere, tbuf[0..n_cert]);
+}
+
+test "private dependency links lib and include, keeps bin private" {
+    const lib_io = std.Io.Threaded.global_single_threaded.io();
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const root = try std.fmt.allocPrint(a, "/tmp/nb-test-privdep-{d}", .{std.c.getpid()});
+    defer std.Io.Dir.cwd().deleteTree(lib_io, root) catch {};
+    const keg = try std.fmt.allocPrint(a, "{s}/keg", .{root});
+    const keg_tool = try std.fmt.allocPrint(a, "{s}/bin/tool", .{keg});
+    const keg_lib = try std.fmt.allocPrint(a, "{s}/lib/libdep.dylib", .{keg});
+    const keg_hdr = try std.fmt.allocPrint(a, "{s}/include/dep.h", .{keg});
+    const dest_bin = try std.fmt.allocPrint(a, "{s}/prefix/bin", .{root});
+    const dest_lib = try std.fmt.allocPrint(a, "{s}/prefix/lib", .{root});
+    const dest_include = try std.fmt.allocPrint(a, "{s}/prefix/include", .{root});
+    for ([_][]const u8{ "bin", "lib", "include" }) |sub| {
+        testMkPath(lib_io, try std.fmt.allocPrint(a, "{s}/{s}", .{ keg, sub }));
+    }
+    try testWriteFile(lib_io, keg_tool, "#!/bin/sh\n");
+    try testWriteFile(lib_io, keg_lib, "lib\n");
+    try testWriteFile(lib_io, keg_hdr, "hdr\n");
+    // The keg was linked globally before; its bin link must go.
+    testMkPath(lib_io, dest_bin);
+    const dest_tool = try std.fmt.allocPrint(a, "{s}/tool", .{dest_bin});
+    try std.Io.Dir.symLinkAbsolute(lib_io, keg_tool, dest_tool, .{});
+
+    const mappings = [_]SubdirMapping{
+        .{ .src = "bin", .dest = dest_bin },
+        .{ .src = "lib", .dest = dest_lib },
+        .{ .src = "include", .dest = dest_include },
+    };
+    linkKegSubdirs(keg, &mappings, .{ .mode = .private_dependency }, false);
+
+    var tbuf: [std.fs.max_path_bytes]u8 = undefined;
+    const lib_link = try std.fmt.allocPrint(a, "{s}/libdep.dylib", .{dest_lib});
+    const n_lib = try std.Io.Dir.readLinkAbsolute(lib_io, lib_link, &tbuf);
+    try std.testing.expectEqualStrings(keg_lib, tbuf[0..n_lib]);
+    const hdr_link = try std.fmt.allocPrint(a, "{s}/dep.h", .{dest_include});
+    const n_hdr = try std.Io.Dir.readLinkAbsolute(lib_io, hdr_link, &tbuf);
+    try std.testing.expectEqualStrings(keg_hdr, tbuf[0..n_hdr]);
+    if (std.Io.Dir.readLinkAbsolute(lib_io, dest_tool, &tbuf)) |_| {
+        return error.TestUnexpectedBinSymlinkSurvived;
+    } else |_| {}
 }
 
 test "git shim uses the keg's templates during git init" {
