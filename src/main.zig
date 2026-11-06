@@ -589,12 +589,11 @@ fn runLocalRbInstall(alloc: std.mem.Allocator, path: []const u8) void {
     var had_error = std.atomic.Value(bool).init(false);
     var phase = std.atomic.Value(u8).init(@intFromEnum(Phase.waiting));
     var fail_reason: ?[]const u8 = null;
-    var probe_result: ProbeResult = .not_run;
     const local_formulae = [_]nb.formula.Formula{f};
     const local_requested = [_][]const u8{f.name};
     // Single-formula path: no batch sharing benefit — pass nulls so the
     // worker creates its own one-shot client (existing behavior).
-    fullInstallOne(alloc, f, &had_error, &phase, &fail_reason, &probe_result, false, &local_requested, &local_formulae, null, null);
+    fullInstallOne(alloc, f, &had_error, &phase, &fail_reason, false, &local_requested, &local_formulae, null, null);
 
     if (had_error.load(.acquire)) {
         if (fail_reason) |why| {
@@ -604,6 +603,7 @@ fn runLocalRbInstall(alloc: std.mem.Allocator, path: []const u8) void {
         }
         std.process.exit(1);
     }
+    const probe_result = finishFormulaInstall(alloc, f);
 
     // Record in the database so `nb list` sees it.
     var db = nb.database.Database.open(alloc) catch {
@@ -1223,7 +1223,7 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall
                 slots.items[idx].handle.join();
                 _ = slots.orderedRemove(idx);
             }
-            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error, &phases[pi], &reasons[pi], &probe_results[pi], use_shims, formulae.items, all_formulae, &shared_client, shared_ghcr_token }) catch {
+            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error, &phases[pi], &reasons[pi], use_shims, formulae.items, all_formulae, &shared_client, shared_ghcr_token }) catch {
                 reasons[pi] = "could not spawn worker thread";
                 had_error.store(true, .release);
                 phases[pi].store(@intFromEnum(Phase.failed), .release);
@@ -1247,6 +1247,13 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall
         }
 
         for (slots.items) |slot| slot.handle.join();
+
+        // install_order is dependency-first, so each keg's dependencies are
+        // linked before its post-install and probe run.
+        for (install_order, 0..) |f, i| {
+            if (@as(Phase, @enumFromInt(phases[i].load(.acquire))) != .done) continue;
+            probe_results[i] = finishFormulaInstall(alloc, f);
+        }
 
         // Non-TTY: print final status for each package
         if (!is_tty) {
@@ -1632,7 +1639,6 @@ fn fullInstallOne(
     // Set to a short, static reason string on failure so the final summary can
     // explain *why* a package failed instead of printing a bare ✗ (#311).
     fail_reason: *?[]const u8,
-    probe_result: *ProbeResult,
     use_shims: bool,
     requested: []const []const u8,
     all_formulae: []const nb.formula.Formula,
@@ -1665,15 +1671,6 @@ fn fullInstallOne(
                 phase.store(@intFromEnum(Phase.failed), .release);
                 return;
             };
-            nb.postinstall.runPostInstall(alloc, g_io, f) catch |err| {
-                stderr.print("nb: {s}: post-install warning: {}\n", .{ f.name, err }) catch {};
-            };
-            // Cached reinstalls must still produce health evidence (#356).
-            const fast_probe_passed = probeInstalledFormula(alloc, null, f.name, expected_ver, f.install_binaries, .active);
-            probe_result.* = if (fast_probe_passed) .passed else .failed;
-            if (!fast_probe_passed) {
-                stderr.print("nb: {s}: post-install probe warning: declared binaries or linked executables missing\n", .{f.name}) catch {};
-            }
             phase.store(@intFromEnum(Phase.done), .release);
             return;
         }
@@ -1756,7 +1753,7 @@ fn fullInstallOne(
                 std.debug.print("[nb-bench] {s} materialize: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
                 bench_t = milliTimestamp();
             }
-            // Relocated snapshot found — skip steps 4/4b, go straight to link+post-install
+            // Relocated snapshot found — skip steps 4/4b, go straight to link
             phase.store(@intFromEnum(Phase.linking), .release);
             linkFormulaKeg(alloc, f.name, fv, use_shims, requested, all_formulae) catch |err| {
                 stderr.print("nb: {s}: link failed: {}\n", .{ f.name, err }) catch {};
@@ -1765,22 +1762,7 @@ fn fullInstallOne(
                 phase.store(@intFromEnum(Phase.failed), .release);
                 return;
             };
-            if (bench) {
-                std.debug.print("[nb-bench] {s} link: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
-                bench_t = milliTimestamp();
-            }
-            nb.postinstall.runPostInstall(alloc, g_io, f) catch |err| {
-                stderr.print("nb: {s}: post-install warning: {}\n", .{ f.name, err }) catch {};
-            };
-            // Cached reinstalls must still produce health evidence — a
-            // poisoned or drifted snapshot otherwise sails through with a
-            // 179ms "✓" and no probe at all (#356).
-            const fast_probe_passed = probeInstalledFormula(alloc, null, f.name, fv, f.install_binaries, .active);
-            probe_result.* = if (fast_probe_passed) .passed else .failed;
-            if (!fast_probe_passed) {
-                stderr.print("nb: {s}: post-install probe warning: declared binaries or linked executables missing\n", .{f.name}) catch {};
-            }
-            if (bench) std.debug.print("[nb-bench] {s} postinstall: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
+            if (bench) std.debug.print("[nb-bench] {s} link: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
             phase.store(@intFromEnum(Phase.done), .release);
             return;
         }
@@ -1859,23 +1841,33 @@ fn fullInstallOne(
         phase.store(@intFromEnum(Phase.failed), .release);
         return;
     };
-    if (bench) {
-        std.debug.print("[nb-bench] {s} link: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
-        bench_t = milliTimestamp();
-    }
+    if (bench) std.debug.print("[nb-bench] {s} link: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
 
-    // 6. Post-install (non-fatal)
+    phase.store(@intFromEnum(Phase.done), .release);
+}
+
+/// 6. Post-install (non-fatal) and active probe for a linked keg. Callers run
+/// it serially in dependency order after every worker has joined: a keg's
+/// binaries load their dependencies through opt/ links that only exist once
+/// those dependencies are linked. Cached reinstalls must still produce
+/// health evidence (#356).
+fn finishFormulaInstall(alloc: std.mem.Allocator, f: nb.formula.Formula) ProbeResult {
+    const stderr = StderrWriter{};
+    const bench: bool = std.c.getenv("NB_BENCH") != null;
+    const bench_t: i64 = if (bench) milliTimestamp() else 0;
     nb.postinstall.runPostInstall(alloc, g_io, f) catch |err| {
         stderr.print("nb: {s}: post-install warning: {}\n", .{ f.name, err }) catch {};
     };
-    const probe_passed = probeInstalledFormula(alloc, null, f.name, actual_ver, f.install_binaries, .active);
-    probe_result.* = if (probe_passed) .passed else .failed;
+    var expected_ver_buf: [256]u8 = undefined;
+    const expected_ver = f.effectiveVersion(&expected_ver_buf);
+    var ver_buf: [256]u8 = undefined;
+    const ver = nb.cellar.detectKegVersion(f.name, expected_ver, &ver_buf) orelse expected_ver;
+    const probe_passed = probeInstalledFormula(alloc, null, f.name, ver, f.install_binaries, .active);
     if (!probe_passed) {
         stderr.print("nb: {s}: post-install probe warning: declared binaries or linked executables missing\n", .{f.name}) catch {};
     }
     if (bench) std.debug.print("[nb-bench] {s} postinstall: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
-
-    phase.store(@intFromEnum(Phase.done), .release);
+    return if (probe_passed) .passed else .failed;
 }
 
 fn fileExists(path: []const u8) bool {

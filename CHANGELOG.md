@@ -5,6 +5,9 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- `nb install` runs post-install and the active probe after every install worker has finished, in dependency order. A small keg such as wget no longer gets probed before its dependency's `opt/` link exists, which used to produce a false "probe warning" and `probe_success=false`. (#461)
+
+### Fixed
 - `nb install --shims` links its dependencies' `lib`, `include`, `share` and `etc` into the prefix again. Only their executables stay out of `prefix/bin`, as documented. Since v0.1.203 the fast linker removed every link of a private dependency. (#435)
 
 ### Fixed
