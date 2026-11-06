@@ -171,7 +171,7 @@ const ipv6_v6only: u32 = if (builtin.os.tag == .macos) 27 else posix.IPV6.V6ONLY
 
 const Blackhole = struct {
     listener: posix.fd_t,
-    fillers: [8]posix.fd_t = @splat(-1),
+    fillers: [16]posix.fd_t = @splat(-1),
     port: u16,
 
     fn open(family: u32, port: u16) !Blackhole {
@@ -186,7 +186,9 @@ const Blackhole = struct {
         _ = posix.system.setsockopt(self.listener, posix.SOL.SOCKET, posix.SO.REUSEADDR, @ptrCast(&one), @sizeOf(i32));
         if (family == posix.AF.INET6) _ = posix.system.setsockopt(self.listener, posix.IPPROTO.IPV6, ipv6_v6only, @ptrCast(&one), @sizeOf(i32));
         if (posix.errno(posix.system.bind(self.listener, &storage.any, len)) != .SUCCESS) return error.SkipZigTest;
-        if (posix.errno(posix.system.listen(self.listener, 0)) != .SUCCESS) return error.SkipZigTest;
+        // Backlog 1, not 0: XNU turns a backlog of 0 into `somaxconn` (128),
+        // so 0 left room for every filler on macOS and nothing was dropped.
+        if (posix.errno(posix.system.listen(self.listener, 1)) != .SUCCESS) return error.SkipZigTest;
         var bound: Storage = undefined;
         var bound_len: posix.socklen_t = @sizeOf(Storage);
         _ = posix.system.getsockname(self.listener, &bound.any, &bound_len);
@@ -203,6 +205,16 @@ const Blackhole = struct {
             _ = posix.system.connect(f.*, &tstorage.any, tlen);
         }
         try std.Io.sleep(std.testing.io, .fromMilliseconds(300), .awake);
+        // Prove the fixture: one more connect must still be pending after
+        // 300 ms. Otherwise the tests below would pass without testing anything.
+        const probe = posix.system.socket(tstorage.any.family, posix.SOCK.STREAM, posix.IPPROTO.TCP);
+        if (posix.errno(probe) != .SUCCESS) return error.SkipZigTest;
+        const probe_fd: posix.fd_t = @intCast(probe);
+        defer _ = posix.system.close(probe_fd);
+        try setNonblocking(probe_fd, true);
+        _ = posix.system.connect(probe_fd, &tstorage.any, tlen);
+        var fds = [_]posix.pollfd{.{ .fd = probe_fd, .events = posix.POLL.OUT, .revents = 0 }};
+        if (posix.system.poll(&fds, 1, 300) != 0) return error.BlackholeFixtureAnswered;
         return self;
     }
 
