@@ -6,6 +6,8 @@ import hashlib
 import json
 import os
 import pathlib
+import plistlib
+import shutil
 import subprocess
 import sys
 import tarfile
@@ -97,5 +99,97 @@ with tempfile.TemporaryDirectory(prefix="nb-cask-cli-") as temp:
     finally:
         subprocess.run([nb, "remove", "--cask", token], env=env, capture_output=True, timeout=30)
         cache.unlink(missing_ok=True)
+        for blob in blobs:
+            blob.unlink(missing_ok=True)
+
+
+# An auto-updating app that updated itself past the published version is not
+# outdated, and `nb upgrade` must not downgrade it (#449).
+app_token = "nb-autoupdate-test-" + uuid.uuid4().hex[:12]
+app_cache = root / "cache/api" / ("cask-" + app_token + ".json")
+installed_app = pathlib.Path("/Applications") / (app_token + ".app")
+
+
+def app_run(*args, expected=0):
+    result = subprocess.run([nb, *args], env=env, text=True, capture_output=True, timeout=60)
+    print("\n".join(line for line in (result.stdout + result.stderr).splitlines() if app_token in line or line.startswith("==>")), flush=True)
+    assert result.returncode == expected, result
+    return result.stdout + result.stderr
+
+
+def set_bundle_version(app, version):
+    plist = app / "Contents/Info.plist"
+    data = plistlib.loads(plist.read_bytes())
+    data["CFBundleShortVersionString"] = version
+    plist.write_bytes(plistlib.dumps(data))
+
+
+def app_zip(temp, version, xattr_file=None):
+    """Ad-hoc signed app zipped by ditto, like a release zip."""
+    stage = temp / ("app-" + version)
+    app = stage / (app_token + ".app")
+    (app / "Contents/MacOS").mkdir(parents=True)
+    (app / "Contents/Resources/en.lproj").mkdir(parents=True)
+    shutil.copy("/usr/bin/true", app / "Contents/MacOS" / app_token)
+    (app / "Contents/Info.plist").write_bytes(plistlib.dumps({
+        "CFBundleExecutable": app_token, "CFBundleIdentifier": "dev.nanobrew.test." + app_token,
+        "CFBundleName": app_token, "CFBundlePackageType": "APPL",
+        "CFBundleShortVersionString": version, "CFBundleVersion": version}))
+    (app / "Contents/Resources/en.lproj/Main.strings").write_text('"key" = "value";\n')
+    subprocess.check_call(["codesign", "--force", "--deep", "--sign", "-", str(app)])
+    if xattr_file:
+        subprocess.check_call(["xattr", "-w", "dev.nanobrew.test", "1", str(app / xattr_file)])
+    subprocess.check_call(["codesign", "--verify", "--deep", "--strict", str(app)])
+    archive = temp / (version + ".zip")
+    subprocess.check_call(["ditto", "-c", "-k", "--keepParent", str(app), str(archive)])
+    return archive
+
+
+def publish_app(temp, version, auto_updates, xattr_file=None):
+    archive = app_zip(temp, version, xattr_file)
+    sha = hashlib.sha256(archive.read_bytes()).hexdigest()
+    blob = root / "cache/blobs" / sha
+    blob.write_bytes(archive.read_bytes())
+    blobs.append(blob)
+    data = {"token": app_token, "name": [app_token], "version": version,
+            "url": "https://example.invalid/fixture.zip", "sha256": sha, "auto_updates": auto_updates,
+            "homepage": "https://example.invalid", "artifacts": [{"app": [app_token + ".app"]}]}
+    app_cache.write_text(json.dumps(data))
+    return archive
+
+
+def app_record():
+    return next(c for c in json.loads((root / "db/state.json").read_text())["casks"] if c["token"] == app_token)
+
+
+assert not installed_app.exists()
+with tempfile.TemporaryDirectory(prefix="nb-cask-app-") as temp:
+    temp = pathlib.Path(temp)
+    env["HOME"] = str(temp)
+    blobs = []
+    try:
+        publish_app(temp, "1.0", True)
+        output = app_run("install", "--cask", app_token)
+        assert "cask probe passed" in output, output
+        assert app_record()["version"] == "1.0"
+        # The app updates itself to 3.0 while the API still publishes 2.0.
+        set_bundle_version(installed_app, "3.0")
+        publish_app(temp, "2.0", True)
+        output = app_run("outdated", "--cask", app_token)
+        assert "app updated itself to 3.0" in output and "All packages are up to date." in output, output
+        output = app_run("upgrade", "--cask", app_token)
+        assert "Upgraded " + app_token not in output, output
+        assert app_record()["version"] == "1.0"
+        assert plistlib.loads((installed_app / "Contents/Info.plist").read_bytes())["CFBundleShortVersionString"] == "3.0"
+        # An app still older than the candidate is outdated as before.
+        set_bundle_version(installed_app, "1.5")
+        output = app_run("outdated", "--cask", app_token)
+        assert "==> 1 outdated package(s)" in output and "2.0" in output, output
+        print("PASS CLI auto-updating app is not downgraded (#449)")
+    finally:
+        subprocess.run([nb, "remove", "--cask", app_token], env=env, capture_output=True, timeout=30)
+        if installed_app.exists():
+            shutil.rmtree(installed_app)
+        app_cache.unlink(missing_ok=True)
         for blob in blobs:
             blob.unlink(missing_ok=True)
