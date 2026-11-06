@@ -105,8 +105,11 @@ pub fn getWithClientHeaders(alloc: std.mem.Allocator, client: *std.http.Client, 
         return error.FetchFailed;
     };
     if (response.head.status != .ok) {
+        const status = response.head.status;
         req.deinit();
-        return error.FetchFailed;
+        // Same 404/410 mapping as proxy.request, so callers can tell a missing
+        // resource from a transient failure.
+        return if (status == .not_found or status == .gone) error.BottleNotFound else error.FetchFailed;
     }
 
     // Stream raw response body to memory

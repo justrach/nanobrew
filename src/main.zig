@@ -219,11 +219,12 @@ pub fn main(init: std.process.Init) !void {
 
     switch (cmd) {
         .init => runInit(),
-        .install => runInstall(alloc, args[2..]),
-        .remove => runRemove(alloc, args[2..]),
+        .install => runInstall(alloc, args[2..], false),
+        .remove => if (!runRemove(alloc, args[2..])) std.process.exit(1),
         .reinstall => {
-            runRemove(alloc, args[2..]);
-            runInstall(alloc, args[2..]);
+            // A package that is not installed yet still gets installed.
+            if (reinstallRemovesFirst(args[2..])) _ = runRemove(alloc, args[2..]);
+            runInstall(alloc, args[2..], true);
         },
         .list => runList(alloc, args[2..]),
         .leaves => runLeaves(alloc, args[2..]),
@@ -239,8 +240,8 @@ pub fn main(init: std.process.Init) !void {
         .doctor => runDoctor(alloc, args[2..]),
         .cleanup => runCleanup(alloc, args[2..]),
         .outdated => runOutdated(alloc, args[2..]),
-        .pin => runPin(alloc, args[2..], true),
-        .unpin => runPin(alloc, args[2..], false),
+        .pin => if (!runPin(alloc, args[2..], true)) std.process.exit(1),
+        .unpin => if (!runPin(alloc, args[2..], false)) std.process.exit(1),
         .rollback => runRollback(alloc, args[2..]),
         .switch_version => runSwitch(alloc, args[2..]),
         .link => runLink(alloc, args[2..]),
@@ -776,13 +777,13 @@ fn resolveVersionPin(
     return base;
 }
 
-fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
-    if (!installFormulae(alloc, args)) std.process.exit(1);
+fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: bool) void {
+    if (!installFormulae(alloc, args, reinstall)) std.process.exit(1);
 }
 
 /// Returns false where `nb install` must exit 1. `nb upgrade` calls this
 /// directly so one failed keg does not stop the remaining upgrades (#445).
-fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8) bool {
+fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall: bool) bool {
     const stderr = StderrWriter{};
 
     g_min_trust = trust.minTrust(alloc) catch |err| {
@@ -941,7 +942,11 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8) bool {
         };
     }
     resolver.resolveMany(roots.items) catch |err| {
-        stderr.print("nb: dependency resolution failed: {}\n", .{err}) catch {};
+        if (resolver.fetch_failed) |name| {
+            stderr.print("nb: failed to fetch formula '{s}': {}\n", .{ name, err }) catch {};
+        } else {
+            stderr.print("nb: dependency resolution failed: {}\n", .{err}) catch {};
+        }
         return false;
     };
 
@@ -1005,6 +1010,12 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8) bool {
     var to_install: std.ArrayList(nb.formula.Formula) = .empty;
     defer to_install.deinit(alloc);
     for (all_formulae) |f| {
+        // Reinstall replaces a named keg in place (materialize overwrites it),
+        // so a failed resolve or download keeps the old keg and its DB record.
+        if (reinstall and isRequestedFormulaName(f.name, formulae.items)) {
+            to_install.append(alloc, f) catch {};
+            continue;
+        }
         var expected_buf: [256]u8 = undefined;
         const expected_ver = f.effectiveVersion(&expected_buf);
         var ver_buf: [256]u8 = undefined;
@@ -1327,6 +1338,14 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8) bool {
                 }
                 continue;
             }
+            // Reinstall onto a newer version: drop the old keg only now that
+            // the new one landed, as `nb upgrade` does (#153).
+            if (reinstall and installed_successfully and !std.mem.eql(u8, keg.version, actual_ver) and
+                isRequestedFormulaName(f.name, formulae.items))
+            {
+                nb.linker.unlinkKeg(f.name, keg.version) catch {};
+                nb.cellar.remove(f.name, keg.version) catch {};
+            }
         }
 
         var recorded = true;
@@ -1371,7 +1390,7 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8) bool {
 
 test "installFormulae returns false on failure instead of exiting (#445)" {
     g_io = std.testing.io;
-    try std.testing.expect(!installFormulae(std.testing.allocator, &.{"--no-such-flag"}));
+    try std.testing.expect(!installFormulae(std.testing.allocator, &.{"--no-such-flag"}, false));
 }
 
 /// Render live progress UI with spinners and checkmarks.
@@ -1611,6 +1630,9 @@ fn fullInstallOne(
     const stderr = StderrWriter{};
     const bench: bool = std.c.getenv("NB_BENCH") != null;
     var bench_t: i64 = 0;
+    // A same-version reinstall parks the old keg (cellar.replaceKeg): drop it
+    // when this install is done, put it back when any later step failed.
+    defer nb.cellar.settlePrevious(g_io, f.name, phase.load(.acquire) == @intFromEnum(Phase.done));
 
     const is_source_build = f.bottle_url.len == 0 and f.source_url.len > 0;
     var expected_ver_buf: [256]u8 = undefined;
@@ -1848,7 +1870,10 @@ fn fileExists(path: []const u8) bool {
     std.Io.Dir.accessAbsolute(g_io, path, .{}) catch return false;
     return true;
 }
-fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
+/// Returns false when a named package was not removed. The caller exits 1
+/// only after this returns, so the deferred db.close() saves the removals
+/// that did happen (`std.process.exit` skips defers).
+fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) bool {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
 
@@ -1872,15 +1897,8 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
         std.process.exit(1);
     }
 
-    if (is_cask) {
-        runCaskRemove(alloc, tokens.items);
-        return;
-    }
-
-    if (is_deb) {
-        runDebRemove(alloc, tokens.items);
-        return;
-    }
+    if (is_cask) return runCaskRemove(alloc, tokens.items);
+    if (is_deb) return runDebRemove(alloc, tokens.items);
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: could not open database\n", .{}) catch {};
@@ -1888,11 +1906,13 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
     };
     defer db.close();
 
+    var had_error = false;
     for (tokens.items) |raw_name| {
         // Support tap refs: "user/tap/formula" -> look up "formula"
         const name = if (std.mem.lastIndexOfScalar(u8, raw_name, '/')) |pos| raw_name[pos + 1 ..] else raw_name;
         const keg = db.findKeg(name) orelse {
             stderr.print("nb: '{s}' is not installed\n", .{raw_name}) catch {};
+            had_error = true;
             continue;
         };
 
@@ -1901,6 +1921,27 @@ fn runRemove(alloc: std.mem.Allocator, args: []const []const u8) void {
         db.recordRemoval(name, alloc) catch {};
         stdout.print("==> Removed {s}\n", .{name}) catch {};
     }
+    return !had_error;
+}
+
+/// Cask and deb reinstall keep their remove-then-install flow; these are the
+/// only flags runRemove understands.
+fn reinstallRemovesFirst(args: []const []const u8) bool {
+    for (args) |arg| {
+        if (std.mem.eql(u8, arg, "--cask") or std.mem.eql(u8, arg, "--deb")) return true;
+    }
+    return false;
+}
+
+test "reinstall removes first only for cask and deb packages" {
+    // Removing a formula first lost the keg and its pin when the install then failed.
+    try std.testing.expect(!reinstallRemovesFirst(&.{"wget"}));
+    try std.testing.expect(!reinstallRemovesFirst(&.{ "user/tap/jq", "--shims" }));
+    try std.testing.expect(reinstallRemovesFirst(&.{ "--cask", "firefox" }));
+    try std.testing.expect(reinstallRemovesFirst(&.{ "cowsay", "--deb" }));
+    // Only the named kegs are replaced; their dependencies keep their kegs.
+    try std.testing.expect(isRequestedFormulaName("jq", &.{"user/tap/jq"}));
+    try std.testing.expect(!isRequestedFormulaName("oniguruma", &.{"user/tap/jq"}));
 }
 
 // ── nb list ──
@@ -2846,9 +2887,10 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
     var client: std.http.Client = .{ .allocator = alloc, .io = g_io };
     defer client.deinit();
 
+    var had_error = false;
     for (names.items) |name| {
         if (is_cask) {
-            showCaskInfo(alloc, stdout, stderr, name, if (db) |*d| d else null);
+            if (!showCaskInfo(alloc, stdout, stderr, name, if (db) |*d| d else null)) had_error = true;
         } else {
             // Try formula first; on failure, try cask as fallback for a hint.
             const f = nb.api_client.fetchFormulaWithClientAndUpstreamRegistry(
@@ -2865,6 +2907,7 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
                 } else |_| {
                     stderr.print("nb: formula '{s}' not found\n", .{name}) catch {};
                 }
+                had_error = true;
                 continue;
             };
             defer f.deinit(alloc);
@@ -2949,12 +2992,15 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
             }
         }
     }
+    // info only reads the database, so skipping the deferred close loses nothing.
+    if (had_error) std.process.exit(1);
 }
 
-fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name: []const u8, db: ?*nb.database.Database) void {
+/// Returns false when the cask was not found.
+fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name: []const u8, db: ?*nb.database.Database) bool {
     const cask = nb.api_client.fetchCask(alloc, name) catch {
         stderr.print("nb: cask '{s}' not found\n", .{name}) catch {};
-        return;
+        return false;
     };
     defer cask.deinit(alloc);
 
@@ -3045,6 +3091,7 @@ fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name
             }
         }
     }
+    return true;
 }
 
 fn printCaskSecurityWarnings(writer: anytype, indent: []const u8, cask: *const nb.cask.Cask) void {
@@ -3565,7 +3612,7 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
             // Install new keg first; remove old tree only after upgrade succeeds (#153).
             const old_keg = db.findKeg(pkg.name);
             const names_slice: []const []const u8 = &.{pkg.name};
-            if (!installFormulae(alloc, names_slice)) {
+            if (!installFormulae(alloc, names_slice, false)) {
                 failed_count += 1;
                 stderr.print("nb: {s}: upgrade failed; keeping {s}\n", .{ pkg.name, pkg.old_ver }) catch {};
                 continue;
@@ -4422,7 +4469,7 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
 
 // ── nb remove --cask ──
 
-fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) void {
+fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) bool {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
 
@@ -4432,21 +4479,25 @@ fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) void {
     };
     defer db.close();
 
+    var had_error = false;
     for (tokens) |token| {
         const record = db.findCask(token) orelse {
             stderr.print("nb: cask '{s}' is not installed\n", .{token}) catch {};
+            had_error = true;
             continue;
         };
 
         const caskroom_token = if (record.canonical_token.len > 0) record.canonical_token else record.token;
         nb.cask_installer.removeCask(alloc, g_io, caskroom_token, record.version, record.apps, record.binaries) catch |err| {
             stderr.print("nb: failed to remove cask '{s}': {}\n", .{ token, err }) catch {};
+            had_error = true;
             continue;
         };
 
         db.recordCaskRemoval(token, alloc) catch {};
         stdout.print("==> Removed {s}\n", .{token}) catch {};
     }
+    return !had_error;
 }
 
 // ── Version display (compile-time; remote latest is only for `checkForUpdate`) ──
@@ -5540,7 +5591,7 @@ fn runBundleDump(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype) voi
 fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: anytype, stderr: anytype) void {
     const file_content = std.Io.Dir.cwd().readFileAlloc(g_io, file_path, alloc, .limited(1024 * 1024)) catch {
         stderr.print("nb: could not read '{s}'\n", .{file_path}) catch {};
-        return;
+        std.process.exit(1);
     };
     defer alloc.free(file_content);
 
@@ -5669,7 +5720,7 @@ fn runBundleInstall(alloc: std.mem.Allocator, file_path: []const u8, stdout: any
     stdout.print("==> Installing from bundle: {d} formulae, {d} casks ({d} already installed)\n", .{ needs_formula.items.len, needs_cask.items.len, total_parsed - total_needed }) catch {};
 
     if (needs_formula.items.len > 0) {
-        runInstall(alloc, needs_formula.items);
+        runInstall(alloc, needs_formula.items, false);
     }
     if (needs_cask.items.len > 0) {
         runCaskInstall(alloc, needs_cask.items);
@@ -5821,7 +5872,9 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
 
 // ── nb pin / nb unpin ──
 
-fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) void {
+/// Returns false when a named package could not be (un)pinned; like
+/// runRemove, the caller exits 1 after the deferred db.close() saves the rest.
+fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) bool {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
 
@@ -5837,6 +5890,7 @@ fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) void {
     };
     defer db.close();
 
+    var had_error = false;
     for (args) |name| {
         db.setPinned(name, pin) catch |err| {
             if (err == error.NotFound) {
@@ -5844,6 +5898,7 @@ fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) void {
             } else {
                 stderr.print("nb: failed to update '{s}': {}\n", .{ name, err }) catch {};
             }
+            had_error = true;
             continue;
         };
         if (pin) {
@@ -5852,6 +5907,7 @@ fn runPin(alloc: std.mem.Allocator, args: []const []const u8, pin: bool) void {
             stdout.print("==> Unpinned {s}\n", .{name}) catch {};
         }
     }
+    return !had_error;
 }
 
 // ── nb deps ──
@@ -6771,7 +6827,7 @@ fn runDebInstall(alloc: std.mem.Allocator, packages: []const []const u8, repo_sp
     if (installed != resolved.len) std.process.exit(1);
 }
 
-fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
+fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) bool {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
 
@@ -6781,9 +6837,11 @@ fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
     };
     defer db.close();
 
+    var had_error = false;
     for (packages) |name| {
         const record = db.findDeb(name) orelse {
             stderr.print("nb: '{s}' is not installed (deb)\n", .{name}) catch {};
+            had_error = true;
             continue;
         };
 
@@ -6823,6 +6881,7 @@ fn runDebRemove(alloc: std.mem.Allocator, packages: []const []const u8) void {
             alloc.free(r.stderr);
         }
     }
+    return !had_error;
 }
 
 fn runDebUpgrade(alloc: std.mem.Allocator) void {
