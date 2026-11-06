@@ -94,6 +94,7 @@ comptime {
     _ = upstream_github;
     _ = search_api;
     _ = bulk_versions;
+    _ = deps;
     _ = telemetry;
     _ = tar;
     _ = native_tar;

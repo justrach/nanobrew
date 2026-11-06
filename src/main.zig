@@ -935,7 +935,11 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         };
     }
     resolver.resolveMany(roots.items) catch |err| {
-        stderr.print("nb: dependency resolution failed: {}\n", .{err}) catch {};
+        if (resolver.fetch_failed) |name| {
+            stderr.print("nb: failed to fetch formula '{s}': {}\n", .{ name, err }) catch {};
+        } else {
+            stderr.print("nb: dependency resolution failed: {}\n", .{err}) catch {};
+        }
         std.process.exit(1);
     };
 
