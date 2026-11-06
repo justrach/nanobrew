@@ -100,6 +100,7 @@ comptime {
     _ = native_tar;
     _ = certs;
     _ = linker;
+    _ = cellar;
     _ = @import("platform/copy.zig");
     _ = @import("platform/placeholder.zig");
     _ = @import("platform/short_prefix.zig");

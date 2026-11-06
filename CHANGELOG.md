@@ -5,6 +5,8 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- `nb reinstall <formula>` no longer removes the keg and its record first: a failed lookup or download leaves the installed keg, its links and its pin as they were. A newer version's keg replaces the old one only after it is installed. (#441)
+- A same-version reinstall copies the new keg beside the old one and swaps it in; the old keg is kept until the install finishes and put back if any step fails. (#489)
 - `nb install`/`nb deps` no longer drop a dependency whose formula fetch timed out or got a 5xx and then report success. Only an HTTP 404/410 counts as "not a formula" (for example a `uses_from_macos` system library). Any other fetch error stops resolution and names the formula. The dependency resolver tests now run in `zig build test`. (#447)
 - A binary the relocator could not open, read or write back is now counted as incomplete, so the install fails and the keg is not cached instead of silently shipping a half-rewritten binary. `zig build test` now also runs the ELF (Linux) and Mach-O (macOS) relocator tests. (#465)
 - A bottle is extracted into a private staging directory and published as `store/<sha256>` with one rename, so an interrupted or concurrent install can no longer leave a half-extracted store entry that later installs link as complete. (#437)
