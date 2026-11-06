@@ -7464,3 +7464,16 @@ fn trustCommand(alloc: std.mem.Allocator, args: []const []const u8) !void {
     defer alloc.free(json);
     if (output) |path| try trust.write(path, json) else try std.Io.File.stdout().writeStreamingAll(g_io, json);
 }
+
+test "collectCaskDbEntries records the app basename install copies (#433)" {
+    const alloc = std.testing.allocator;
+    var apps: std.ArrayList([]const u8) = .empty;
+    defer apps.deinit(alloc);
+    var binaries: std.ArrayList([]const u8) = .empty;
+    defer binaries.deinit(alloc);
+    const artifacts = [_]nb.cask.Artifact{ .{ .app = "Sub/Foo.app" }, .{ .app = "Bar.app" } };
+    collectCaskDbEntries(alloc, &artifacts, &apps, &binaries);
+    try std.testing.expectEqual(@as(usize, 2), apps.items.len);
+    try std.testing.expectEqualStrings("Foo.app", apps.items[0]);
+    try std.testing.expectEqualStrings("Bar.app", apps.items[1]);
+}
