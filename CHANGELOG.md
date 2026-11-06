@@ -5,6 +5,7 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- Bottle maintenance: `nb_bottles.py revoke` no longer falls back to a version an earlier revoke marked, from registry history or from upstream releases, and no longer strips that marker. `--fallback-version` refuses a revoked version. A version that was revoked and then unrevoked can still be chosen. Reported by @Rex57. (#431)
 - Bottle maintenance: `nb_bottles.py repackage` writes a fixed gzip timestamp, so a rerun for the same version builds the same digest and can finish a partly pushed version instead of stopping with "refusing to overwrite tag". Reported by @Rex57. (#455)
 - Bottle maintenance: `nb_bottles.py scan --all` keeps going when one package gets an HTTP error (for example a GHCR 404 or 5xx). That package gets a `SCAN-ERROR` entry and still fails the gate; the packages after it are scanned and `dist/scan/summary.json` is written. Reported by @Rex57. (#453)
 - `nb install`/`nb upgrade` no longer replace a pinned formula that is pulled in as a dependency, whether by a newer version or a rebuilt bottle. They keep the pinned keg, its links and its database record, and print a note. An explicit `name@version` request still overrides the pin. (#439)
