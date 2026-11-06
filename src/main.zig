@@ -1335,6 +1335,21 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
         }
     }
 
+    // Auto-pin version-pinned installs so a later `nb upgrade` won't silently
+    // replace the explicitly chosen version. Pin before the commit: a failed
+    // batch exits below without running `defer db.close()`. A pinned package
+    // whose own install failed is dropped, so its older keg is not pinned.
+    for (install_order, 0..) |f, i| {
+        if (install_succeeded[i]) continue;
+        for (pinned_names.items, 0..) |base, p| {
+            if (std.mem.eql(u8, base, f.name)) {
+                _ = pinned_names.orderedRemove(p);
+                break;
+            }
+        }
+    }
+    for (pinned_names.items) |base| db.setPinned(base, true) catch {};
+
     // Report only after the DB commit, including failures that produced no keg.
     const persisted = if (db.flush()) |_| true else |_| false;
     for (install_order, 0..) |f, i| {
@@ -1348,13 +1363,11 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     nb.trust_outcome.flush();
 
-    // Auto-pin version-pinned installs so a later `nb upgrade` won't silently
-    // replace the explicitly chosen version. setPinned fails with NotFound when
-    // the install never produced a keg record — don't claim "Pinned" then.
+    // No keg record means setPinned failed with NotFound: don't claim "Pinned".
     for (pinned_names.items) |base| {
-        if (db.setPinned(base, true)) {
+        if (persisted and db.findKeg(base) != null) {
             stdout.print("==> Pinned {s} (won't be upgraded; run `nb unpin {s}` to allow upgrades)\n", .{ base, base }) catch {};
-        } else |_| {}
+        }
     }
 
     const elapsed_ns: u64 = timer.read();
