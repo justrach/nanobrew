@@ -1595,6 +1595,59 @@ fn runExtractor(alloc: std.mem.Allocator, io: std.Io, argv: []const []const u8) 
 
 fn ensureZipSafe(alloc: std.mem.Allocator, io: std.Io, zip_path: []const u8) !void {
     try ensureZipEntriesSafe(alloc, io, &.{ "unzip", "-Z1", zip_path });
+    try ensureNoEntryUnderSymlink(alloc, io, zip_path);
+}
+
+/// Refuse a zip that stores a symlink and then an entry below it
+/// (`link -> ../../x`, `link/file`). Whether such an entry is written through
+/// the link depends on the extractor; `ditto` now goes first on macOS (#425).
+/// Info-ZIP refuses it, and nanobrew refuses it for every extractor.
+fn ensureNoEntryUnderSymlink(alloc: std.mem.Allocator, io: std.Io, zip_path: []const u8) !void {
+    const res = std.process.run(alloc, io, .{
+        .argv = &.{ "unzip", "-Z", zip_path },
+        .stdout_limit = .limited(ZIP_LIST_STDOUT_LIMIT),
+        .stderr_limit = .limited(16 * 1024),
+    }) catch return error.ExtractFailed;
+    defer alloc.free(res.stdout);
+    defer alloc.free(res.stderr);
+    if (switch (res.term) {
+        .exited => |code| code != 0,
+        else => true,
+    }) return error.ExtractFailed;
+    if (zipEntryUnderSymlink(res.stdout)) return error.UnsafePath;
+}
+
+/// Entry name and type from one `unzip -Z` line
+/// ("perms ver os size type method date time name"), or null for headers.
+fn zipListingEntry(line: []const u8) ?struct { name: []const u8, symlink: bool } {
+    var rest = std.mem.trimEnd(u8, line, "\r");
+    var fields: [8][]const u8 = undefined;
+    for (&fields) |*field| {
+        rest = std.mem.trimStart(u8, rest, " ");
+        const end = std.mem.indexOfScalar(u8, rest, ' ') orelse return null;
+        field.* = rest[0..end];
+        rest = rest[end..];
+    }
+    // The version column ("2.0", "3.0") tells entry lines from the summary lines.
+    if (std.mem.indexOfScalar(u8, fields[1], '.') == null or !std.ascii.isDigit(fields[1][0])) return null;
+    const name = std.mem.trimStart(u8, rest, " ");
+    if (name.len == 0) return null;
+    return .{ .name = name, .symlink = fields[0][0] == 'l' };
+}
+
+fn zipEntryUnderSymlink(listing: []const u8) bool {
+    var links = std.mem.splitScalar(u8, listing, '\n');
+    while (links.next()) |link_line| {
+        const link = zipListingEntry(link_line) orelse continue;
+        if (!link.symlink) continue;
+        const prefix = std.mem.trimEnd(u8, link.name, "/");
+        var entries = std.mem.splitScalar(u8, listing, '\n');
+        while (entries.next()) |line| {
+            const entry = zipListingEntry(line) orelse continue;
+            if (entry.name.len > prefix.len and std.mem.startsWith(u8, entry.name, prefix) and entry.name[prefix.len] == '/') return true;
+        }
+    }
+    return false;
 }
 
 fn ensureZipEntriesSafe(alloc: std.mem.Allocator, io: std.Io, argv: []const []const u8) !void {
@@ -1924,4 +1977,50 @@ test "removeFontsIn deletes only recorded fonts inside the fonts dir" {
     _ = std.c.chmod(fonts_dir, 0o555);
     defer _ = std.c.chmod(fonts_dir, 0o755);
     try std.testing.expectError(error.FontRemovalFailed, removeFontsIn(io, fonts_dir, &.{"FiraCode-Light.ttf"}));
+}
+
+test "zip listing parser finds entries stored below a symlink (#425)" {
+    const listing =
+        \\Archive:  fixture.zip
+        \\Zip file size: 354 bytes, number of entries: 4
+        \\lrwxr-xr-x  3.0 unx       13 bx stor 26-Jan-01 00:00 App.app/evil
+        \\-rw-r--r--  3.0 unx        6 tx defN 26-Jan-01 00:00 App.app/evil/pwned
+        \\lrwxr-xr-x  3.0 unx       24 bx stor 26-Jan-01 00:00 App.app/Contents/Frameworks/A.framework/Current
+        \\-rw-r--r--  3.0 unx        6 tx defN 26-Jan-01 00:00 App.app/Contents/My File.txt
+        \\4 files, 49 bytes uncompressed, 49 bytes compressed:  0.0%
+        \\
+    ;
+    try std.testing.expect(zipEntryUnderSymlink(listing));
+    const e = zipListingEntry("-rw-r--r--  3.0 unx        6 tx defN 26-Jan-01 00:00 App.app/Contents/My File.txt").?;
+    try std.testing.expectEqualStrings("App.app/Contents/My File.txt", e.name);
+    try std.testing.expect(!e.symlink);
+    try std.testing.expect(zipListingEntry("Zip file size: 354 bytes, number of entries: 4") == null);
+    // Framework-style symlinks with nothing stored below them are fine.
+    try std.testing.expect(!zipEntryUnderSymlink(
+        \\lrwxr-xr-x  3.0 unx       24 bx stor 26-Jan-01 00:00 App.app/Contents/Frameworks/A.framework/Current
+        \\-rw-r--r--  3.0 unx        6 tx defN 26-Jan-01 00:00 App.app/Contents/Frameworks/A.framework/Versions/A/A
+        \\-rw-r--r--  3.0 unx        6 tx defN 26-Jan-01 00:00 App.app/Contents/Frameworks/A.framework/CurrentX
+        \\
+    ));
+}
+
+test "extractZip refuses an entry stored below a symlink, whatever the extractor (#425)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // App.app/evil -> ../../escaped, then App.app/evil/pwned.
+    try tmp.dir.writeFile(io, .{ .sub_path = "symlink-escape.zip", .data = @embedFile("testdata/symlink-escape.zip") });
+    try tmp.dir.createDirPath(io, "escaped");
+    try tmp.dir.createDirPath(io, "stage");
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp.dir.realPath(io, &root_buf)];
+    const zip = try std.fs.path.join(a, &.{ root, "symlink-escape.zip" });
+    defer a.free(zip);
+    const stage = try std.fs.path.join(a, &.{ root, "stage" });
+    defer a.free(stage);
+    try std.testing.expectError(error.UnsafePath, extractZip(a, io, zip, stage));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "escaped/pwned", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "stage/App.app", .{}));
 }
