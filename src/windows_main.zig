@@ -260,7 +260,26 @@ fn installPackage(alloc: std.mem.Allocator, dirs: Dirs, p: Package) !void {
     const archive_name = try std.fmt.bufPrint(&archive_name_buf, "{s}-{s}{s}", .{ p.name, p.version, ext });
     const archive = try join(alloc, &.{ dirs.cache, archive_name });
     defer alloc.free(archive);
-    if (!pathExists(archive)) try powershell(alloc, &.{ "Invoke-WebRequest", "-Uri", p.url, "-OutFile", archive });
+    // A cached archive counts only when its checksum matches: an interrupted
+    // download left a partial file here that failed every later run (#469).
+    if (pathExists(archive)) {
+        verifySha256(alloc, archive, p.sha256) catch |e| switch (e) {
+            error.ChecksumMismatch => {
+                out("==> Cached {s} does not match its checksum; downloading it again\n", .{archive_name});
+                try std.Io.Dir.deleteFileAbsolute(io(), archive);
+            },
+            else => return e,
+        };
+    }
+    if (!pathExists(archive)) {
+        // Download beside the cache path and rename, so an interruption
+        // never leaves a partial file under the final name.
+        const part = try std.fmt.allocPrint(alloc, "{s}.part", .{archive});
+        defer alloc.free(part);
+        std.Io.Dir.deleteFileAbsolute(io(), part) catch {};
+        try powershell(alloc, &.{ "Invoke-WebRequest", "-Uri", p.url, "-OutFile", part });
+        try std.Io.Dir.renameAbsolute(part, archive, io());
+    }
     try verifySha256(alloc, archive, p.sha256);
 
     const pkg_root = try join(alloc, &.{ dirs.cellar, p.name });
