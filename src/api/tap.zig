@@ -283,7 +283,29 @@ pub fn parseTapRef(name: []const u8) ?TapRef {
 /// Handles: version, desc, url, sha256, depends_on, on_macos/on_linux blocks,
 /// bottle blocks with root_url and per-tag sha256.
 pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const u8) !Formula {
+    return parseRubyFormulaFor(alloc, name, src, Platform.native);
+}
+
+/// OS and CPU that `OS.mac?` / `Hardware::CPU.arm?` style conditions test.
+pub const Platform = struct {
+    mac: bool,
+    arm: bool,
+    pub const native: Platform = .{ .mac = is_macos, .arm = builtin.cpu.arch == .aarch64 };
+};
+
+/// A class-body constant (`BASE_URL = "..."`, #499). `value` is the string
+/// literal's text, interpolation not yet applied; null when the right-hand
+/// side is not one of the forms nanobrew reads.
+const RubyConst = struct { name: []const u8, value: ?[]const u8 };
+
+fn parseRubyFormulaFor(alloc: std.mem.Allocator, name: []const u8, src: []const u8, platform: Platform) !Formula {
     var version: ?[]const u8 = null;
+    var consts: std.ArrayList(RubyConst) = .empty;
+    defer consts.deinit(alloc);
+    // A source sha256 with a postfix `if`/`unless` platform condition was
+    // seen; if none of them applies here there is no checksum to verify.
+    var conditional_sha = false;
+    var unsupported_condition = false;
     var desc: ?[]const u8 = null;
     var source_url: ?[]const u8 = null;
     var source_sha256: ?[]const u8 = null;
@@ -354,7 +376,12 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
                 continue;
             }
             if (isBinInstallLine(line)) {
-                switch (extractBinInstallNames(line)) {
+                const bin_line = interpolateRuby(alloc, line, version, consts.items) catch |err| switch (err) {
+                    error.OutOfMemory => return err,
+                    else => line, // left unresolved: unparseable below
+                };
+                defer if (bin_line.ptr != line.ptr) alloc.free(bin_line);
+                switch (extractBinInstallNames(bin_line)) {
                     .names => |names| for (names) |maybe_name| {
                         const bin_name = maybe_name orelse break;
                         try install_bins.append(alloc, try alloc.dupe(u8, bin_name));
@@ -489,6 +516,12 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
         if (version == null and std.mem.startsWith(u8, line, "VERSION =")) {
             version = extractQuotedAfter(line, "VERSION =");
         }
+        // Other class-body constants (#499): only string literals and
+        // `<platform test> ? "a" : "b"` are read. Nothing is evaluated.
+        if (constantAssignment(line)) |c| {
+            try consts.append(alloc, .{ .name = c.name, .value = constantValue(c.rhs, platform) });
+            continue;
+        }
         // --- Top-level fields ---
         if (version == null) {
             if (extractQuotedAfter(line, "version")) |val| {
@@ -505,9 +538,18 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
                 source_url = val;
             }
         }
-        if (source_sha256 == null and !in_bottle) {
+        if (source_sha256 == null and !in_bottle and startsWith(line, "sha256")) {
             if (extractQuotedAfter(line, "sha256")) |val| {
-                source_sha256 = val;
+                // `sha256 "..." if OS.mac? && Hardware::CPU.arm?` (#499)
+                switch (postfixCondition(line, platform)) {
+                    .none => source_sha256 = val,
+                    .yes => {
+                        conditional_sha = true;
+                        source_sha256 = val;
+                    },
+                    .no => conditional_sha = true,
+                    .unsupported => unsupported_condition = true,
+                }
             }
         }
 
@@ -528,7 +570,12 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
 
         // bin.install / sbin.install
         if (isBinInstallLine(line)) {
-            switch (extractBinInstallNames(line)) {
+            const bin_line = interpolateRuby(alloc, line, version, consts.items) catch |err| switch (err) {
+                error.OutOfMemory => return err,
+                else => line,
+            };
+            defer if (bin_line.ptr != line.ptr) alloc.free(bin_line);
+            switch (extractBinInstallNames(bin_line)) {
                 .names => |names| for (names) |maybe_name| {
                     const bin_name = maybe_name orelse break;
                     try install_bins.append(alloc, try alloc.dupe(u8, bin_name));
@@ -558,11 +605,19 @@ pub fn parseRubyFormula(alloc: std.mem.Allocator, name: []const u8, src: []const
 
     const ver = version orelse return error.FormulaNotFound;
 
-    // Interpolate #{version} in source_url
+    // A checksum condition nanobrew cannot evaluate, or conditional
+    // checksums none of which is for this OS/CPU: refuse before any
+    // download instead of fetching something we cannot verify (#499).
+    if (unsupported_condition) return error.UnsupportedRubyExpression;
+    if (conditional_sha and source_sha256 == null) return error.NoChecksumForPlatform;
+
+    // Interpolate #{version} and known constants in source_url. A `#{...}`
+    // left over means the URL is not known; do not fetch it (#499).
     const resolved_url = if (source_url) |url|
-        try interpolateVersion(alloc, url, ver)
+        try interpolateRuby(alloc, url, ver, consts.items)
     else
         try alloc.dupe(u8, "");
+    errdefer alloc.free(resolved_url);
 
     const resolved_sha = if (source_sha256) |s|
         try alloc.dupe(u8, s)
@@ -646,6 +701,139 @@ fn interpolateVersion(alloc: std.mem.Allocator, s: []const u8, version: []const 
         }
     }
     return result.toOwnedSlice(alloc);
+}
+
+const ConstAssign = struct { name: []const u8, rhs: []const u8 };
+
+/// `NAME = rhs` with an upper-case constant name.
+fn constantAssignment(line: []const u8) ?ConstAssign {
+    if (line.len == 0 or !std.ascii.isUpper(line[0])) return null;
+    var i: usize = 0;
+    while (i < line.len and (std.ascii.isUpper(line[i]) or std.ascii.isDigit(line[i]) or line[i] == '_')) i += 1;
+    const name = line[0..i];
+    const rest = std.mem.trimStart(u8, line[i..], " \t");
+    if (!std.mem.startsWith(u8, rest, "=") or std.mem.startsWith(u8, rest, "==")) return null;
+    return .{ .name = name, .rhs = std.mem.trim(u8, rest[1..], " \t") };
+}
+
+/// The literal text of a constant: `"..."`, `"...".freeze`, or
+/// `<cond> ? "a" : "b"` where <cond> is a platform test (see evalCondition).
+fn constantValue(rhs: []const u8, platform: Platform) ?[]const u8 {
+    if (wholeStringLiteral(rhs)) |v| return v;
+    const q = std.mem.indexOf(u8, rhs, " ? ") orelse return null;
+    const cond = evalCondition(rhs[0..q], platform) orelse return null;
+    const branches = rhs[q + 3 ..];
+    const colon = blk: {
+        // The ':' between the two literals, outside quotes.
+        if (branches.len == 0 or branches[0] != '"') return null;
+        const close = std.mem.indexOfScalarPos(u8, branches, 1, '"') orelse return null;
+        const after = branches[close + 1 ..];
+        const c = std.mem.indexOf(u8, after, " : ") orelse return null;
+        if (std.mem.trim(u8, after[0..c], " \t").len != 0) return null;
+        break :blk close + 1 + c;
+    };
+    const a = wholeStringLiteral(std.mem.trim(u8, branches[0..colon], " \t")) orelse return null;
+    const b = wholeStringLiteral(std.mem.trim(u8, branches[colon + 3 ..], " \t")) orelse return null;
+    return if (cond) a else b;
+}
+
+/// `"text"` or `"text".freeze`, nothing else on the right.
+fn wholeStringLiteral(s: []const u8) ?[]const u8 {
+    if (s.len < 2 or s[0] != '"') return null;
+    const close = std.mem.indexOfScalarPos(u8, s, 1, '"') orelse return null;
+    const tail = s[close + 1 ..];
+    if (tail.len != 0 and !std.mem.eql(u8, tail, ".freeze")) return null;
+    const text = s[1..close];
+    if (std.mem.indexOfScalar(u8, text, '\\') != null) return null; // escapes: not handled
+    return text;
+}
+
+/// `OS.mac?`, `OS.linux?`, `Hardware::CPU.arm?`, `Hardware::CPU.intel?`,
+/// optionally negated with `!`, joined with `&&`. Anything else is null.
+fn evalCondition(cond: []const u8, platform: Platform) ?bool {
+    var result = true;
+    var any = false;
+    var parts = std.mem.splitSequence(u8, cond, "&&");
+    while (parts.next()) |raw| {
+        var atom = std.mem.trim(u8, raw, " \t");
+        var negate = false;
+        if (atom.len > 0 and atom[0] == '!') {
+            negate = true;
+            atom = std.mem.trimStart(u8, atom[1..], " \t");
+        }
+        const v: bool = if (std.mem.eql(u8, atom, "OS.mac?"))
+            platform.mac
+        else if (std.mem.eql(u8, atom, "OS.linux?"))
+            !platform.mac
+        else if (std.mem.eql(u8, atom, "Hardware::CPU.arm?"))
+            platform.arm
+        else if (std.mem.eql(u8, atom, "Hardware::CPU.intel?"))
+            !platform.arm
+        else
+            return null;
+        result = result and (v != negate);
+        any = true;
+    }
+    return if (any) result else null;
+}
+
+const Postfix = enum { none, yes, no, unsupported };
+
+/// The `if`/`unless` after a line's first string literal, if any.
+fn postfixCondition(line: []const u8, platform: Platform) Postfix {
+    const q1 = std.mem.indexOfScalar(u8, line, '"') orelse return .none;
+    const q2 = std.mem.indexOfScalarPos(u8, line, q1 + 1, '"') orelse return .none;
+    var tail = std.mem.trim(u8, line[q2 + 1 ..], " \t");
+    if (tail.len == 0 or tail[0] == '#') return .none;
+    var negate = false;
+    if (std.mem.startsWith(u8, tail, "if ")) {
+        tail = tail[3..];
+    } else if (std.mem.startsWith(u8, tail, "unless ")) {
+        tail = tail[7..];
+        negate = true;
+    } else return .unsupported;
+    if (std.mem.indexOfScalar(u8, tail, '#')) |c| tail = tail[0..c];
+    const v = evalCondition(tail, platform) orelse return .unsupported;
+    return if (v != negate) .yes else .no;
+}
+
+/// Replace `#{version}`, `#{VERSION}` and `#{CONST}` for constants read
+/// above (recursively, a few levels deep). Any other `#{...}` is an error:
+/// nanobrew does not evaluate Ruby.
+fn interpolateRuby(alloc: std.mem.Allocator, s: []const u8, version: ?[]const u8, consts: []const RubyConst) error{ OutOfMemory, UnsupportedRubyExpression }![]const u8 {
+    return interpolateDepth(alloc, s, version, consts, 0);
+}
+
+fn interpolateDepth(alloc: std.mem.Allocator, s: []const u8, version: ?[]const u8, consts: []const RubyConst, depth: u8) error{ OutOfMemory, UnsupportedRubyExpression }![]const u8 {
+    if (std.mem.indexOf(u8, s, "#{") == null) return alloc.dupe(u8, s);
+    if (depth > 4) return error.UnsupportedRubyExpression;
+    var out: std.ArrayList(u8) = .empty;
+    errdefer out.deinit(alloc);
+    var i: usize = 0;
+    while (std.mem.indexOfPos(u8, s, i, "#{")) |open| {
+        const close = std.mem.indexOfScalarPos(u8, s, open + 2, '}') orelse return error.UnsupportedRubyExpression;
+        try out.appendSlice(alloc, s[i..open]);
+        const expr = s[open + 2 .. close];
+        if (std.mem.eql(u8, expr, "version") or std.mem.eql(u8, expr, "VERSION")) {
+            try out.appendSlice(alloc, version orelse return error.UnsupportedRubyExpression);
+        } else {
+            // Latest assignment wins, as in Ruby (with a warning there).
+            var found: ?[]const u8 = null;
+            var known = false;
+            for (consts) |c| if (std.mem.eql(u8, c.name, expr)) {
+                known = true;
+                found = c.value;
+            };
+            if (!known) return error.UnsupportedRubyExpression;
+            const raw = found orelse return error.UnsupportedRubyExpression;
+            const value = try interpolateDepth(alloc, raw, version, consts, depth + 1);
+            defer alloc.free(value);
+            try out.appendSlice(alloc, value);
+        }
+        i = close + 1;
+    }
+    try out.appendSlice(alloc, s[i..]);
+    return out.toOwnedSlice(alloc);
 }
 
 /// Extract quoted string after a keyword, e.g. `version "1.0"` -> "1.0".
@@ -741,6 +929,10 @@ fn extractBinInstallNames(line: []const u8) BinInstallParse {
         return .{ .glob_rename = .{ .pattern = pattern, .dest = dest } };
     }
 
+    // `bin.install "src" => "dest"` alone on the line: install src under
+    // the new name (#499). Before, the destination name was dropped.
+    if (singleLiteralRename(rest)) |r| return .{ .glob_rename = .{ .pattern = r.src, .dest = r.dest } };
+
     var result: [8]?[]const u8 = @splat(null);
     var count: usize = 0;
 
@@ -783,6 +975,30 @@ fn extractBinInstallNames(line: []const u8) BinInstallParse {
 
     if (count == 0) return .none;
     return .{ .names = result };
+}
+
+fn singleLiteralRename(args: []const u8) ?struct { src: []const u8, dest: []const u8 } {
+    var r = args;
+    if (r.len == 0 or (r[0] != '"' and r[0] != '\'')) return null;
+    const sq = r[0];
+    const sclose = std.mem.indexOfScalar(u8, r[1..], sq) orelse return null;
+    const src = r[1 .. 1 + sclose];
+    r = std.mem.trimStart(u8, r[1 + sclose + 1 ..], " \t");
+    if (!std.mem.startsWith(u8, r, "=>")) return null;
+    r = std.mem.trimStart(u8, r[2..], " \t");
+    if (r.len == 0 or (r[0] != '"' and r[0] != '\'')) return null;
+    const dq = r[0];
+    const dclose = std.mem.indexOfScalar(u8, r[1..], dq) orelse return null;
+    const dest = r[1 .. 1 + dclose];
+    r = std.mem.trimStart(u8, r[1 + dclose + 1 ..], " \t");
+    if (r.len > 0 and r[0] == ')') r = std.mem.trimStart(u8, r[1..], " \t");
+    if (r.len > 0 and r[0] != '#') return null;
+    for ([_][]const u8{ src, dest }) |part| {
+        if (part.len == 0 or std.mem.indexOf(u8, part, "#{") != null or
+            std.mem.indexOfAny(u8, part, "*?[") != null) return null;
+    }
+    if (std.mem.indexOfScalar(u8, dest, '/') != null) return null;
+    return .{ .src = src, .dest = dest };
 }
 
 /// Find bottle sha256 matching our platform tag.
@@ -1297,10 +1513,10 @@ test "extractBinInstallNames - multiple binaries" {
     try testing.expect(result[3] == null);
 }
 
-test "extractBinInstallNames - rename syntax" {
-    const result = extractBinInstallNames("bin.install \"crush\" => \"crush-cli\"").names;
-    try testing.expectEqualStrings("crush", result[0].?);
-    try testing.expect(result[1] == null);
+test "extractBinInstallNames - rename syntax keeps the new name (#499)" {
+    const result = extractBinInstallNames("bin.install \"crush\" => \"crush-cli\"").glob_rename;
+    try testing.expectEqualStrings("crush", result.pattern);
+    try testing.expectEqualStrings("crush-cli", result.dest);
 }
 
 test "extractBinInstallNames - sbin" {
@@ -1394,7 +1610,7 @@ test "parseRubyFormula - unparseable bin.install clears install_binaries so gene
         \\  sha256 "abc"
         \\  def install
         \\    bin.install "good"
-        \\    bin.install "tool-#{version}"
+        \\    bin.install "tool-#{arch}"
         \\  end
         \\end
     ;
@@ -1436,9 +1652,12 @@ test "parseRubyFormula - extracts install_binaries with rename" {
     ;
     const formula = try parseRubyFormula(testing.allocator, "crush", src);
     defer formula.deinit(testing.allocator);
-    try testing.expectEqual(@as(usize, 2), formula.install_binaries.len);
-    try testing.expectEqualStrings("crush", formula.install_binaries[0]);
-    try testing.expectEqualStrings("crushd", formula.install_binaries[1]);
+    // `"crush" => "crush-cli"` installs crush as bin/crush-cli (#499).
+    try testing.expectEqual(@as(usize, 1), formula.install_binaries.len);
+    try testing.expectEqualStrings("crushd", formula.install_binaries[0]);
+    try testing.expectEqual(@as(usize, 1), formula.install_bin_renames.len);
+    try testing.expectEqualStrings("crush", formula.install_bin_renames[0].pattern);
+    try testing.expectEqualStrings("crush-cli", formula.install_bin_renames[0].dest);
 }
 
 test "tap VERSION constants interpolate source and selected bottle URL (#370)" {
@@ -1478,4 +1697,115 @@ test "tap bottle digest and URL select the same best platform regardless of orde
     defer a.free(url);
     try testing.expectEqualStrings(url, g.bottle_url);
     try testing.expectEqualStrings("fallback", g.bottle_sha256);
+}
+
+// telepresenceio/homebrew-telepresence Formula/telepresence-oss.rb, 6 Nov 2026.
+const telepresence_oss_rb =
+    \\# This script is generated automatically by the release automation code in the
+    \\# Telepresence repository:
+    \\class TelepresenceOss < Formula
+    \\  desc "Local dev environment attached to a remote Kubernetes cluster"
+    \\  homepage "https://telepresence.io"
+    \\  version "2.32.3"
+    \\
+    \\  BASE_URL = "https://github.com/telepresenceio/telepresence/releases/download"
+    \\  ARCH = Hardware::CPU.arm? ? "arm64" : "amd64"
+    \\  OPERATING_SYSTEM = OS.mac? ? "darwin" : "linux"
+    \\  PACKAGE_NAME = "telepresence-#{OPERATING_SYSTEM}-#{ARCH}"
+    \\
+    \\  url "#{BASE_URL}/v#{version}/#{PACKAGE_NAME}"
+    \\
+    \\  sha256 "415e63dc5d44f8912cfd1d8cb5c0ec00aaa9837801d50ce7b2ab84094271b6a2" if OS.mac? && Hardware::CPU.intel?
+    \\  sha256 "502adb9d03800e131380b0bc25566b9dc0698e0462a06a9a17a58a1710b87e33" if OS.mac? && Hardware::CPU.arm?
+    \\  sha256 "e9c32ab75c8b0247d11fce0fc15894bf70b2964465217879353a3be0b5fe8ede" if OS.linux? && Hardware::CPU.intel?
+    \\  # TODO support linux arm64
+    \\  #sha256 "__TARBALL_HASH_LINUX_ARM64__" if OS.linux? && Hardware::CPU.arm?
+    \\
+    \\  conflicts_with "telepresence"
+    \\
+    \\  def install
+    \\      bin.install "#{PACKAGE_NAME}" => "telepresence"
+    \\  end
+    \\
+    \\  test do
+    \\      system "#{bin}/telepresence", "--help"
+    \\  end
+    \\end
+;
+
+test "telepresence-oss: constants, platform checksum and rename resolve per platform (#499)" {
+    const cases = [_]struct { p: Platform, asset: []const u8, sha: []const u8 }{
+        .{ .p = .{ .mac = true, .arm = true }, .asset = "telepresence-darwin-arm64", .sha = "502adb9d03800e131380b0bc25566b9dc0698e0462a06a9a17a58a1710b87e33" },
+        .{ .p = .{ .mac = true, .arm = false }, .asset = "telepresence-darwin-amd64", .sha = "415e63dc5d44f8912cfd1d8cb5c0ec00aaa9837801d50ce7b2ab84094271b6a2" },
+        .{ .p = .{ .mac = false, .arm = false }, .asset = "telepresence-linux-amd64", .sha = "e9c32ab75c8b0247d11fce0fc15894bf70b2964465217879353a3be0b5fe8ede" },
+    };
+    for (cases) |c| {
+        const f = try parseRubyFormulaFor(testing.allocator, "telepresence-oss", telepresence_oss_rb, c.p);
+        defer f.deinit(testing.allocator);
+        const url = try std.fmt.allocPrint(testing.allocator, "https://github.com/telepresenceio/telepresence/releases/download/v2.32.3/{s}", .{c.asset});
+        defer testing.allocator.free(url);
+        try testing.expectEqualStrings(url, f.source_url);
+        try testing.expectEqualStrings(c.sha, f.source_sha256);
+        try testing.expectEqual(@as(usize, 1), f.install_bin_renames.len);
+        try testing.expectEqualStrings(c.asset, f.install_bin_renames[0].pattern);
+        try testing.expectEqualStrings("telepresence", f.install_bin_renames[0].dest);
+        try testing.expectEqual(@as(usize, 0), f.install_binaries.len);
+    }
+    // Linux arm64 has no checksum upstream: refuse instead of an unverified download.
+    try testing.expectError(error.NoChecksumForPlatform, parseRubyFormulaFor(testing.allocator, "telepresence-oss", telepresence_oss_rb, .{ .mac = false, .arm = true }));
+}
+
+test "tap constants: unsupported Ruby is refused before any download (#499)" {
+    const a = testing.allocator;
+    // A constant built from a method call.
+    try testing.expectError(error.UnsupportedRubyExpression, parseRubyFormula(a, "x",
+        \\class X < Formula
+        \\  version "1.0"
+        \\  BASE = ENV.fetch("MIRROR", "https://example.test")
+        \\  url "#{BASE}/x-#{version}.tar.gz"
+        \\  sha256 "abc"
+        \\end
+    ));
+    // An interpolation of something that is not a constant.
+    try testing.expectError(error.UnsupportedRubyExpression, parseRubyFormula(a, "x",
+        \\class X < Formula
+        \\  version "1.0"
+        \\  url "https://example.test/#{name}-#{version.major}.tar.gz"
+        \\  sha256 "abc"
+        \\end
+    ));
+    // A checksum condition that is not a plain platform test.
+    try testing.expectError(error.UnsupportedRubyExpression, parseRubyFormula(a, "x",
+        \\class X < Formula
+        \\  version "1.0"
+        \\  url "https://example.test/x.tar.gz"
+        \\  sha256 "abc" if File.exist?("/tmp/x")
+        \\end
+    ));
+    // A ternary on something other than OS/CPU.
+    try testing.expectError(error.UnsupportedRubyExpression, parseRubyFormula(a, "x",
+        \\class X < Formula
+        \\  version "1.0"
+        \\  FLAVOR = ENV["X"] ? "a" : "b"
+        \\  url "https://example.test/#{FLAVOR}.tar.gz"
+        \\  sha256 "abc"
+        \\end
+    ));
+}
+
+test "tap bin.install interpolates #{version} and constants (#499)" {
+    const f = try parseRubyFormula(testing.allocator, "tool",
+        \\class Tool < Formula
+        \\  version "1.2"
+        \\  NAME = "tool"
+        \\  url "https://example.test/tool.tar.gz"
+        \\  sha256 "abc"
+        \\  def install
+        \\    bin.install "#{NAME}-#{version}"
+        \\  end
+        \\end
+    );
+    defer f.deinit(testing.allocator);
+    try testing.expectEqual(@as(usize, 1), f.install_binaries.len);
+    try testing.expectEqualStrings("tool-1.2", f.install_binaries[0]);
 }
