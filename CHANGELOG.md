@@ -5,6 +5,7 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- `nb upgrade` no longer stops at the first keg that fails to install. It tries the remaining kegs, prints the summary, and exits 1. An upgrade that installs a version newer than the cached index advertised now counts as upgraded instead of failed. (#445)
 - `nb remove` (also `--cask` and `--deb`), `nb pin`/`nb unpin`, `nb info` (also `--cask`) and `nb bundle install` now exit 1 when a named package, cask or file is missing or its removal fails. Removals and pins that succeeded in the same command are still saved. `nb reinstall` of a package that is not installed still installs it. (#463)
 - `nb reinstall <formula>` no longer removes the keg and its record first: a failed lookup or download leaves the installed keg, its links and its pin as they were. A newer version's keg replaces the old one only after it is installed. (#441)
 - A same-version reinstall copies the new keg beside the old one and swaps it in; the old keg is kept until the install finishes and put back if any step fails. (#489)
