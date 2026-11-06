@@ -991,6 +991,33 @@ test "recordInstall keeps an existing pin" {
     try testing.expect(!db.findKeg("other").?.pinned);
 }
 
+test "a pin set after the last flush is lost when the process exits without close()" {
+    const io = testing.io;
+    const path = try std.fmt.allocPrint(testing.allocator, "/tmp/nb-test-db-pin-{d}.json", .{std.c.getpid()});
+    defer testing.allocator.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const lock_path = try std.fmt.allocPrint(testing.allocator, "{s}.lock", .{path});
+    defer testing.allocator.free(lock_path);
+    defer std.Io.Dir.deleteFileAbsolute(io, lock_path) catch {};
+
+    // runInstall on a failed batch: flush, then std.process.exit (no close()).
+    {
+        var db = try Database.openAt(testing.allocator, path);
+        try db.recordInstall("before", "1.0", "abc");
+        try db.recordInstall("after", "1.0", "abc");
+        try db.setPinned("before", true);
+        try db.flush();
+        try db.setPinned("after", true);
+        db.dirty = false; // std.process.exit skips close()'s save
+        db.close();
+    }
+
+    var db = try Database.openAt(testing.allocator, path);
+    defer db.close();
+    try testing.expect(db.findKeg("before").?.pinned);
+    try testing.expect(!db.findKeg("after").?.pinned);
+}
+
 test "installAction keeps a pinned keg" {
     const old: Keg = .{ .name = "openssl@3", .version = "3.3.0", .sha256 = "aaa" };
     var pinned = old;
