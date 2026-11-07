@@ -2807,6 +2807,24 @@ fn ownedCaskBinaryTarget(cask: nb.database.CaskRecord, linked: []const u8, targe
     return null;
 }
 
+/// True when `target` is `<app>/Contents/MacOS/<CFBundleExecutable>` of one
+/// of the cask's apps, the GUI app itself rather than a command-line tool.
+fn isAppMainExecutable(alloc: std.mem.Allocator, applications_dir: []const u8, apps: []const []const u8, target: []const u8) bool {
+    if (comptime builtin.os.tag != .macos) return false;
+    const dir = std.fs.path.dirname(target) orelse return false;
+    for (apps) |app| {
+        var app_buf: [1024]u8 = undefined;
+        const app_path = std.fmt.bufPrint(&app_buf, "{s}/{s}", .{ applications_dir, std.fs.path.basename(app) }) catch continue;
+        var macos_buf: [1100]u8 = undefined;
+        const macos_dir = std.fmt.bufPrint(&macos_buf, "{s}/Contents/MacOS", .{app_path}) catch continue;
+        if (!std.mem.eql(u8, std.mem.trimEnd(u8, dir, "/"), macos_dir)) continue;
+        const exe = nb.cask_upgrade.bundleInfoString(alloc, g_io, app_path, "CFBundleExecutable") orelse continue;
+        defer alloc.free(exe);
+        if (std.mem.eql(u8, std.fs.path.basename(target), exe)) return true;
+    }
+    return false;
+}
+
 fn probeInstalledCask(
     alloc: std.mem.Allocator,
     stdout: ?StdoutWriter,
@@ -2877,6 +2895,13 @@ fn probeInstalledCask(
             ok = false;
             continue;
         };
+        if (mode == .active and isAppMainExecutable(alloc, "/Applications", cask.apps, target)) {
+            // `--version` on a GUI app's main executable can start the whole
+            // app and never exit (electerm, #494). The apps loop above already
+            // ran codesign on that app, so skip the argv probe.
+            if (stdout) |out| out.print("    {s}: {s} is the app's main executable; checked by codesign, not run\n", .{ cask.token, base }) catch {};
+            continue;
+        }
         if (mode == .active) {
             if (active_session) |*session| {
                 switch (probeExecutableCommand(alloc, stdout, cask.token, target, session, .fail)) {
@@ -8040,6 +8065,38 @@ test "collectCaskDbEntries records the app and font basenames install uses (#433
     try std.testing.expectEqual(@as(usize, 2), apps.items.len);
     try std.testing.expectEqualStrings("Foo.app", apps.items[0]);
     try std.testing.expectEqualStrings("Bar.app", apps.items[1]);
+}
+
+test "isAppMainExecutable matches only the bundle's CFBundleExecutable (#494)" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const io = std.testing.io;
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "electerm.app/Contents/MacOS");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "electerm.app/Contents/Info.plist",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<plist version="1.0"><dict>
+        \\<key>CFBundleExecutable</key><string>electerm</string>
+        \\</dict></plist>
+        \\
+        ,
+    });
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp.dir.realPath(io, &root_buf)];
+    var main_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const main_exe = try std.fmt.bufPrint(&main_buf, "{s}/electerm.app/Contents/MacOS/electerm", .{root});
+    var cli_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cli = try std.fmt.bufPrint(&cli_buf, "{s}/electerm.app/Contents/MacOS/electerm-cli", .{root});
+    var res_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const res = try std.fmt.bufPrint(&res_buf, "{s}/electerm.app/Contents/Resources/bin/electerm", .{root});
+
+    try std.testing.expect(isAppMainExecutable(alloc, root, &.{"electerm.app"}, main_exe));
+    try std.testing.expect(!isAppMainExecutable(alloc, root, &.{"electerm.app"}, cli));
+    try std.testing.expect(!isAppMainExecutable(alloc, root, &.{"electerm.app"}, res));
+    try std.testing.expect(!isAppMainExecutable(alloc, root, &.{"Other.app"}, main_exe));
 }
 
 test "--json documents keep schema 1 and escape names (#495)" {
