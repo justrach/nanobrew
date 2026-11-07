@@ -647,6 +647,20 @@ pub fn stageUpgradeArchive(alloc: std.mem.Allocator, io: std.Io, cask: Cask, dir
 
 extern "c" fn mkdtemp(template: [*:0]u8) ?[*:0]u8;
 
+/// `hdiutil detach -force` can still fail while the system briefly holds the
+/// fresh volume (seen on CI runners); a failed detach used to be ignored and
+/// left the image attached. Retry, then tell the user how to finish it.
+fn detachStagedDmg(alloc: std.mem.Allocator, io: std.Io, volume: []const u8) void {
+    var attempt: i64 = 0;
+    while (attempt < 4) : (attempt += 1) {
+        if (attempt > 0) std.Io.sleep(io, .fromMilliseconds(500 * attempt), .awake) catch {};
+        if (commandSucceeded(alloc, io, &.{ "hdiutil", "detach", "-force", "-quiet", volume })) return;
+    }
+    var buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "nb: warning: could not detach the disk image at {s}; run `hdiutil detach -force {s}`\n", .{ volume, volume }) catch return;
+    std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
+}
+
 /// Like installCask, take only the declared artifacts out of the image.
 fn stageDmg(alloc: std.mem.Allocator, io: std.Io, cask: Cask, directory: []const u8, download: []const u8) !void {
     clearQuarantineIfPresent(alloc, io, download, false);
@@ -657,7 +671,7 @@ fn stageDmg(alloc: std.mem.Allocator, io: std.Io, cask: Cask, directory: []const
     defer std.Io.Dir.deleteDirAbsolute(io, volume) catch {};
     // Synchronous, so the mount point can be removed; the copies are complete.
     // Registered before attach so a partly failed attach is also undone.
-    defer _ = commandSucceeded(alloc, io, &.{ "hdiutil", "detach", "-force", "-quiet", volume });
+    defer detachStagedDmg(alloc, io, volume);
     if (!commandSucceeded(alloc, io, &.{ "hdiutil", "attach", "-nobrowse", "-noautoopen", "-noverify", "-noautofsck", "-readonly", "-mountpoint", volume, download }))
         return error.MountFailed;
     for (cask.artifacts) |art| if (art == .app) {
