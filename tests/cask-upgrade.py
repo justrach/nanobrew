@@ -14,9 +14,12 @@ import tempfile
 import zipfile
 
 fixture = str(pathlib.Path(sys.argv[1]).resolve())
+ATTACH_ATTEMPTS = 3  # dmg_attach_attempts in src/cask/install.zig
+DETACH_ATTEMPTS = 4  # detachStagedDmg in src/cask/install.zig
 
 
-def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_moves=0, foreign_removed=False, detach_failures=0):
+def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_moves=0, foreign_removed=False, detach_failures=0,
+             attach_failures=0, attach_partial=0):
     with tempfile.TemporaryDirectory(prefix="nb-upgrade-") as temp:
         root = pathlib.Path(temp).resolve()
         old = root / "Caskroom/fixture/1.0"
@@ -103,26 +106,55 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
         meta = root / "cask.json"
         meta.write_text(json.dumps(metadata))
         env = None
-        if detach_failures:
+        if detach_failures or attach_failures or attach_partial:
             # The first `hdiutil detach` calls fail, as when the system still
             # holds the fresh volume; staging must retry instead of leaving
-            # the image attached.
+            # the image attached. The first `hdiutil attach` calls fail as
+            # seen on CI runners (MountFailed); staging must retry with a
+            # fresh mount point, and report hdiutil's message if all fail.
             shim = root / "shim"
             shim.mkdir()
             (shim / "hdiutil").write_text(
                 '#!/bin/sh\n'
                 'if [ "$1" = detach ]; then\n'
                 f'  n=$(cat "{root}/detach-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "{root}/detach-calls"\n'
+                f'  echo "$n $*" >> "{root}/detach-args"\n'
                 f'  [ $n -le {detach_failures} ] && exit 16\n'
+                'fi\n'
+                'if [ "$1" = attach ]; then\n'
+                f'  n=$(cat "{root}/attach-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "{root}/attach-calls"\n'
+                f'  if [ $n -le {attach_failures} ]; then echo "hdiutil: attach failed - Resource temporarily unavailable (shim $n)" >&2; exit 1; fi\n'
+                # A partial attach: the image's device is attached but no
+                # volume is mounted at the mount point, and attach fails.
+                f'  if [ $n -le {attach_partial} ]; then\n'
+                f'    /usr/bin/hdiutil attach -nomount -readonly -noverify -nobrowse "{blob}" > "{root}/partial-devices" || exit 2\n'
+                '    echo "hdiutil: attach failed - partial (shim)" >&2; exit 1\n'
+                '  fi\n'
                 'fi\n'
                 'exec /usr/bin/hdiutil "$@"\n')
             (shim / "hdiutil").chmod(0o755)
             env = dict(os.environ, PATH=f"{shim}:{os.environ['PATH']}")
         result = subprocess.run([fixture, str(root), str(blob), str(meta), fault], capture_output=True, text=True, env=env)
-        if detach_failures:
-            assert int((root / "detach-calls").read_text()) == detach_failures + 1, result.stderr
+        failed_attaches = attach_failures + attach_partial
+        mounted = failed_attaches < ATTACH_ATTEMPTS
+        if detach_failures or failed_attaches:
+            # A failed attach that left nothing attached is not detached; a
+            # partial one is detached by device. After DETACH_ATTEMPTS failed
+            # detaches by mount point, the device sweep detaches the image.
+            detach_calls = int((root / "detach-calls").read_text()) if (root / "detach-calls").exists() else 0
+            expected = (min(detach_failures, DETACH_ATTEMPTS) + 1 if mounted else 0) + attach_partial
+            detach_args = (root / "detach-args").read_text() if (root / "detach-args").exists() else ""
+            assert detach_calls == expected, (detach_calls, expected, detach_args, result.stderr)
             assert "could not detach" not in result.stderr, result.stderr
-        success = fault in ("none", "crash-committed-0", "fail-committed-0") and bad is None
+        if failed_attaches:
+            assert int((root / "attach-calls").read_text()) == min(failed_attaches + 1, ATTACH_ATTEMPTS), result.stderr
+            if mounted:
+                assert "could not attach" not in result.stderr, result.stderr
+            else:
+                assert f"could not attach the disk image {blob} after {ATTACH_ATTEMPTS} attempts" in result.stderr, result.stderr
+                assert f"Resource temporarily unavailable (shim {ATTACH_ATTEMPTS})" in result.stderr, result.stderr
+                assert "MountFailed" in result.stderr, result.stderr
+        success = fault in ("none", "crash-committed-0", "fail-committed-0") and bad is None and mounted
         if fault.startswith("crash-"):
             assert result.returncode == 75, result.stderr
             assert (root / "transaction/journal.json").exists()
@@ -207,10 +239,18 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
         assert not (root / "transaction").exists()
         assert not list(root.rglob("*.nb-upgrade-*"))
         if fmt == "dmg":
-            assert str(blob) not in subprocess.check_output(["hdiutil", "info"], text=True), "image still attached"
+            info = subprocess.check_output(["hdiutil", "info"], text=True)
+            assert str(blob) not in info, ("image still attached", result.stderr, info)
             assert not list(pathlib.Path("/tmp").glob("nb-dmg-*")), "private mount point left behind"
+        if attach_partial:
+            # Native evidence of what a partial attach left (e.g. APFS: image
+            # disk + synthesized container) and which device was detached.
+            print("NOTE partial attach devices:", " | ".join((root / "partial-devices").read_text().split("\n")).strip(" |"),
+                  "; detaches:", " | ".join((root / "detach-args").read_text().strip().split("\n")), flush=True)
         print("PASS", fmt, fault, bad or "", activation_moves, rollback_moves, "foreign-removed" if foreign_removed else "",
-              f"detach-failures={detach_failures}" if detach_failures else "", flush=True)
+              f"detach-failures={detach_failures}" if detach_failures else "",
+              f"attach-failures={attach_failures}" if attach_failures else "",
+              f"attach-partial={attach_partial}" if attach_partial else "", flush=True)
 
 
 for fmt in ("tar.gz", "tar.xz", "zip", "binary"):
@@ -222,6 +262,12 @@ if sys.platform == "darwin":  # hdiutil builds and mounts the image
     run_case(fmt="dmg", bad="volume-escape")
     run_case(fmt="dmg", detach_failures=2)
     run_case(fmt="dmg", bad="volume-escape", detach_failures=1)
+    run_case(fmt="dmg", attach_failures=ATTACH_ATTEMPTS - 1)  # recovers on the last attempt
+    run_case(fmt="dmg", attach_failures=ATTACH_ATTEMPTS)  # real failure: reported, rolled back
+    run_case(fmt="dmg", attach_failures=1, detach_failures=1)
+    run_case(fmt="dmg", attach_partial=1)  # device attached, nothing mounted
+    run_case(fmt="dmg", detach_failures=DETACH_ATTEMPTS)  # mount point never detaches
+    run_case(fmt="dmg", bad="volume-escape", detach_failures=DETACH_ATTEMPTS)
 run_case(foreign_removed=True)
 for bad in ("missing-source", "checksum", "foreign-link", "foreign-app", "external-installer"):
     run_case(bad=bad)
