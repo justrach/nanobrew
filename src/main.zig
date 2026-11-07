@@ -2801,7 +2801,7 @@ fn ownedCaskBinaryTarget(cask: nb.database.CaskRecord, linked: []const u8, targe
 
     for (cask.apps) |app| {
         var app_buf: [1024]u8 = undefined;
-        const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{app}) catch continue;
+        const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{std.fs.path.basename(app)}) catch continue;
         if (pathIsWithin(target, app_path)) return target;
     }
     return null;
@@ -2835,7 +2835,8 @@ fn probeInstalledCask(
 
     for (cask.apps) |app| {
         var app_buf: [1024]u8 = undefined;
-        const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{app}) catch {
+        // Records from v0.1.214 and older can keep the source subfolder ("Sub/Foo.app").
+        const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{std.fs.path.basename(app)}) catch {
             ok = false;
             continue;
         };
@@ -4668,7 +4669,8 @@ fn collectCaskDbEntries(
 ) void {
     for (artifacts) |art| {
         switch (art) {
-            .app => |a| apps.append(alloc, a) catch {},
+            // Install copies `app "Sub/Foo.app"` to /Applications/Foo.app.
+            .app => |a| apps.append(alloc, std.fs.path.basename(a)) catch {},
             .binary => |b| binaries.append(alloc, b.target) catch {},
             .suite => |s| if (nb.cask_installer.artifactInstallsToApplications(s.target)) {
                 apps.append(alloc, std.fs.path.basename(s.target)) catch {};
@@ -7993,6 +7995,19 @@ fn trustCommand(alloc: std.mem.Allocator, args: []const []const u8) !void {
     const json = try std.json.Stringify.valueAlloc(alloc, entry, .{ .whitespace = .indent_2 });
     defer alloc.free(json);
     if (output) |path| try trust.write(path, json) else try std.Io.File.stdout().writeStreamingAll(g_io, json);
+}
+
+test "collectCaskDbEntries records the app basename install copies (#433)" {
+    const alloc = std.testing.allocator;
+    var apps: std.ArrayList([]const u8) = .empty;
+    defer apps.deinit(alloc);
+    var binaries: std.ArrayList([]const u8) = .empty;
+    defer binaries.deinit(alloc);
+    const artifacts = [_]nb.cask.Artifact{ .{ .app = "Sub/Foo.app" }, .{ .app = "Bar.app" } };
+    collectCaskDbEntries(alloc, &artifacts, &apps, &binaries);
+    try std.testing.expectEqual(@as(usize, 2), apps.items.len);
+    try std.testing.expectEqualStrings("Foo.app", apps.items[0]);
+    try std.testing.expectEqualStrings("Bar.app", apps.items[1]);
 }
 
 test "--json documents keep schema 1 and escape names (#495)" {
