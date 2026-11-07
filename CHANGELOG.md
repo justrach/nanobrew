@@ -9,6 +9,9 @@ All notable changes to nanobrew are documented here.
 - `nb upgrade --cask` upgrades DMG casks through the same staged, journaled transaction as zip and tar casks, so they are no longer skipped with "this download format does not support staged upgrades yet". The verified image is attached read-only at a private mount point. Only the declared `app` artifacts and relative binary sources are copied out (a symlink in the image that leads outside the volume is refused), and the image is detached before activation. If nb is killed while the image is attached, it stays mounted under `/tmp/nb-dmg-*` until it is detached or the Mac restarts; recovery does not depend on it. Proposed and first implemented by @Rex57. (#491)
 
 ### Fixed
+- `nb install --shims` links its dependencies' `lib`, `include`, `share` and `etc` into the prefix again. Only their executables stay out of `prefix/bin`, as documented. Since v0.1.203 the fast linker removed every link of a private dependency. (#435)
+
+### Fixed
 - `nb upgrade fortune` across a revision bump (for example `9708` -> `9708_1`) no longer deletes the new `bin/fortune` link. The old keg's unlink step now removes the link only when it points at that keg's own wrapper. (#443)
 
 ### Fixed
