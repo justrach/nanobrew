@@ -11,6 +11,7 @@ const DownloadFormat = @import("../api/cask.zig").DownloadFormat;
 const paths = @import("../platform/paths.zig");
 const fetch = @import("../net/fetch.zig");
 const telemetry = @import("../telemetry/client.zig");
+const ownedBinary = @import("upgrade.zig").ownedBinary;
 const builtin = @import("builtin");
 
 const PREFIX = paths.PREFIX;
@@ -625,6 +626,7 @@ pub fn stageUpgradeArchive(alloc: std.mem.Allocator, io: std.Io, cask: Cask, dir
     }
     try std.Io.Dir.createDirAbsolute(io, directory, .default_dir);
     switch (cask.downloadFormat()) {
+        .dmg => try stageDmg(alloc, io, cask, directory, download),
         .zip => try extractZip(alloc, io, download, directory),
         .tar_gz => try extractTarGz(alloc, io, download, directory),
         .tar_xz => try extractTarXz(alloc, io, download, directory),
@@ -643,6 +645,74 @@ pub fn stageUpgradeArchive(alloc: std.mem.Allocator, io: std.Io, cask: Cask, dir
     };
 }
 
+extern "c" fn mkdtemp(template: [*:0]u8) ?[*:0]u8;
+
+/// `hdiutil detach -force` can still fail while the system briefly holds the
+/// fresh volume (seen on CI runners); a failed detach used to be ignored and
+/// left the image attached. Retry, then tell the user how to finish it.
+fn detachStagedDmg(alloc: std.mem.Allocator, io: std.Io, volume: []const u8) void {
+    var attempt: i64 = 0;
+    while (attempt < 4) : (attempt += 1) {
+        if (attempt > 0) std.Io.sleep(io, .fromMilliseconds(500 * attempt), .awake) catch {};
+        if (commandSucceeded(alloc, io, &.{ "hdiutil", "detach", "-force", "-quiet", volume })) return;
+    }
+    var buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "nb: warning: could not detach the disk image at {s}; run `hdiutil detach -force {s}`\n", .{ volume, volume }) catch return;
+    std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
+}
+
+/// Like installCask, take only the declared artifacts out of the image.
+fn stageDmg(alloc: std.mem.Allocator, io: std.Io, cask: Cask, directory: []const u8, download: []const u8) !void {
+    clearQuarantineIfPresent(alloc, io, download, false);
+    // Private mount point outside the journal: if this process dies while
+    // mounted, recovery never has to delete a read-only volume.
+    var template = "/tmp/nb-dmg-XXXXXX".*;
+    const volume = std.mem.span(mkdtemp(&template) orelse return error.MountFailed);
+    defer std.Io.Dir.deleteDirAbsolute(io, volume) catch {};
+    // Synchronous, so the mount point can be removed; the copies are complete.
+    // Registered before attach so a partly failed attach is also undone.
+    defer detachStagedDmg(alloc, io, volume);
+    if (!commandSucceeded(alloc, io, &.{ "hdiutil", "attach", "-nobrowse", "-noautoopen", "-noverify", "-noautofsck", "-readonly", "-mountpoint", volume, download }))
+        return error.MountFailed;
+    for (cask.artifacts) |art| if (art == .app) {
+        if (!std.mem.endsWith(u8, art.app, ".app")) return error.ArtifactFailed;
+        try copyFromVolume(alloc, io, volume, directory, art.app);
+    };
+    // After the apps: a binary inside a bundle must not pre-create that bundle.
+    for (cask.artifacts) |art| if (art == .binary and !std.mem.startsWith(u8, art.binary.source, "$APPDIR/")) {
+        try copyFromVolume(alloc, io, volume, directory, art.binary.source);
+    };
+}
+
+fn copyFromVolume(alloc: std.mem.Allocator, io: std.Io, volume: []const u8, directory: []const u8, relative: []const u8) !void {
+    if (!safeRelativePath(relative)) return error.ArtifactFailed;
+    const source = try std.fs.path.join(alloc, &.{ volume, relative });
+    defer alloc.free(source);
+    std.Io.Dir.accessAbsolute(io, source, .{}) catch return error.ArtifactFailed;
+    // The image's own symlinks must not lead the copy out of the volume
+    // (for example `dir -> /Applications` with an artifact `dir/Other.app`).
+    var source_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const source_len = std.Io.Dir.cwd().realPathFile(io, source, &source_buf) catch return error.ArtifactFailed;
+    var volume_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const volume_len = std.Io.Dir.cwd().realPathFile(io, volume, &volume_buf) catch return error.ArtifactFailed;
+    const real_source = source_buf[0..source_len];
+    const real_volume = volume_buf[0..volume_len];
+    if (!(real_source.len > real_volume.len and std.mem.startsWith(u8, real_source, real_volume) and real_source[real_volume.len] == '/'))
+        return error.ArtifactFailed;
+    const target = try std.fs.path.join(alloc, &.{ directory, relative });
+    defer alloc.free(target);
+    try std.Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(target).?);
+    // cp -R keeps code signatures and extended attributes, as installCask does.
+    if (!commandSucceeded(alloc, io, &.{ "/bin/cp", "-R", source, target })) return error.ArtifactFailed;
+}
+
+fn commandSucceeded(alloc: std.mem.Allocator, io: std.Io, argv: []const []const u8) bool {
+    const result = std.process.run(alloc, io, .{ .argv = argv }) catch return false;
+    alloc.free(result.stdout);
+    alloc.free(result.stderr);
+    return result.term == .exited and result.term.exited == 0;
+}
+
 pub fn removeCask(
     _: std.mem.Allocator,
     io: std.Io,
@@ -650,6 +720,7 @@ pub fn removeCask(
     version: []const u8,
     apps: []const []const u8,
     binaries: []const []const u8,
+    fonts: []const []const u8,
 ) !void {
     const lib_io = io;
     const safe_token = filesystemToken(token) orelse return error.UnsafeToken;
@@ -657,16 +728,21 @@ pub fn removeCask(
     // 1. Delete apps from /Applications/
     try removeAppsIn(lib_io, "/Applications", apps);
 
-    // 2. Delete binary symlinks from prefix/bin/
-    for (binaries) |bin| {
-        var buf: [512]u8 = undefined;
-        const path = std.fmt.bufPrint(&buf, "{s}/bin/{s}", .{ PREFIX, bin }) catch continue;
-        std.Io.Dir.deleteFileAbsolute(lib_io, path) catch {};
+    // 2. Delete the recorded fonts from ~/Library/Fonts/ (installCask put them there)
+    if (fonts.len > 0) {
+        const home = std.c.getenv("HOME") orelse return error.HomeNotSet;
+        var fonts_dir_buf: [1024]u8 = undefined;
+        const fonts_dir = std.fmt.bufPrint(&fonts_dir_buf, "{s}/Library/Fonts", .{std.mem.span(home)}) catch return error.PathTooLong;
+        try removeFontsIn(lib_io, fonts_dir, fonts);
     }
 
-    // 3. Delete Caskroom entry
     var caskroom_buf: [512]u8 = undefined;
     const ver_dir = std.fmt.bufPrint(&caskroom_buf, "{s}/Caskroom/{s}/{s}", .{ PREFIX, safe_token, version }) catch return;
+
+    // 3. Delete binary symlinks from prefix/bin/
+    removeBinariesIn(lib_io, PREFIX ++ "/bin", ver_dir, "/Applications", apps, binaries);
+
+    // 4. Delete Caskroom entry
     std.Io.Dir.cwd().deleteTree(lib_io, ver_dir) catch {};
 
     // Try to remove parent dir if empty
@@ -681,7 +757,8 @@ fn removeAppsIn(io: std.Io, applications_dir: []const u8, apps: []const []const 
     var failed = false;
     for (apps) |app| {
         var buf: [512]u8 = undefined;
-        const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ applications_dir, app }) catch continue;
+        // Install copies `app "Sub/Foo.app"` to Foo.app; older records keep "Sub/Foo.app".
+        const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ applications_dir, std.fs.path.basename(app) }) catch continue;
         std.Io.Dir.cwd().deleteTree(io, path) catch |err| {
             var _b: [512]u8 = undefined;
             const _m = std.fmt.bufPrint(&_b, "nb: could not remove {s}: {}\n", .{ app, err }) catch "nb: could not remove app\n";
@@ -690,6 +767,45 @@ fn removeAppsIn(io: std.Io, applications_dir: []const u8, apps: []const []const 
         };
     }
     if (failed) return error.AppRemovalFailed;
+}
+
+/// The record lists every binary name, including ones install skipped, so a
+/// name may now be another package's link: delete only links into this cask.
+fn removeBinariesIn(io: std.Io, bin_dir: []const u8, payload: []const u8, applications_dir: []const u8, apps: []const []const u8, binaries: []const []const u8) void {
+    for (binaries) |bin| {
+        var buf: [512]u8 = undefined;
+        const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ bin_dir, bin }) catch continue;
+        if (ownedBinary(io, path, apps, payload, applications_dir)) {
+            std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+        } else if (std.Io.Dir.cwd().statFile(io, path, .{ .follow_symlinks = false })) |_| {
+            var _b: [1024]u8 = undefined;
+            const _m = std.fmt.bufPrint(&_b, "nb: leaving {s}: it does not link into this cask\n", .{path}) catch "nb: leaving a binary link this cask does not own\n";
+            std.Io.File.stderr().writeStreamingAll(io, _m) catch {};
+        } else |_| {}
+    }
+}
+
+/// Delete only the font files the cask record lists, then fail if any is still
+/// there so the caller keeps the cask record (and Caskroom) for a retry.
+fn removeFontsIn(io: std.Io, fonts_dir: []const u8, fonts: []const []const u8) !void {
+    var failed = false;
+    for (fonts) |font| {
+        // Records hold basenames; never follow one out of the fonts dir.
+        if (font.len == 0 or std.mem.eql(u8, font, ".") or std.mem.eql(u8, font, "..") or
+            std.mem.indexOfAny(u8, font, "/\x00") != null) continue;
+        var buf: [1024]u8 = undefined;
+        const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ fonts_dir, font }) catch continue;
+        std.Io.Dir.cwd().deleteFile(io, path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => {
+                var _b: [1024]u8 = undefined;
+                const _m = std.fmt.bufPrint(&_b, "nb: could not remove font {s}: {}\n", .{ path, err }) catch "nb: could not remove font\n";
+                std.Io.File.stderr().writeStreamingAll(io, _m) catch {};
+                failed = true;
+            },
+        };
+    }
+    if (failed) return error.FontRemovalFailed;
 }
 
 fn downloadArtifact(alloc: std.mem.Allocator, io: std.Io, url: []const u8, dest: []const u8, cask: Cask) !bool {
@@ -1520,41 +1636,87 @@ fn extractZip(alloc: std.mem.Allocator, io: std.Io, zip_path: []const u8, dest: 
     const lib_io = io;
     try ensureZipSafe(alloc, lib_io, zip_path);
 
-    // Primary extractor: BSD `unzip`. Fast and ubiquitous.
-    const result = std.process.run(alloc, lib_io, .{
-        .argv = &.{ "unzip", "-o", "-q", zip_path, "-d", dest },
+    // On macOS, Apple's `ditto` goes first, as in Homebrew. It folds AppleDouble
+    // `._*` entries back into extended attributes. BSD `unzip` exits 0 but
+    // writes them into the bundle as plain files, which breaks the app's code
+    // signature (#425). ditto also reads zip variants unzip rejects (#224).
+    if (comptime builtin.os.tag == .macos) {
+        if (try runExtractor(alloc, lib_io, &.{ "ditto", "-x", "-k", zip_path, dest })) return;
+    }
+    // Elsewhere, or if ditto failed: BSD/Info-ZIP `unzip`.
+    if (!try runExtractor(alloc, lib_io, &.{ "unzip", "-o", "-q", zip_path, "-d", dest })) return error.ExtractFailed;
+}
+
+/// Runs an archive extractor; true when it exited 0.
+fn runExtractor(alloc: std.mem.Allocator, io: std.Io, argv: []const []const u8) !bool {
+    const result = std.process.run(alloc, io, .{
+        .argv = argv,
         .stdout_limit = .limited(4096),
         .stderr_limit = .limited(16 * 1024),
     }) catch return error.ExtractFailed;
     defer alloc.free(result.stdout);
     defer alloc.free(result.stderr);
-    if (switch (result.term) {
-        .exited => |c| c != 0,
-        else => true,
-    }) {
-        // Fallback to Apple's `ditto` on macOS — handles extended attributes,
-        // code-signature resources, and zip variants that BSD unzip rejects
-        // (seen on some notarized .app zips — issue #224, PureMac).
-        if (comptime builtin.os.tag == .macos) {
-            const ditto = std.process.run(alloc, lib_io, .{
-                .argv = &.{ "ditto", "-x", "-k", zip_path, dest },
-                .stdout_limit = .limited(4096),
-                .stderr_limit = .limited(16 * 1024),
-            }) catch return error.ExtractFailed;
-            defer alloc.free(ditto.stdout);
-            defer alloc.free(ditto.stderr);
-            if (switch (ditto.term) {
-                .exited => |c| c != 0,
-                else => true,
-            }) return error.ExtractFailed;
-            return;
-        }
-        return error.ExtractFailed;
-    }
+    return switch (result.term) {
+        .exited => |c| c == 0,
+        else => false,
+    };
 }
 
 fn ensureZipSafe(alloc: std.mem.Allocator, io: std.Io, zip_path: []const u8) !void {
     try ensureZipEntriesSafe(alloc, io, &.{ "unzip", "-Z1", zip_path });
+    try ensureNoEntryUnderSymlink(alloc, io, zip_path);
+}
+
+/// Refuse a zip that stores a symlink and then an entry below it
+/// (`link -> ../../x`, `link/file`). Whether such an entry is written through
+/// the link depends on the extractor; `ditto` now goes first on macOS (#425).
+/// Info-ZIP refuses it, and nanobrew refuses it for every extractor.
+fn ensureNoEntryUnderSymlink(alloc: std.mem.Allocator, io: std.Io, zip_path: []const u8) !void {
+    const res = std.process.run(alloc, io, .{
+        .argv = &.{ "unzip", "-Z", zip_path },
+        .stdout_limit = .limited(ZIP_LIST_STDOUT_LIMIT),
+        .stderr_limit = .limited(16 * 1024),
+    }) catch return error.ExtractFailed;
+    defer alloc.free(res.stdout);
+    defer alloc.free(res.stderr);
+    if (switch (res.term) {
+        .exited => |code| code != 0,
+        else => true,
+    }) return error.ExtractFailed;
+    if (zipEntryUnderSymlink(res.stdout)) return error.UnsafePath;
+}
+
+/// Entry name and type from one `unzip -Z` line
+/// ("perms ver os size type method date time name"), or null for headers.
+fn zipListingEntry(line: []const u8) ?struct { name: []const u8, symlink: bool } {
+    var rest = std.mem.trimEnd(u8, line, "\r");
+    var fields: [8][]const u8 = undefined;
+    for (&fields) |*field| {
+        rest = std.mem.trimStart(u8, rest, " ");
+        const end = std.mem.indexOfScalar(u8, rest, ' ') orelse return null;
+        field.* = rest[0..end];
+        rest = rest[end..];
+    }
+    // The version column ("2.0", "3.0") tells entry lines from the summary lines.
+    if (std.mem.indexOfScalar(u8, fields[1], '.') == null or !std.ascii.isDigit(fields[1][0])) return null;
+    const name = std.mem.trimStart(u8, rest, " ");
+    if (name.len == 0) return null;
+    return .{ .name = name, .symlink = fields[0][0] == 'l' };
+}
+
+fn zipEntryUnderSymlink(listing: []const u8) bool {
+    var links = std.mem.splitScalar(u8, listing, '\n');
+    while (links.next()) |link_line| {
+        const link = zipListingEntry(link_line) orelse continue;
+        if (!link.symlink) continue;
+        const prefix = std.mem.trimEnd(u8, link.name, "/");
+        var entries = std.mem.splitScalar(u8, listing, '\n');
+        while (entries.next()) |line| {
+            const entry = zipListingEntry(line) orelse continue;
+            if (entry.name.len > prefix.len and std.mem.startsWith(u8, entry.name, prefix) and entry.name[prefix.len] == '/') return true;
+        }
+    }
+    return false;
 }
 
 fn ensureZipEntriesSafe(alloc: std.mem.Allocator, io: std.Io, argv: []const []const u8) !void {
@@ -1818,4 +1980,116 @@ test "removeAppsIn reports apps it could not delete" {
 
     try removeAppsIn(io, applications_dir, &.{"Gone.app"});
     try std.testing.expectError(error.AppRemovalFailed, removeAppsIn(io, applications_dir, &.{ "Locked.app", "Gone.app" }));
+}
+
+test "removeAppsIn removes the installed app when the record keeps its subfolder" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    var applications_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const applications_dir = try std.fmt.bufPrint(&applications_buf, ".zig-cache/tmp/{s}", .{tmp_dir.sub_path[0..]});
+    // `app "Sub/Foo.app"` installs to <applications>/Foo.app, but records
+    // written by v0.1.214 and older keep "Sub/Foo.app".
+    var dst_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dst = try appDestinationPath(applications_dir, "Sub/Foo.app", &dst_buf);
+    try std.Io.Dir.cwd().createDirPath(io, dst);
+
+    try removeAppsIn(io, applications_dir, &.{"Sub/Foo.app"});
+    try std.testing.expect(!try pathExistsNoFollow(io, dst));
+}
+
+test "removeBinariesIn keeps recorded binary links the cask does not own" {
+    const io = std.testing.io;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "bin");
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp.dir.realPath(io, &root_buf)];
+    var bufs: [5][std.fs.max_path_bytes]u8 = undefined;
+    const bin_dir = try std.fmt.bufPrint(&bufs[0], "{s}/bin", .{root});
+    const payload = try std.fmt.bufPrint(&bufs[1], "{s}/Caskroom/tool/1.0", .{root});
+    const applications = try std.fmt.bufPrint(&bufs[2], "{s}/Applications", .{root});
+    const payload_bin = try std.fmt.bufPrint(&bufs[3], "{s}/tool", .{payload});
+    const app_bin = try std.fmt.bufPrint(&bufs[4], "{s}/Tool.app/Contents/MacOS/tool-app", .{applications});
+    try tmp.dir.symLink(io, payload_bin, "bin/tool", .{});
+    try tmp.dir.symLink(io, app_bin, "bin/tool-app", .{});
+    // Install skipped `mono` but recorded it; a formula linked bin/mono later.
+    try tmp.dir.symLink(io, "../Cellar/mono/6.12/bin/mono", "bin/mono", .{});
+
+    removeBinariesIn(io, bin_dir, payload, applications, &.{"Tool.app"}, &.{ "tool", "tool-app", "mono", "never-linked" });
+
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "bin/tool", .{ .follow_symlinks = false }));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "bin/tool-app", .{ .follow_symlinks = false }));
+    _ = try tmp.dir.statFile(io, "bin/mono", .{ .follow_symlinks = false });
+}
+
+test "removeFontsIn deletes only recorded fonts inside the fonts dir" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "Fonts");
+    for ([_][]const u8{ "Fonts/FiraCode-Regular.ttf", "Fonts/FiraCode-Bold.ttf", "Fonts/FiraCode-Light.ttf", "Fonts/UserFont.ttf", "outside.ttf" }) |name| {
+        try tmp_dir.dir.writeFile(io, .{ .sub_path = name, .data = "font" });
+    }
+    var fonts_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    const fonts_dir = try std.fmt.bufPrintZ(&fonts_buf, ".zig-cache/tmp/{s}/Fonts", .{tmp_dir.sub_path[0..]});
+
+    try removeFontsIn(io, fonts_dir, &.{ "FiraCode-Regular.ttf", "FiraCode-Bold.ttf", "Missing.ttf", "../outside.ttf", ".." });
+    try std.testing.expectError(error.FileNotFound, tmp_dir.dir.access(io, "Fonts/FiraCode-Regular.ttf", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp_dir.dir.access(io, "Fonts/FiraCode-Bold.ttf", .{}));
+    try tmp_dir.dir.access(io, "Fonts/UserFont.ttf", .{});
+    try tmp_dir.dir.access(io, "outside.ttf", .{});
+
+    // A font that cannot be deleted keeps the cask record for a retry.
+    _ = std.c.chmod(fonts_dir, 0o555);
+    defer _ = std.c.chmod(fonts_dir, 0o755);
+    try std.testing.expectError(error.FontRemovalFailed, removeFontsIn(io, fonts_dir, &.{"FiraCode-Light.ttf"}));
+}
+
+test "zip listing parser finds entries stored below a symlink (#425)" {
+    const listing =
+        \\Archive:  fixture.zip
+        \\Zip file size: 354 bytes, number of entries: 4
+        \\lrwxr-xr-x  3.0 unx       13 bx stor 26-Jan-01 00:00 App.app/evil
+        \\-rw-r--r--  3.0 unx        6 tx defN 26-Jan-01 00:00 App.app/evil/pwned
+        \\lrwxr-xr-x  3.0 unx       24 bx stor 26-Jan-01 00:00 App.app/Contents/Frameworks/A.framework/Current
+        \\-rw-r--r--  3.0 unx        6 tx defN 26-Jan-01 00:00 App.app/Contents/My File.txt
+        \\4 files, 49 bytes uncompressed, 49 bytes compressed:  0.0%
+        \\
+    ;
+    try std.testing.expect(zipEntryUnderSymlink(listing));
+    const e = zipListingEntry("-rw-r--r--  3.0 unx        6 tx defN 26-Jan-01 00:00 App.app/Contents/My File.txt").?;
+    try std.testing.expectEqualStrings("App.app/Contents/My File.txt", e.name);
+    try std.testing.expect(!e.symlink);
+    try std.testing.expect(zipListingEntry("Zip file size: 354 bytes, number of entries: 4") == null);
+    // Framework-style symlinks with nothing stored below them are fine.
+    try std.testing.expect(!zipEntryUnderSymlink(
+        \\lrwxr-xr-x  3.0 unx       24 bx stor 26-Jan-01 00:00 App.app/Contents/Frameworks/A.framework/Current
+        \\-rw-r--r--  3.0 unx        6 tx defN 26-Jan-01 00:00 App.app/Contents/Frameworks/A.framework/Versions/A/A
+        \\-rw-r--r--  3.0 unx        6 tx defN 26-Jan-01 00:00 App.app/Contents/Frameworks/A.framework/CurrentX
+        \\
+    ));
+}
+
+test "extractZip refuses an entry stored below a symlink, whatever the extractor (#425)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // App.app/evil -> ../../escaped, then App.app/evil/pwned.
+    try tmp.dir.writeFile(io, .{ .sub_path = "symlink-escape.zip", .data = @embedFile("testdata/symlink-escape.zip") });
+    try tmp.dir.createDirPath(io, "escaped");
+    try tmp.dir.createDirPath(io, "stage");
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp.dir.realPath(io, &root_buf)];
+    const zip = try std.fs.path.join(a, &.{ root, "symlink-escape.zip" });
+    defer a.free(zip);
+    const stage = try std.fs.path.join(a, &.{ root, "stage" });
+    defer a.free(stage);
+    try std.testing.expectError(error.UnsafePath, extractZip(a, io, zip, stage));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "escaped/pwned", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "stage/App.app", .{}));
 }

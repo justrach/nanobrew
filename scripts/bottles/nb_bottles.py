@@ -23,6 +23,7 @@ See manage.md at the repo root for the full operating guide.
 
 import argparse
 import base64
+import gzip
 import hashlib
 import io
 import json
@@ -418,7 +419,10 @@ def cmd_repackage(args):
                     members[Path(info.name).name] = ("tar", tf, info)
 
         out = dist / f"{args.name}-{ver}.{platform}.tar.gz"
-        with tarfile.open(out, "w:gz") as bottle:
+        # mtime=0: a rerun must rebuild the same digest, or push_manifest
+        # refuses the already-pushed version tag.
+        with gzip.GzipFile(out, "wb", mtime=0) as compressed, \
+                tarfile.open(fileobj=compressed, mode="w") as bottle:
             for rel in artifacts:
                 base = Path(rel).name
                 if base not in members:
@@ -836,7 +840,7 @@ def cmd_scan(args):
     for rec in records:
         try:
             scan_results = _scan_one(rec, platforms, outdir)
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:  # die() on an HTTP error raises SystemExit
             ver = rec.get("resolved", {}).get("version", "unknown")
             requested = platforms or sorted((rec.get("resolved") or {}).get("assets", {}).keys()) or ["unknown"]
             log(f"  {rec['token']} {ver}: scan failed ({type(exc).__name__}: {exc}) — continuing")
@@ -1037,12 +1041,15 @@ def _resolved_identity(record):
 def _previous_resolved_from_git(token, current_identity, want=None):
     """Most recent resolved block for `token` (in the embedded registry's git
     history) whose full version/revision/rebuild identity differs from the
-    current pin. Pass `want` to demand one specific base version."""
+    current pin. Pass `want` to demand one specific base version. Identities
+    whose newest block is revoked are skipped; their versions come back as
+    the third value."""
     rel = REGISTRY_JSON.relative_to(REPO_ROOT)
     shas = subprocess.run(
         ["git", "-C", str(REPO_ROOT), "log", "--format=%H", "-n", "500", "--", str(rel)],
         capture_output=True, text=True, check=True,
     ).stdout.split()
+    seen, revoked = set(), set()
     for sha in shas:
         show = subprocess.run(
             ["git", "-C", str(REPO_ROOT), "show", f"{sha}:{rel}"],
@@ -1060,19 +1067,25 @@ def _previous_resolved_from_git(token, current_identity, want=None):
             resolved = r.get("resolved") or {}
             version = resolved.get("version")
             historical_identity = _resolved_identity(r)
-            if version and historical_identity != current_identity and (want is None or version == want):
-                resolved.pop("revoked", None)
+            if not version or historical_identity in seen or historical_identity == current_identity:
+                continue
+            # An identity's newest block wins: a later revoke or unrevoke supersedes older copies.
+            seen.add(historical_identity)
+            if "revoked" in resolved:
+                revoked.add(version)
+                continue
+            if want is None or version == want:
                 resolved.pop("fallback", None)
                 # Package identity belongs to the historical pin, not the
                 # currently revoked record. Preserve it inside the fallback.
                 for field in ("revision", "rebuild"):
                     if field in r:
                         resolved[field] = r[field]
-                return resolved, sha
-    return None, None
+                return resolved, sha, revoked
+    return None, None, revoked
 
 
-def _previous_resolved_from_upstream(rec, want=None):
+def _previous_resolved_from_upstream(rec, want=None, skip=()):
     """Previous stable release of a github_release record, straight from the
     GitHub API — covers pins whose registry git history only ever saw one
     version. Asset digests come from the API when present, else from
@@ -1102,7 +1115,7 @@ def _previous_resolved_from_upstream(rec, want=None):
             if tag == cur_tag or version == cur_ver:
                 seen_current = True
             continue
-        if want and version != want:
+        if (want and version != want) or version in skip:
             continue
         assets = {}
         rel_assets = rel.get("assets", [])
@@ -1130,10 +1143,12 @@ def _previous_resolved(rec, want=None):
     homebrew_bottle pins; digests were already vetted), then the upstream
     GitHub releases list (covers young registries with single-version
     history)."""
-    fallback, src = _previous_resolved_from_git(rec["token"], _resolved_identity(rec), want=want)
+    fallback, src, revoked = _previous_resolved_from_git(rec["token"], _resolved_identity(rec), want=want)
     if fallback:
         return fallback, f"git {src[:12]}"
-    return _previous_resolved_from_upstream(rec, want=want)
+    if want in revoked:
+        die(f"version '{want}' is revoked in registry git history; pick another --fallback-version")
+    return _previous_resolved_from_upstream(rec, want=want, skip=revoked)
 
 
 def _edit_resolved(token, mutate):

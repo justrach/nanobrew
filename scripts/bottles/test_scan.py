@@ -43,4 +43,28 @@ with tempfile.TemporaryDirectory() as td:
             pass
         else:
             raise AssertionError('path traversal was accepted')
-print('Bottle scan: absolute/relative symlinks and hard links skipped; regular payload scanned; traversal rejected')
+
+def fetch(rec, platform, asset):
+    if rec['token'] == 'bad':
+        bottles.die('GET https://ghcr.io/v2/fixture/blobs/sha256:unused -> 404')
+    return archive()
+
+with tempfile.TemporaryDirectory() as td:
+    records = {n: {**record, 'token': n} for n in ('bad', 'good')}
+    args = SimpleNamespace(platforms=None, gate='high', all=False, names=['bad', 'good'], push_evidence=False)
+    with patch.object(bottles, 'REPO_ROOT', Path(td)), patch.object(bottles, '_require_tool'), \
+            patch.object(bottles, 'find_record', side_effect=records.get), \
+            patch.object(bottles, '_bottle_bytes', side_effect=fetch), patch.object(bottles.subprocess, 'run', side_effect=scanner):
+        try:
+            bottles.cmd_scan(args)
+        except SystemExit as e:
+            assert e.code == 1, e.code
+        else:
+            raise AssertionError('a failed package must fail the gate')
+    summary_path = Path(td) / 'dist/scan/summary.json'
+    assert summary_path.exists(), 'an HTTP error in one package stopped the scan before summary.json'
+    summary = json.loads(summary_path.read_text())
+    assert summary['good.arm64_sonoma'] == [], summary
+    assert summary['bad.arm64_sonoma'][0]['id'] == 'SCAN-ERROR', summary
+print('Bottle scan: absolute/relative symlinks and hard links skipped; regular payload scanned; traversal rejected; '
+      'an HTTP error in one package does not stop the scan')
