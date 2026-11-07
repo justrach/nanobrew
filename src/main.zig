@@ -706,6 +706,7 @@ fn buildPinnedFormula(
         .build_deps = try alloc.alloc([]const u8, 0),
         .caveats = try alloc.dupe(u8, cur.caveats),
         .post_install_defined = cur.post_install_defined,
+        .post_install_steps = if (cur.post_install_steps.len > 0) try alloc.dupe(u8, cur.post_install_steps) else "",
     };
 }
 

@@ -1109,6 +1109,13 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
     else
         false;
 
+    // post_install_steps (array), kept as JSON for the step runner (#493).
+    const post_install_steps: []const u8 = if (root.get("post_install_steps")) |steps|
+        if (steps == .array and steps.array.items.len > 0) try std.json.Stringify.valueAlloc(alloc, steps, .{}) else ""
+    else
+        "";
+    errdefer if (post_install_steps.len > 0) alloc.free(post_install_steps);
+
     var bottle_url = try allocDupe(alloc, "");
     errdefer alloc.free(bottle_url);
     var bottle_sha256 = try allocDupe(alloc, "");
@@ -1161,6 +1168,7 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
         .build_deps = build_deps,
         .caveats = caveats,
         .post_install_defined = post_install_defined,
+        .post_install_steps = post_install_steps,
     };
 }
 
@@ -1699,4 +1707,24 @@ test "parseCaskJson - parses suite and artifact stanzas (KiCad shape)" {
     try testing.expect(saw_suite);
     try testing.expect(saw_artifact);
     try testing.expect(saw_binary);
+}
+
+test "parseFormulaJson keeps post_install_steps for the step runner (#493)" {
+    const json =
+        \\{"name":"fontconfig","versions":{"stable":"2.17.1"},"revision":0,"post_install_defined":false,
+        \\"post_install_steps":[{"command":{"base":"bin","path":"fc-cache"},"type":"run","args":["--force"]}],
+        \\"bottle":{"stable":{"rebuild":0,"files":{"all":{"url":"https://ghcr.io/bottle/fc","sha256":"deadbeef"}}}}}
+    ;
+    const f = try parseFormulaJson(testing.allocator, json);
+    defer f.deinit(testing.allocator);
+    try testing.expect(!f.post_install_defined);
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, f.post_install_steps, .{});
+    defer parsed.deinit();
+    try testing.expectEqualStrings("run", parsed.value.array.items[0].object.get("type").?.string);
+
+    const none = try parseFormulaJson(testing.allocator,
+        \\{"name":"x","versions":{"stable":"1"},"post_install_steps":[],"bottle":{"stable":{"files":{"all":{"url":"u","sha256":"s"}}}}}
+    );
+    defer none.deinit(testing.allocator);
+    try testing.expectEqualStrings("", none.post_install_steps);
 }
