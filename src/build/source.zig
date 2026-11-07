@@ -24,6 +24,52 @@ fn archiveSuffixFromUrl(url: []const u8) []const u8 {
     return ".tar.gz";
 }
 
+fn hasArchiveSuffix(url: []const u8) bool {
+    const path = if (std.mem.indexOfScalar(u8, url, '?')) |q| url[0..q] else url;
+    const suffixes: []const []const u8 = &.{
+        ".tar.xz", ".tar.bz2", ".tar.gz", ".txz", ".tbz2", ".tgz", ".zip", ".tar", ".tar.zst", ".tbz", ".xz", ".gz", ".bz2",
+    };
+    for (suffixes) |sfx| {
+        if (std.mem.endsWith(u8, path, sfx)) return true;
+    }
+    return false;
+}
+
+/// gzip, bzip2, xz, zstd, zip or ustar tar by magic bytes. A file that
+/// cannot be read counts as an archive, so extraction reports the error.
+fn looksLikeArchive(io: std.Io, path: []const u8) bool {
+    var file = std.Io.Dir.openFileAbsolute(io, path, .{}) catch return true;
+    defer file.close(io);
+    var head: [512]u8 = undefined;
+    const n = file.readPositional(io, &.{head[0..]}, 0) catch return true;
+    return isArchiveMagic(head[0..n]);
+}
+
+fn isArchiveMagic(b: []const u8) bool {
+    const starts = [_][]const u8{
+        "\x1f\x8b", // gzip
+        "BZh", // bzip2
+        "\xfd7zXZ\x00", // xz
+        "\x28\xb5\x2f\xfd", // zstd
+        "PK\x03\x04", // zip
+        "PK\x05\x06", // empty zip
+    };
+    for (starts) |m| if (std.mem.startsWith(u8, b, m)) return true;
+    return b.len >= 262 and std.mem.eql(u8, b[257..262], "ustar");
+}
+
+test "raw asset detection: URL suffix and magic bytes (#499)" {
+    try std.testing.expect(!hasArchiveSuffix("https://github.com/telepresenceio/telepresence/releases/download/v2.32.3/telepresence-darwin-arm64"));
+    try std.testing.expect(hasArchiveSuffix("https://example.test/x-1.0.tar.gz?raw=1"));
+    try std.testing.expect(!isArchiveMagic("\xcf\xfa\xed\xfe\x0c\x00\x00\x01")); // Mach-O arm64
+    try std.testing.expect(!isArchiveMagic("\x7fELF\x02\x01\x01"));
+    try std.testing.expect(isArchiveMagic("\x1f\x8b\x08\x00"));
+    try std.testing.expect(isArchiveMagic("PK\x03\x04rest"));
+    var tar: [512]u8 = @splat(0);
+    @memcpy(tar[257..262], "ustar");
+    try std.testing.expect(isArchiveMagic(&tar));
+}
+
 /// Upstream basename of a download URL (query string stripped). Raw
 /// `using: :nounzip` assets are staged under this name so formula install
 /// globs like `Dir["omp-*"]` match (#361).
@@ -163,7 +209,12 @@ pub fn buildFromSource(alloc: std.mem.Allocator, io: std.Io, formula: Formula) !
     std.Io.Dir.cwd().deleteTree(lib_io, build_dir) catch {};
     std.Io.Dir.createDirAbsolute(lib_io, build_dir, .default_dir) catch {};
 
-    if (formula.source_nounzip) {
+    // A download whose URL has no archive suffix and whose bytes are not an
+    // archive is a raw file (usually an executable), as Homebrew's unpack
+    // detection treats it, even without `using: :nounzip` (#499).
+    const raw_asset = formula.source_nounzip or
+        (!hasArchiveSuffix(formula.source_url) and !looksLikeArchive(lib_io, tarball_path));
+    if (raw_asset) {
         // Raw asset: stage it under its upstream basename, no extraction (#361).
         printOut(lib_io, "==> Staging raw asset...\n", .{});
         var staged_buf: [1024]u8 = undefined;
