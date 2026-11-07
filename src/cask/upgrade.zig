@@ -259,7 +259,8 @@ fn run(a: std.mem.Allocator, io: std.Io, cask: Cask, locations: Locations, db: *
         try std.Io.Dir.symLinkAbsolute(io, source, journal.steps[step_index].staged, .{});
         step_index += 1;
     };
-    try db.recordCaskInstall(requested, cask.token, cask.version, cask.sha256, apps, bins);
+    // Staged upgrades never touch fonts, so the old record keeps owning them.
+    try db.recordCaskInstall(requested, cask.token, cask.version, cask.sha256, apps, bins, if (db.findCask(requested)) |old| old.fonts else &.{});
     try hooks.check(.database, journal.steps.len - 1);
     try db.writeSnapshot(journal.steps[journal.steps.len - 1].staged);
     for (journal.steps) |step| if (!step.remove_only) try syncTree(a, io, step.staged);

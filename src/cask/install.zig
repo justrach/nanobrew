@@ -706,6 +706,7 @@ pub fn removeCask(
     version: []const u8,
     apps: []const []const u8,
     binaries: []const []const u8,
+    fonts: []const []const u8,
 ) !void {
     const lib_io = io;
     const safe_token = filesystemToken(token) orelse return error.UnsafeToken;
@@ -713,13 +714,21 @@ pub fn removeCask(
     // 1. Delete apps from /Applications/
     try removeAppsIn(lib_io, "/Applications", apps);
 
+    // 2. Delete the recorded fonts from ~/Library/Fonts/ (installCask put them there)
+    if (fonts.len > 0) {
+        const home = std.c.getenv("HOME") orelse return error.HomeNotSet;
+        var fonts_dir_buf: [1024]u8 = undefined;
+        const fonts_dir = std.fmt.bufPrint(&fonts_dir_buf, "{s}/Library/Fonts", .{std.mem.span(home)}) catch return error.PathTooLong;
+        try removeFontsIn(lib_io, fonts_dir, fonts);
+    }
+
     var caskroom_buf: [512]u8 = undefined;
     const ver_dir = std.fmt.bufPrint(&caskroom_buf, "{s}/Caskroom/{s}/{s}", .{ PREFIX, safe_token, version }) catch return;
 
-    // 2. Delete binary symlinks from prefix/bin/
+    // 3. Delete binary symlinks from prefix/bin/
     removeBinariesIn(lib_io, PREFIX ++ "/bin", ver_dir, "/Applications", apps, binaries);
 
-    // 3. Delete Caskroom entry
+    // 4. Delete Caskroom entry
     std.Io.Dir.cwd().deleteTree(lib_io, ver_dir) catch {};
 
     // Try to remove parent dir if empty
@@ -760,6 +769,29 @@ fn removeBinariesIn(io: std.Io, bin_dir: []const u8, payload: []const u8, applic
             std.Io.File.stderr().writeStreamingAll(io, _m) catch {};
         } else |_| {}
     }
+}
+
+/// Delete only the font files the cask record lists, then fail if any is still
+/// there so the caller keeps the cask record (and Caskroom) for a retry.
+fn removeFontsIn(io: std.Io, fonts_dir: []const u8, fonts: []const []const u8) !void {
+    var failed = false;
+    for (fonts) |font| {
+        // Records hold basenames; never follow one out of the fonts dir.
+        if (font.len == 0 or std.mem.eql(u8, font, ".") or std.mem.eql(u8, font, "..") or
+            std.mem.indexOfAny(u8, font, "/\x00") != null) continue;
+        var buf: [1024]u8 = undefined;
+        const path = std.fmt.bufPrint(&buf, "{s}/{s}", .{ fonts_dir, font }) catch continue;
+        std.Io.Dir.cwd().deleteFile(io, path) catch |err| switch (err) {
+            error.FileNotFound => {},
+            else => {
+                var _b: [1024]u8 = undefined;
+                const _m = std.fmt.bufPrint(&_b, "nb: could not remove font {s}: {}\n", .{ path, err }) catch "nb: could not remove font\n";
+                std.Io.File.stderr().writeStreamingAll(io, _m) catch {};
+                failed = true;
+            },
+        };
+    }
+    if (failed) return error.FontRemovalFailed;
 }
 
 fn downloadArtifact(alloc: std.mem.Allocator, io: std.Io, url: []const u8, dest: []const u8, cask: Cask) !bool {
@@ -1930,4 +1962,28 @@ test "removeBinariesIn keeps recorded binary links the cask does not own" {
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "bin/tool", .{ .follow_symlinks = false }));
     try std.testing.expectError(error.FileNotFound, tmp.dir.statFile(io, "bin/tool-app", .{ .follow_symlinks = false }));
     _ = try tmp.dir.statFile(io, "bin/mono", .{ .follow_symlinks = false });
+}
+
+test "removeFontsIn deletes only recorded fonts inside the fonts dir" {
+    const io = std.testing.io;
+    var tmp_dir = std.testing.tmpDir(.{});
+    defer tmp_dir.cleanup();
+
+    try tmp_dir.dir.createDirPath(io, "Fonts");
+    for ([_][]const u8{ "Fonts/FiraCode-Regular.ttf", "Fonts/FiraCode-Bold.ttf", "Fonts/FiraCode-Light.ttf", "Fonts/UserFont.ttf", "outside.ttf" }) |name| {
+        try tmp_dir.dir.writeFile(io, .{ .sub_path = name, .data = "font" });
+    }
+    var fonts_buf: [std.fs.max_path_bytes:0]u8 = undefined;
+    const fonts_dir = try std.fmt.bufPrintZ(&fonts_buf, ".zig-cache/tmp/{s}/Fonts", .{tmp_dir.sub_path[0..]});
+
+    try removeFontsIn(io, fonts_dir, &.{ "FiraCode-Regular.ttf", "FiraCode-Bold.ttf", "Missing.ttf", "../outside.ttf", ".." });
+    try std.testing.expectError(error.FileNotFound, tmp_dir.dir.access(io, "Fonts/FiraCode-Regular.ttf", .{}));
+    try std.testing.expectError(error.FileNotFound, tmp_dir.dir.access(io, "Fonts/FiraCode-Bold.ttf", .{}));
+    try tmp_dir.dir.access(io, "Fonts/UserFont.ttf", .{});
+    try tmp_dir.dir.access(io, "outside.ttf", .{});
+
+    // A font that cannot be deleted keeps the cask record for a retry.
+    _ = std.c.chmod(fonts_dir, 0o555);
+    defer _ = std.c.chmod(fonts_dir, 0o755);
+    try std.testing.expectError(error.FontRemovalFailed, removeFontsIn(io, fonts_dir, &.{"FiraCode-Light.ttf"}));
 }
