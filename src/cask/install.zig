@@ -626,6 +626,7 @@ pub fn stageUpgradeArchive(alloc: std.mem.Allocator, io: std.Io, cask: Cask, dir
     }
     try std.Io.Dir.createDirAbsolute(io, directory, .default_dir);
     switch (cask.downloadFormat()) {
+        .dmg => try stageDmg(alloc, io, cask, directory, download),
         .zip => try extractZip(alloc, io, download, directory),
         .tar_gz => try extractTarGz(alloc, io, download, directory),
         .tar_xz => try extractTarXz(alloc, io, download, directory),
@@ -642,6 +643,74 @@ pub fn stageUpgradeArchive(alloc: std.mem.Allocator, io: std.Io, cask: Cask, dir
     for (cask.artifacts) |art| if (art == .binary and !std.mem.startsWith(u8, art.binary.source, "$APPDIR/")) {
         try prepareStagedBinary(io, directory, art.binary.source);
     };
+}
+
+extern "c" fn mkdtemp(template: [*:0]u8) ?[*:0]u8;
+
+/// `hdiutil detach -force` can still fail while the system briefly holds the
+/// fresh volume (seen on CI runners); a failed detach used to be ignored and
+/// left the image attached. Retry, then tell the user how to finish it.
+fn detachStagedDmg(alloc: std.mem.Allocator, io: std.Io, volume: []const u8) void {
+    var attempt: i64 = 0;
+    while (attempt < 4) : (attempt += 1) {
+        if (attempt > 0) std.Io.sleep(io, .fromMilliseconds(500 * attempt), .awake) catch {};
+        if (commandSucceeded(alloc, io, &.{ "hdiutil", "detach", "-force", "-quiet", volume })) return;
+    }
+    var buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+    const msg = std.fmt.bufPrint(&buf, "nb: warning: could not detach the disk image at {s}; run `hdiutil detach -force {s}`\n", .{ volume, volume }) catch return;
+    std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
+}
+
+/// Like installCask, take only the declared artifacts out of the image.
+fn stageDmg(alloc: std.mem.Allocator, io: std.Io, cask: Cask, directory: []const u8, download: []const u8) !void {
+    clearQuarantineIfPresent(alloc, io, download, false);
+    // Private mount point outside the journal: if this process dies while
+    // mounted, recovery never has to delete a read-only volume.
+    var template = "/tmp/nb-dmg-XXXXXX".*;
+    const volume = std.mem.span(mkdtemp(&template) orelse return error.MountFailed);
+    defer std.Io.Dir.deleteDirAbsolute(io, volume) catch {};
+    // Synchronous, so the mount point can be removed; the copies are complete.
+    // Registered before attach so a partly failed attach is also undone.
+    defer detachStagedDmg(alloc, io, volume);
+    if (!commandSucceeded(alloc, io, &.{ "hdiutil", "attach", "-nobrowse", "-noautoopen", "-noverify", "-noautofsck", "-readonly", "-mountpoint", volume, download }))
+        return error.MountFailed;
+    for (cask.artifacts) |art| if (art == .app) {
+        if (!std.mem.endsWith(u8, art.app, ".app")) return error.ArtifactFailed;
+        try copyFromVolume(alloc, io, volume, directory, art.app);
+    };
+    // After the apps: a binary inside a bundle must not pre-create that bundle.
+    for (cask.artifacts) |art| if (art == .binary and !std.mem.startsWith(u8, art.binary.source, "$APPDIR/")) {
+        try copyFromVolume(alloc, io, volume, directory, art.binary.source);
+    };
+}
+
+fn copyFromVolume(alloc: std.mem.Allocator, io: std.Io, volume: []const u8, directory: []const u8, relative: []const u8) !void {
+    if (!safeRelativePath(relative)) return error.ArtifactFailed;
+    const source = try std.fs.path.join(alloc, &.{ volume, relative });
+    defer alloc.free(source);
+    std.Io.Dir.accessAbsolute(io, source, .{}) catch return error.ArtifactFailed;
+    // The image's own symlinks must not lead the copy out of the volume
+    // (for example `dir -> /Applications` with an artifact `dir/Other.app`).
+    var source_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const source_len = std.Io.Dir.cwd().realPathFile(io, source, &source_buf) catch return error.ArtifactFailed;
+    var volume_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const volume_len = std.Io.Dir.cwd().realPathFile(io, volume, &volume_buf) catch return error.ArtifactFailed;
+    const real_source = source_buf[0..source_len];
+    const real_volume = volume_buf[0..volume_len];
+    if (!(real_source.len > real_volume.len and std.mem.startsWith(u8, real_source, real_volume) and real_source[real_volume.len] == '/'))
+        return error.ArtifactFailed;
+    const target = try std.fs.path.join(alloc, &.{ directory, relative });
+    defer alloc.free(target);
+    try std.Io.Dir.cwd().createDirPath(io, std.fs.path.dirname(target).?);
+    // cp -R keeps code signatures and extended attributes, as installCask does.
+    if (!commandSucceeded(alloc, io, &.{ "/bin/cp", "-R", source, target })) return error.ArtifactFailed;
+}
+
+fn commandSucceeded(alloc: std.mem.Allocator, io: std.Io, argv: []const []const u8) bool {
+    const result = std.process.run(alloc, io, .{ .argv = argv }) catch return false;
+    alloc.free(result.stdout);
+    alloc.free(result.stderr);
+    return result.term == .exited and result.term.exited == 0;
 }
 
 pub fn removeCask(
