@@ -4,6 +4,7 @@ No network access, installed packages, or production database are used.
 """
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import shutil
@@ -15,7 +16,7 @@ import zipfile
 fixture = str(pathlib.Path(sys.argv[1]).resolve())
 
 
-def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_moves=0, foreign_removed=False):
+def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_moves=0, foreign_removed=False, detach_failures=0):
     with tempfile.TemporaryDirectory(prefix="nb-upgrade-") as temp:
         root = pathlib.Path(temp).resolve()
         old = root / "Caskroom/fixture/1.0"
@@ -101,7 +102,26 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
             metadata["sha256"] = "0" * 64
         meta = root / "cask.json"
         meta.write_text(json.dumps(metadata))
-        result = subprocess.run([fixture, str(root), str(blob), str(meta), fault], capture_output=True, text=True)
+        env = None
+        if detach_failures:
+            # The first `hdiutil detach` calls fail, as when the system still
+            # holds the fresh volume; staging must retry instead of leaving
+            # the image attached.
+            shim = root / "shim"
+            shim.mkdir()
+            (shim / "hdiutil").write_text(
+                '#!/bin/sh\n'
+                'if [ "$1" = detach ]; then\n'
+                f'  n=$(cat "{root}/detach-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "{root}/detach-calls"\n'
+                f'  [ $n -le {detach_failures} ] && exit 16\n'
+                'fi\n'
+                'exec /usr/bin/hdiutil "$@"\n')
+            (shim / "hdiutil").chmod(0o755)
+            env = dict(os.environ, PATH=f"{shim}:{os.environ['PATH']}")
+        result = subprocess.run([fixture, str(root), str(blob), str(meta), fault], capture_output=True, text=True, env=env)
+        if detach_failures:
+            assert int((root / "detach-calls").read_text()) == detach_failures + 1, result.stderr
+            assert "could not detach" not in result.stderr, result.stderr
         success = fault in ("none", "crash-committed-0", "fail-committed-0") and bad is None
         if fault.startswith("crash-"):
             assert result.returncode == 75, result.stderr
@@ -189,7 +209,8 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
         if fmt == "dmg":
             assert str(blob) not in subprocess.check_output(["hdiutil", "info"], text=True), "image still attached"
             assert not list(pathlib.Path("/tmp").glob("nb-dmg-*")), "private mount point left behind"
-        print("PASS", fmt, fault, bad or "", activation_moves, rollback_moves, "foreign-removed" if foreign_removed else "", flush=True)
+        print("PASS", fmt, fault, bad or "", activation_moves, rollback_moves, "foreign-removed" if foreign_removed else "",
+              f"detach-failures={detach_failures}" if detach_failures else "", flush=True)
 
 
 for fmt in ("tar.gz", "tar.xz", "zip", "binary"):
@@ -199,6 +220,8 @@ if sys.platform == "darwin":  # hdiutil builds and mounts the image
         run_case(fault, fmt="dmg")
     run_case(fmt="dmg", bad="missing-source")
     run_case(fmt="dmg", bad="volume-escape")
+    run_case(fmt="dmg", detach_failures=2)
+    run_case(fmt="dmg", bad="volume-escape", detach_failures=1)
 run_case(foreign_removed=True)
 for bad in ("missing-source", "checksum", "foreign-link", "foreign-app", "external-installer"):
     run_case(bad=bad)
