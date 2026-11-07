@@ -4,6 +4,10 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+### Added
+- `--json` on `nb list`, `nb outdated` (also with `--cask`, `--deb`, `--versions` and package names), `nb info` (formula and `--cask`), `nb search`, `nb leaves [--tree]`, `nb deps [--tree]`, `nb services list` and `nb where` prints one schema-1 JSON document instead of text. `nb outdated --json` also reports whether `nb upgrade` can replace each package and, when it cannot, the reason it would print. `nb upgrade --cask` and `nb outdated` accept an installed tap cask by its short name (`nanobrew-ui` for `Rex57/tap/nanobrew-ui`) when no other installed tap cask shares it. The text output is unchanged. See `docs/json-output.md`. Requested by @Rex57. (#495)
+- `nb upgrade --cask` upgrades DMG casks through the same staged, journaled transaction as zip and tar casks, so they are no longer skipped with "this download format does not support staged upgrades yet". The verified image is attached read-only at a private mount point. Only the declared `app` artifacts and relative binary sources are copied out (a symlink in the image that leads outside the volume is refused), and the image is detached before activation. If nb is killed while the image is attached, it stays mounted under `/tmp/nb-dmg-*` until it is detached or the Mac restarts; recovery does not depend on it. Proposed and first implemented by @Rex57. (#491)
+
 ### Fixed
 - `nb install --shims` links its dependencies' `lib`, `include`, `share` and `etc` into the prefix again. Only their executables stay out of `prefix/bin`, as documented. Since v0.1.203 the fast linker removed every link of a private dependency. (#435)
 
@@ -11,6 +15,8 @@ All notable changes to nanobrew are documented here.
 - `nb upgrade fortune` across a revision bump (for example `9708` -> `9708_1`) no longer deletes the new `bin/fortune` link. The old keg's unlink step now removes the link only when it points at that keg's own wrapper. (#443)
 
 ### Fixed
+- When several APT sources list the same package, `nb install --deb`, `nb outdated` and deb upgrades now use the newest version (dpkg ordering), as APT does with default priorities, and the first source listed on a tie. Before, the source listed last won, so on stock Ubuntu `-security` could hide a newer `-updates` build. Pin priorities are still not read. Reported by @Rex57. (#457)
+- The database load warnings (too large, read failed, parse failed) now name the file that was opened instead of always `/opt/nanobrew/db/state.json`, so a corrupt temporary or test database no longer reports the real one as corrupt. Reported by @Rex57. (#473)
 - `nb switch` with several specs now saves the new version of each package that switched, even when another spec fails. Before, `state.json` kept the old version while the links pointed at the new keg. (#475)
 - `nb install name@version` now saves the pin even when another package in the same command fails. "Pinned" prints only when the pin was written. A pinned package whose own install failed is not pinned at its older keg. (#429)
 - `nb install`/`nb upgrade` no longer replace a pinned formula that is pulled in as a dependency, whether by a newer version or a rebuilt bottle. They keep the pinned keg, its links and its database record, and print a note. An explicit `name@version` request still overrides the pin. (#439)
