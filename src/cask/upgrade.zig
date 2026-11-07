@@ -31,7 +31,7 @@ fn relative(s: []const u8) bool {
 pub fn unsupportedReason(cask: Cask) ?[]const u8 {
     if (builtin.os.tag != .macos) return "casks require macOS";
     switch (cask.downloadFormat()) {
-        .zip, .tar_gz, .tar_xz, .binary => {},
+        .dmg, .zip, .tar_gz, .tar_xz, .binary => {},
         .pkg, .shell_script => return "external installers cannot be rolled back",
         else => return "this download format does not support staged upgrades yet",
     }
@@ -225,8 +225,17 @@ fn run(a: std.mem.Allocator, io: std.Io, cask: Cask, locations: Locations, db: *
         try requireWithin(io, source, payload.staged);
         const app_stat = try std.Io.Dir.cwd().statFile(io, source, .{ .follow_symlinks = false });
         if (app_stat.kind != .directory) return error.ArtifactFailed;
-        const result = try std.process.run(a, io, .{ .argv = &.{ "/bin/cp", "-R", source, journal.steps[step_index].staged } });
-        if (result.term != .exited or result.term.exited != 0) return error.ArtifactFailed;
+        // A DMG payload holds only artifacts, so its app copy has no other use;
+        // a fresh DMG install keeps none either. Keep it if a binary points in.
+        const keep = for (cask.artifacts) |other| {
+            if (other == .binary and within(other.binary.source, art.app)) break true;
+        } else false;
+        const moved = cask.downloadFormat() == .dmg and !keep and
+            if (std.Io.Dir.renameAbsolute(source, journal.steps[step_index].staged, io)) |_| true else |_| false;
+        if (!moved) {
+            const result = try std.process.run(a, io, .{ .argv = &.{ "/bin/cp", "-R", source, journal.steps[step_index].staged } });
+            if (result.term != .exited or result.term.exited != 0) return error.ArtifactFailed;
+        }
         step_index += 1;
     };
     for (cask.artifacts) |art| if (art == .binary) {
