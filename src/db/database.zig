@@ -9,6 +9,23 @@ const paths = @import("../platform/paths.zig");
 
 const DB_PATH = paths.DB_PATH;
 
+const LoadProblem = enum { too_large, read, parse };
+
+/// The load warning for the file that was opened, not the default path (#473).
+fn loadWarning(buf: []u8, problem: LoadProblem, path: []const u8) []const u8 {
+    const text = switch (problem) {
+        .too_large => "warning: nanobrew database is too large to load; it will not be modified: ",
+        .read => "warning: nanobrew database read failed; it will not be modified: ",
+        .parse => "warning: nanobrew database parse failed; it will not be modified until repaired or removed: ",
+    };
+    return std.fmt.bufPrint(buf, "{s}{s}\n", .{ text, path }) catch text;
+}
+
+fn warnLoad(problem: LoadProblem, path: []const u8) void {
+    var buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+    std.Io.File.stderr().writeStreamingAll(paths.safe_io, loadWarning(&buf, problem, path)) catch {};
+}
+
 pub const Keg = struct {
     name: []const u8,
     version: []const u8,
@@ -102,7 +119,7 @@ pub const Database = struct {
         const st = file.stat(lib_io) catch return db;
         db.loaded_mtime_ns = st.mtime.nanoseconds;
         if (st.size > max_state_bytes) {
-            std.Io.File.stderr().writeStreamingAll(paths.safe_io, "warning: nanobrew database is too large to load; it will not be modified: " ++ DB_PATH ++ "\n") catch {};
+            warnLoad(.too_large, path);
             db.unreadable = true;
             return db;
         }
@@ -112,7 +129,7 @@ pub const Database = struct {
         };
         const n_read = file.readPositionalAll(lib_io, contents, 0) catch {
             alloc.free(contents);
-            std.Io.File.stderr().writeStreamingAll(paths.safe_io, "warning: nanobrew database read failed; it will not be modified: " ++ DB_PATH ++ "\n") catch {};
+            warnLoad(.read, path);
             db.unreadable = true;
             return db;
         };
@@ -121,7 +138,7 @@ pub const Database = struct {
         if (data.len == 0) return db;
 
         const parsed = std.json.parseFromSlice(std.json.Value, alloc, data, .{}) catch {
-            std.Io.File.stderr().writeStreamingAll(paths.safe_io, "warning: nanobrew database parse failed; it will not be modified until repaired or removed: " ++ DB_PATH ++ "\n") catch {};
+            warnLoad(.parse, path);
             db.unreadable = true;
             return db;
         };
@@ -1250,4 +1267,14 @@ test "lookupCask resolves only unambiguous tap short names (#495)" {
     try testing.expectEqual(@as(usize, 2), db.lookupCask("nanobrew-ui").ambiguous);
     // An exact token still wins over the ambiguous short name.
     try testing.expectEqualStrings("someone/apps/nanobrew-ui", db.lookupCask("someone/apps/nanobrew-ui").found.token);
+}
+
+test "database load warnings name the file that was opened (#473)" {
+    var buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "warning: nanobrew database parse failed; it will not be modified until repaired or removed: /tmp/other.json\n",
+        loadWarning(&buf, .parse, "/tmp/other.json"),
+    );
+    try std.testing.expect(std.mem.endsWith(u8, loadWarning(&buf, .read, "/x/state.json"), "will not be modified: /x/state.json\n"));
+    try std.testing.expect(std.mem.endsWith(u8, loadWarning(&buf, .too_large, "/y.json"), "/y.json\n"));
 }
