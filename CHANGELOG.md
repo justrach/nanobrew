@@ -5,6 +5,7 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Fixed
+- The database load warnings (too large, read failed, parse failed) now name the file that was opened instead of always `/opt/nanobrew/db/state.json`, so a corrupt temporary or test database no longer reports the real one as corrupt. Reported by @Rex57. (#473)
 - `nb switch` with several specs now saves the new version of each package that switched, even when another spec fails. Before, `state.json` kept the old version while the links pointed at the new keg. (#475)
 - `nb install name@version` now saves the pin even when another package in the same command fails. "Pinned" prints only when the pin was written. A pinned package whose own install failed is not pinned at its older keg. (#429)
 - `nb install`/`nb upgrade` no longer replace a pinned formula that is pulled in as a dependency, whether by a newer version or a rebuilt bottle. They keep the pinned keg, its links and its database record, and print a note. An explicit `name@version` request still overrides the pin. (#439)
