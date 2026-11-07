@@ -5451,7 +5451,14 @@ fn runSwitch(alloc: std.mem.Allocator, args: []const []const u8) void {
         db.recordInstall(name, prev.version, prev.sha256) catch {};
         stdout.print("==> Switched {s} to {s} (previous version kept in the Cellar; `nb cleanup` prunes it)\n", .{ name, prev.version }) catch {};
     }
-    if (had_error) std.process.exit(1);
+    if (had_error) {
+        // process.exit skips the deferred close: keep the records of the
+        // packages that did switch.
+        db.flush() catch |err| {
+            stderr.print("nb: WARNING: failed to save package database: {}\n", .{err}) catch {};
+        };
+        std.process.exit(1);
+    }
 }
 // ── nb link / nb unlink ──
 //
