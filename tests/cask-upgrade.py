@@ -59,6 +59,11 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
             with zipfile.ZipFile(blob, "w") as z:
                 for p in payload.rglob("*"):
                     z.write(p, p.relative_to(payload))
+        elif fmt == "dmg":
+            if bad == "volume-escape":
+                (payload / "escape").symlink_to(root / "outside")
+            subprocess.run(["hdiutil", "create", "-quiet", "-srcfolder", payload, "-format", "UDZO",
+                            "-volname", "Fixture", blob], check=True)
         else:
             with tarfile.open(blob, "w:" + ("gz" if fmt == "tar.gz" else "xz")) as t:
                 for p in payload.iterdir():
@@ -73,6 +78,11 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
             artifacts = [{"binary": {"source": "fixture", "target": "fixture"}}]
         if bad == "missing-source":
             artifacts[1]["binary"]["source"] = "dist/missing"
+        if bad == "volume-escape":
+            # A symlink inside the image must not lead staging out of the volume.
+            (root / "outside").mkdir()
+            (root / "outside/cli").write_text("#!/bin/sh\necho outside\n")
+            artifacts[1]["binary"]["source"] = "escape/cli"
         if bad == "external-installer":
             artifacts.append({"pkg": "Installer.pkg"})
         if bad == "foreign-link":
@@ -144,8 +154,12 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
                 assert not (root / "bin/app-tool").is_symlink()
             else:
                 assert (root / "bin/fixture").resolve() == new / "dist/bin/cli"
-                assert subprocess.check_output([str((root / "bin/fixture").resolve())], text=True) == "new"
-                assert (new / "dist/helper").read_text() == "new"
+                if fmt == "dmg":
+                    # As in a fresh DMG install, only artifacts leave the image; the app is moved, not copied.
+                    assert not (new / "dist/companion").exists() and not (new / "Fixture.app").exists()
+                else:
+                    assert subprocess.check_output([str((root / "bin/fixture").resolve())], text=True) == "new"
+                    assert (new / "dist/helper").read_text() == "new"
                 assert subprocess.check_output([str(root / "bin/app-tool")], text=True) == "new-app\n"
             if foreign_removed:
                 assert (root / "bin/retired").readlink() == pathlib.Path("/usr/bin/true")
@@ -172,11 +186,19 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
                 assert (apps / "Foreign.app/keep").read_text() == "foreign"
         assert not (root / "transaction").exists()
         assert not list(root.rglob("*.nb-upgrade-*"))
+        if fmt == "dmg":
+            assert str(blob) not in subprocess.check_output(["hdiutil", "info"], text=True), "image still attached"
+            assert not list(pathlib.Path("/tmp").glob("nb-dmg-*")), "private mount point left behind"
         print("PASS", fmt, fault, bad or "", activation_moves, rollback_moves, "foreign-removed" if foreign_removed else "", flush=True)
 
 
 for fmt in ("tar.gz", "tar.xz", "zip", "binary"):
     run_case(fmt=fmt)
+if sys.platform == "darwin":  # hdiutil builds and mounts the image
+    for fault in ("none", "fail-staged-0", "crash-staged-0", "fail-activated-1", "crash-activated-7"):
+        run_case(fault, fmt="dmg")
+    run_case(fmt="dmg", bad="missing-source")
+    run_case(fmt="dmg", bad="volume-escape")
 run_case(foreign_removed=True)
 for bad in ("missing-source", "checksum", "foreign-link", "foreign-app", "external-installer"):
     run_case(bad=bad)
