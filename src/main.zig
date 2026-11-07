@@ -161,13 +161,29 @@ const ROOT = paths.ROOT;
 const PREFIX = paths.PREFIX;
 const VERSION = "0.1.215";
 
-fn acquireCommandLock() !?std.Io.File {
+/// Which operation lock a command takes. Commands that only read installed
+/// state share the lock, so one slow read (for example `nb outdated` on a bad
+/// network) no longer blocks the other reads (#503). They still wait for, and
+/// block, every command that changes state, which keep the exclusive lock.
+const CommandLock = enum { none, shared, exclusive };
+
+fn commandLock(cmd: Command, args: []const []const u8) CommandLock {
+    return switch (cmd) {
+        // Autoupdate dispatches child nb processes, which lock for themselves.
+        .help, .version, .completions, .autoupdate => .none,
+        .list, .leaves, .info, .search, .where, .outdated, .deps => .shared,
+        .services => if (args.len == 0 or std.mem.eql(u8, args[0], "list")) .shared else .exclusive,
+        else => .exclusive,
+    };
+}
+
+fn acquireCommandLock(mode: std.Io.File.Lock) !?std.Io.File {
     const path = paths.DB_PATH ++ ".operation.lock";
-    // Advisory exclusive locks do not require a writable descriptor. Opening
-    // an existing lock read-only keeps list/info usable after a sudo command.
-    return std.Io.Dir.openFileAbsolute(g_io, path, .{ .lock = .exclusive }) catch |err| {
+    // Advisory locks do not require a writable descriptor. Opening an
+    // existing lock read-only keeps list/info usable after a sudo command.
+    return std.Io.Dir.openFileAbsolute(g_io, path, .{ .lock = mode }) catch |err| {
         if (err != error.FileNotFound) return err;
-        return std.Io.Dir.createFileAbsolute(g_io, path, .{ .truncate = false, .lock = .exclusive }) catch |create_err| {
+        return std.Io.Dir.createFileAbsolute(g_io, path, .{ .truncate = false, .lock = mode }) catch |create_err| {
             if (create_err == error.FileNotFound) return null; // before nb init
             return create_err;
         };
@@ -175,13 +191,16 @@ fn acquireCommandLock() !?std.Io.File {
 }
 
 pub fn main(init: std.process.Init) !void {
-    g_io = init.io;
+    // Bound every std.http.Client TCP connect (30 s, cancelable), like the
+    // curl transport's connect-timeout (#503).
+    const io = nb.connect.withConnectTimeout(init.io);
+    g_io = io;
     // Publish a process-wide threadsafe Io for code paths called from
     // worker threads (downloader workers, api/client cache writers,
     // leaves/outdated checkers, etc.) that previously hit
     // `paths.safe_io` and crashed under
     // concurrent use. See paths.zig for the full rationale.
-    paths.safe_io = init.io;
+    paths.safe_io = io;
     nb.proxy.environment = init.environ_map;
     const alloc = init.gpa;
 
@@ -204,11 +223,22 @@ pub fn main(init: std.process.Init) !void {
     // Serialize commands that can inspect or mutate installed state while a
     // multi-path cask activation is in flight. Autoupdate dispatches child nb
     // processes, which acquire the lock themselves.
-    const command_lock: ?std.Io.File = if (cmd == .help or cmd == .version or cmd == .completions or cmd == .autoupdate)
-        null
-    else
-        try acquireCommandLock();
+    const lock_kind = commandLock(cmd, args[2..]);
+    var command_lock: ?std.Io.File = switch (lock_kind) {
+        .none => null,
+        .shared => try acquireCommandLock(.shared),
+        .exclusive => try acquireCommandLock(.exclusive),
+    };
     defer if (command_lock) |lock| lock.close(g_io);
+    // Recovering an interrupted cask upgrade changes state, so a reader that
+    // finds a journal trades its shared lock for the exclusive one first.
+    if (lock_kind == .shared and command_lock != null and
+        (nb.cask_upgrade.journalExists(g_io, .{}) catch true))
+    {
+        command_lock.?.close(g_io);
+        command_lock = null;
+        command_lock = try acquireCommandLock(.exclusive);
+    }
     if (command_lock != null) {
         _ = nb.cask_upgrade.recover(alloc, g_io, .{}) catch |err| {
             const stderr = StderrWriter{};
@@ -589,12 +619,11 @@ fn runLocalRbInstall(alloc: std.mem.Allocator, path: []const u8) void {
     var had_error = std.atomic.Value(bool).init(false);
     var phase = std.atomic.Value(u8).init(@intFromEnum(Phase.waiting));
     var fail_reason: ?[]const u8 = null;
-    var probe_result: ProbeResult = .not_run;
     const local_formulae = [_]nb.formula.Formula{f};
     const local_requested = [_][]const u8{f.name};
     // Single-formula path: no batch sharing benefit — pass nulls so the
     // worker creates its own one-shot client (existing behavior).
-    fullInstallOne(alloc, f, &had_error, &phase, &fail_reason, &probe_result, false, &local_requested, &local_formulae, null, null);
+    fullInstallOne(alloc, f, &had_error, &phase, &fail_reason, false, &local_requested, &local_formulae, null, null);
 
     if (had_error.load(.acquire)) {
         if (fail_reason) |why| {
@@ -604,6 +633,7 @@ fn runLocalRbInstall(alloc: std.mem.Allocator, path: []const u8) void {
         }
         std.process.exit(1);
     }
+    const probe_result = finishFormulaInstall(alloc, f);
 
     // Record in the database so `nb list` sees it.
     var db = nb.database.Database.open(alloc) catch {
@@ -778,12 +808,23 @@ fn resolveVersionPin(
     return base;
 }
 
+fn containsName(names: []const []const u8, name: []const u8) bool {
+    for (names) |n| if (std.mem.eql(u8, n, name)) return true;
+    return false;
+}
+
 fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: bool) void {
+    if (!installFormulae(alloc, args, reinstall)) std.process.exit(1);
+}
+
+/// Returns false where `nb install` must exit 1. `nb upgrade` calls this
+/// directly so one failed keg does not stop the remaining upgrades (#445).
+fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall: bool) bool {
     const stderr = StderrWriter{};
 
     g_min_trust = trust.minTrust(alloc) catch |err| {
         stderr.print("nb: invalid trust configuration: {}\n", .{err}) catch {};
-        std.process.exit(1);
+        return false;
     };
     // Check for --cask, --deb, --repo, --skip-postinst, --no-verify, and --shims flags
     var is_cask = false;
@@ -816,7 +857,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
             use_shims = true;
         } else if (arg.len > 0 and arg[0] == '-') {
             stderr.print("nb: unknown flag '{s}'\n", .{arg}) catch {};
-            std.process.exit(1);
+            return false;
         } else {
             formulae.append(alloc, arg) catch {};
         }
@@ -824,7 +865,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
 
     if (formulae.items.len == 0) {
         stderr.print("nb: no formulae specified\n", .{}) catch {};
-        std.process.exit(1);
+        return false;
     }
 
     // Local .rb formula install (#225). Detect a filesystem path that points
@@ -840,10 +881,10 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
             if (exists) {
                 if (g_min_trust > 0) {
                     stderr.print("nb: trust gating is unavailable for local Ruby installs\n", .{}) catch {};
-                    std.process.exit(1);
+                    return false;
                 }
                 runLocalRbInstall(alloc, arg);
-                return;
+                return true;
             }
         }
     }
@@ -852,25 +893,25 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
     for (formulae.items) |name| {
         if (!isPackageNameSafe(name)) {
             stderr.print("nb: refusing to install package with unsafe name: {s}\n", .{name}) catch {};
-            std.process.exit(1);
+            return false;
         }
     }
 
     if (is_deb) {
         if (g_min_trust > 0) {
             stderr.print("nb: trust gating is unavailable for deb installs\n", .{}) catch {};
-            std.process.exit(1);
+            return false;
         }
         runDebInstall(alloc, formulae.items, repo_spec, .{
             .skip_postinst = skip_postinst,
             .no_verify = no_verify,
         });
-        return;
+        return true;
     }
 
     if (is_cask) {
         runCaskInstall(alloc, formulae.items);
-        return;
+        return true;
     }
 
     // Homebrew accepts `brew install owner/tap/token` for tap casks as well
@@ -878,7 +919,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
     // has no formula and does have a cask, route it through the cask installer.
     if (formulae.items.len == 1 and tapInstallShouldUseCask(alloc, formulae.items[0])) {
         runCaskInstall(alloc, formulae.items);
-        return;
+        return true;
     }
 
     const stdout = StdoutWriter{};
@@ -910,17 +951,17 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
             const good = if (evidence) |d| d.value.newestPassing(base, .formula, trust.platform(), trust.timestamp()) else null;
             if (good == null) {
                 stderr.print("nb: no fresh signed install evidence for {s} on {s}\n", .{ base, trust.platform() }) catch {};
-                std.process.exit(1);
+                return false;
             }
             trust.rejectRevoked(alloc, good.?.*) catch {
                 stderr.print("nb: trusted candidate is revoked\n", .{}) catch {};
-                std.process.exit(1);
+                return false;
             };
             const f = good.?.toFormula(alloc) catch {
-                std.process.exit(1);
+                return false;
             };
             resolver.addResolved(f) catch {
-                std.process.exit(1);
+                return false;
             };
             formulae.items[i] = base;
             pinned_names.append(alloc, base) catch {};
@@ -933,7 +974,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
         }
         roots.append(alloc, name) catch {
             stderr.print("nb: failed to queue '{s}' for resolution\n", .{name}) catch {};
-            std.process.exit(1);
+            return false;
         };
     }
     resolver.resolveMany(roots.items) catch |err| {
@@ -942,7 +983,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
         } else {
             stderr.print("nb: dependency resolution failed: {}\n", .{err}) catch {};
         }
-        std.process.exit(1);
+        return false;
     };
 
     // Verify all requested formulas were actually found (#68)
@@ -955,7 +996,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
                 any_missing = true;
             }
         }
-        if (any_missing) std.process.exit(1);
+        if (any_missing) return false;
     }
 
     const resolve_ms = @as(f64, @floatFromInt(phase_timer.read())) / 1_000_000.0;
@@ -967,7 +1008,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
         } else {
             stderr.print("nb: warning: dependency resolution failed for '{s}': {}, skipping\n", .{ formulae.items[0], err }) catch {};
         }
-        return;
+        return true;
     };
     defer alloc.free(all_formulae);
     var filter_db: ?nb.database.Database = nb.database.Database.open(alloc) catch null;
@@ -977,7 +1018,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
             for (f.dependencies) |dep| {
                 if (!resolver.hasFormula(dep)) {
                     stderr.print("nb: refusing {s}: dependency {s} has no resolved trust metadata\n", .{ f.name, dep }) catch {};
-                    std.process.exit(1);
+                    return false;
                 }
             }
             var tier = trust.formulaTier(resolver.evidence, f, trust.timestamp());
@@ -993,7 +1034,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
             if (tier < 2 and sourceVerified(alloc, f)) tier = 2;
             if (tier < g_min_trust) {
                 stderr.print("nb: refusing {s}: trust tier {d} is below required {d} (includes dependencies)\n", .{ f.name, tier, g_min_trust }) catch {};
-                std.process.exit(1);
+                return false;
             }
         }
     }
@@ -1004,6 +1045,10 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
     // Filter out already-installed packages (keg exists in Cellar)
     var to_install: std.ArrayList(nb.formula.Formula) = .empty;
     defer to_install.deinit(alloc);
+    // Pinned kegs held back below: their records must not move to the
+    // resolved version, even when an unpinned keg of it is in the Cellar.
+    var held_pins: std.ArrayList([]const u8) = .empty;
+    defer held_pins.deinit(alloc);
     for (all_formulae) |f| {
         // Reinstall replaces a named keg in place (materialize overwrites it),
         // so a failed resolve or download keeps the old keg and its DB record.
@@ -1014,50 +1059,38 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
         var expected_buf: [256]u8 = undefined;
         const expected_ver = f.effectiveVersion(&expected_buf);
         var ver_buf: [256]u8 = undefined;
-        const actual_ver = nb.cellar.detectKegVersion(f.name, expected_ver, &ver_buf) orelse expected_ver;
-        var keg_buf: [512]u8 = undefined;
-        const keg_path = std.fmt.bufPrint(&keg_buf, "/opt/nanobrew/prefix/Cellar/{s}/{s}/bin", .{ f.name, actual_ver }) catch {
-            to_install.append(alloc, f) catch {};
-            continue;
-        };
-        // Check if keg has content (bin/ dir or at least the version dir exists)
-        var check_buf: [512]u8 = undefined;
-        const ver_dir = std.fmt.bufPrint(&check_buf, "/opt/nanobrew/prefix/Cellar/{s}/{s}", .{ f.name, actual_ver }) catch {
-            to_install.append(alloc, f) catch {};
-            continue;
-        };
-        _ = keg_path;
-        if (std.Io.Dir.openDirAbsolute(g_io, ver_dir, .{})) |d| {
-            var dir = d;
-            dir.close(g_io);
-            const expected_sha = formulaArtifactSha(f);
-            var strict_identity = g_min_trust > 0;
-            for (pinned_names.items) |name| {
-                if (std.mem.eql(u8, name, f.name)) strict_identity = true;
+        const keg_ver = nb.cellar.detectKegVersion(f.name, expected_ver, &ver_buf);
+        const installed = if (filter_db) |*loaded| loaded.findKeg(f.name) else null;
+        var explicit_version = false;
+        for (pinned_names.items) |name| {
+            if (std.mem.eql(u8, name, f.name)) explicit_version = true;
+        }
+        if (keg_ver != null and (g_min_trust > 0 or explicit_version)) {
+            if (installed == null or !trust.validSha(installed.?.sha256)) {
+                stderr.print("nb: cannot certify existing unrecorded bytes for {s}; reinstall it before requiring trust\n", .{f.name}) catch {};
+                return false;
             }
-            if (strict_identity) {
-                const installed = if (filter_db) |*loaded| loaded.findKeg(f.name) else null;
-                if (installed == null or !trust.validSha(installed.?.sha256)) {
-                    stderr.print("nb: cannot certify existing unrecorded bytes for {s}; reinstall it before requiring trust\n", .{f.name}) catch {};
-                    std.process.exit(1);
+        }
+        switch (nb.database.installAction(installed, keg_ver, formulaArtifactSha(f), explicit_version)) {
+            .install => to_install.append(alloc, f) catch {},
+            .keep => if (formulaLinkNeedsRepair(f.name, keg_ver.?, use_shims, formulae.items)) {
+                linkFormulaKeg(alloc, f.name, keg_ver.?, use_shims, formulae.items, all_formulae) catch {};
+            },
+            .keep_pinned => {
+                const pinned = installed.?;
+                var pin_buf: [256]u8 = undefined;
+                // A pin whose keg left the Cellar holds nothing back.
+                if (nb.cellar.detectKegVersion(f.name, pinned.version, &pin_buf) == null) {
+                    to_install.append(alloc, f) catch {};
+                    continue;
                 }
-            }
-            const artifact_changed = if (filter_db) |*db| blk: {
-                const installed = db.findKeg(f.name) orelse break :blk false;
-                break :blk expected_sha.len > 0 and
-                    std.mem.eql(u8, installed.version, actual_ver) and
-                    installed.sha256.len > 0 and
-                    !std.mem.eql(u8, installed.sha256, expected_sha);
-            } else false;
-            if (artifact_changed) {
-                to_install.append(alloc, f) catch {};
-                continue;
-            }
-            if (formulaLinkNeedsRepair(f.name, actual_ver, use_shims, formulae.items)) {
-                linkFormulaKeg(alloc, f.name, actual_ver, use_shims, formulae.items, all_formulae) catch {};
-            }
-        } else |_| {
-            to_install.append(alloc, f) catch {};
+                if (g_min_trust > 0) {
+                    stderr.print("nb: refusing {s}: pinned {s} is not the trusted artifact; run `nb unpin {s}` first\n", .{ f.name, pinned.version, f.name }) catch {};
+                    return false;
+                }
+                held_pins.append(alloc, f.name) catch {};
+                stdout.print("==> {s} is pinned; keeping {s} (run `nb unpin {s}` to allow upgrades)\n", .{ f.name, pinned.version, f.name }) catch {};
+            },
         }
     }
     const install_order = to_install.items;
@@ -1065,12 +1098,13 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
     if (install_order.len == 0) {
         var db = nb.database.Database.open(alloc) catch {
             stderr.print("nb: warning: could not open database\n", .{}) catch {};
-            return;
+            return true;
         };
         defer db.close();
         for (all_formulae) |f| {
             var expected_buf: [256]u8 = undefined;
             const expected_ver = f.effectiveVersion(&expected_buf);
+            if (containsName(held_pins.items, f.name)) continue;
             var ver_buf6: [256]u8 = undefined;
             const actual_ver = nb.cellar.detectKegVersion(f.name, expected_ver, &ver_buf6) orelse expected_ver;
             const existing = db.findKeg(f.name);
@@ -1088,7 +1122,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
         const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
         stdout.print("==> Already installed ({d} packages up to date)\n", .{all_formulae.len}) catch {};
         stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
-        return;
+        return true;
     }
 
     // Pre-flight check: verify /opt/nanobrew is writable
@@ -1099,7 +1133,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
     } else {
         var hint_buf: [std.Io.Dir.max_path_bytes]u8 = undefined;
         stderr.print("nb: /opt/nanobrew is not writable. Run: sudo {s} init\n", .{selfExeForHint(&hint_buf)}) catch {};
-        std.process.exit(1);
+        return false;
     }
 
     // Warn before downloads when the /opt/nb short-prefix link can't be
@@ -1121,13 +1155,13 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
     const pkg_count = install_order.len;
     const install_succeeded = alloc.alloc(bool, pkg_count) catch {
         stderr.print("nb: out of memory\n", .{}) catch {};
-        std.process.exit(1);
+        return false;
     };
     defer alloc.free(install_succeeded);
     @memset(install_succeeded, false);
     const probe_results = alloc.alloc(ProbeResult, pkg_count) catch {
         stderr.print("nb: out of memory\n", .{}) catch {};
-        std.process.exit(1);
+        return false;
     };
     defer alloc.free(probe_results);
     @memset(probe_results, .not_run);
@@ -1140,7 +1174,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
         // Allocate per-package phase tracking
         const phases = alloc.alloc(std.atomic.Value(u8), pkg_count) catch {
             stderr.print("nb: out of memory\n", .{}) catch {};
-            std.process.exit(1);
+            return false;
         };
         defer alloc.free(phases);
         for (phases) |*p| p.* = std.atomic.Value(u8).init(@intFromEnum(Phase.waiting));
@@ -1148,7 +1182,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
         // Collect package names for display
         const names = alloc.alloc([]const u8, pkg_count) catch {
             stderr.print("nb: out of memory\n", .{}) catch {};
-            std.process.exit(1);
+            return false;
         };
         defer alloc.free(names);
         for (install_order, 0..) |f, idx| names[idx] = f.name;
@@ -1157,7 +1191,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
         // final summary explains *why* each package failed instead of a bare ✗.
         const reasons = alloc.alloc(?[]const u8, pkg_count) catch {
             stderr.print("nb: out of memory\n", .{}) catch {};
-            std.process.exit(1);
+            return false;
         };
         defer alloc.free(reasons);
         for (reasons) |*r| r.* = null;
@@ -1220,7 +1254,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
                 slots.items[idx].handle.join();
                 _ = slots.orderedRemove(idx);
             }
-            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error, &phases[pi], &reasons[pi], &probe_results[pi], use_shims, formulae.items, all_formulae, &shared_client, shared_ghcr_token }) catch {
+            const t = std.Thread.spawn(.{}, fullInstallOne, .{ alloc, f, &had_error, &phases[pi], &reasons[pi], use_shims, formulae.items, all_formulae, &shared_client, shared_ghcr_token }) catch {
                 reasons[pi] = "could not spawn worker thread";
                 had_error.store(true, .release);
                 phases[pi].store(@intFromEnum(Phase.failed), .release);
@@ -1244,6 +1278,13 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
         }
 
         for (slots.items) |slot| slot.handle.join();
+
+        // install_order is dependency-first, so each keg's dependencies are
+        // linked before its post-install and probe run.
+        for (install_order, 0..) |f, i| {
+            if (@as(Phase, @enumFromInt(phases[i].load(.acquire))) != .done) continue;
+            probe_results[i] = finishFormulaInstall(alloc, f);
+        }
 
         // Non-TTY: print final status for each package
         if (!is_tty) {
@@ -1291,7 +1332,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
     // therefore skipped from install_order during this run.
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: warning: could not open database\n", .{}) catch {};
-        return;
+        return true;
     };
     defer db.close();
     for (all_formulae) |f| {
@@ -1303,6 +1344,7 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
         // skipping here avoids writing phantom DB entries that later trip up
         // `nb doctor` / `nb cleanup --prune-kegs` (#311).
         const actual_ver = nb.cellar.detectKegVersion(f.name, expected_ver, &ver_buf6) orelse continue;
+        if (containsName(held_pins.items, f.name)) continue;
 
         var queued = false;
         var installed_successfully = false;
@@ -1355,6 +1397,21 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
         }
     }
 
+    // Auto-pin version-pinned installs so a later `nb upgrade` won't silently
+    // replace the explicitly chosen version. Pin before the commit: a failed
+    // batch exits below without running `defer db.close()`. A pinned package
+    // whose own install failed is dropped, so its older keg is not pinned.
+    for (install_order, 0..) |f, i| {
+        if (install_succeeded[i]) continue;
+        for (pinned_names.items, 0..) |base, p| {
+            if (std.mem.eql(u8, base, f.name)) {
+                _ = pinned_names.orderedRemove(p);
+                break;
+            }
+        }
+    }
+    for (pinned_names.items) |base| db.setPinned(base, true) catch {};
+
     // Report only after the DB commit, including failures that produced no keg.
     const persisted = if (db.flush()) |_| true else |_| false;
     for (install_order, 0..) |f, i| {
@@ -1368,19 +1425,22 @@ fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: boo
 
     nb.trust_outcome.flush();
 
-    // Auto-pin version-pinned installs so a later `nb upgrade` won't silently
-    // replace the explicitly chosen version. setPinned fails with NotFound when
-    // the install never produced a keg record — don't claim "Pinned" then.
+    // No keg record means setPinned failed with NotFound: don't claim "Pinned".
     for (pinned_names.items) |base| {
-        if (db.setPinned(base, true)) {
+        if (persisted and db.findKeg(base) != null) {
             stdout.print("==> Pinned {s} (won't be upgraded; run `nb unpin {s}` to allow upgrades)\n", .{ base, base }) catch {};
-        } else |_| {}
+        }
     }
 
     const elapsed_ns: u64 = timer.read();
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
     stdout.print("==> Done in {d:.1}ms\n", .{elapsed_ms}) catch {};
-    if (pipeline_failed) std.process.exit(1);
+    return !pipeline_failed;
+}
+
+test "installFormulae returns false on failure instead of exiting (#445)" {
+    g_io = std.testing.io;
+    try std.testing.expect(!installFormulae(std.testing.allocator, &.{"--no-such-flag"}, false));
 }
 
 /// Render live progress UI with spinners and checkmarks.
@@ -1610,7 +1670,6 @@ fn fullInstallOne(
     // Set to a short, static reason string on failure so the final summary can
     // explain *why* a package failed instead of printing a bare ✗ (#311).
     fail_reason: *?[]const u8,
-    probe_result: *ProbeResult,
     use_shims: bool,
     requested: []const []const u8,
     all_formulae: []const nb.formula.Formula,
@@ -1643,15 +1702,6 @@ fn fullInstallOne(
                 phase.store(@intFromEnum(Phase.failed), .release);
                 return;
             };
-            nb.postinstall.runPostInstall(alloc, g_io, f) catch |err| {
-                stderr.print("nb: {s}: post-install warning: {}\n", .{ f.name, err }) catch {};
-            };
-            // Cached reinstalls must still produce health evidence (#356).
-            const fast_probe_passed = probeInstalledFormula(alloc, null, f.name, expected_ver, f.install_binaries, .active);
-            probe_result.* = if (fast_probe_passed) .passed else .failed;
-            if (!fast_probe_passed) {
-                stderr.print("nb: {s}: post-install probe warning: declared binaries or linked executables missing\n", .{f.name}) catch {};
-            }
             phase.store(@intFromEnum(Phase.done), .release);
             return;
         }
@@ -1734,7 +1784,7 @@ fn fullInstallOne(
                 std.debug.print("[nb-bench] {s} materialize: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
                 bench_t = milliTimestamp();
             }
-            // Relocated snapshot found — skip steps 4/4b, go straight to link+post-install
+            // Relocated snapshot found — skip steps 4/4b, go straight to link
             phase.store(@intFromEnum(Phase.linking), .release);
             linkFormulaKeg(alloc, f.name, fv, use_shims, requested, all_formulae) catch |err| {
                 stderr.print("nb: {s}: link failed: {}\n", .{ f.name, err }) catch {};
@@ -1743,22 +1793,7 @@ fn fullInstallOne(
                 phase.store(@intFromEnum(Phase.failed), .release);
                 return;
             };
-            if (bench) {
-                std.debug.print("[nb-bench] {s} link: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
-                bench_t = milliTimestamp();
-            }
-            nb.postinstall.runPostInstall(alloc, g_io, f) catch |err| {
-                stderr.print("nb: {s}: post-install warning: {}\n", .{ f.name, err }) catch {};
-            };
-            // Cached reinstalls must still produce health evidence — a
-            // poisoned or drifted snapshot otherwise sails through with a
-            // 179ms "✓" and no probe at all (#356).
-            const fast_probe_passed = probeInstalledFormula(alloc, null, f.name, fv, f.install_binaries, .active);
-            probe_result.* = if (fast_probe_passed) .passed else .failed;
-            if (!fast_probe_passed) {
-                stderr.print("nb: {s}: post-install probe warning: declared binaries or linked executables missing\n", .{f.name}) catch {};
-            }
-            if (bench) std.debug.print("[nb-bench] {s} postinstall: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
+            if (bench) std.debug.print("[nb-bench] {s} link: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
             phase.store(@intFromEnum(Phase.done), .release);
             return;
         }
@@ -1837,23 +1872,33 @@ fn fullInstallOne(
         phase.store(@intFromEnum(Phase.failed), .release);
         return;
     };
-    if (bench) {
-        std.debug.print("[nb-bench] {s} link: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
-        bench_t = milliTimestamp();
-    }
+    if (bench) std.debug.print("[nb-bench] {s} link: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
 
-    // 6. Post-install (non-fatal)
+    phase.store(@intFromEnum(Phase.done), .release);
+}
+
+/// 6. Post-install (non-fatal) and active probe for a linked keg. Callers run
+/// it serially in dependency order after every worker has joined: a keg's
+/// binaries load their dependencies through opt/ links that only exist once
+/// those dependencies are linked. Cached reinstalls must still produce
+/// health evidence (#356).
+fn finishFormulaInstall(alloc: std.mem.Allocator, f: nb.formula.Formula) ProbeResult {
+    const stderr = StderrWriter{};
+    const bench: bool = std.c.getenv("NB_BENCH") != null;
+    const bench_t: i64 = if (bench) milliTimestamp() else 0;
     nb.postinstall.runPostInstall(alloc, g_io, f) catch |err| {
         stderr.print("nb: {s}: post-install warning: {}\n", .{ f.name, err }) catch {};
     };
-    const probe_passed = probeInstalledFormula(alloc, null, f.name, actual_ver, f.install_binaries, .active);
-    probe_result.* = if (probe_passed) .passed else .failed;
+    var expected_ver_buf: [256]u8 = undefined;
+    const expected_ver = f.effectiveVersion(&expected_ver_buf);
+    var ver_buf: [256]u8 = undefined;
+    const ver = nb.cellar.detectKegVersion(f.name, expected_ver, &ver_buf) orelse expected_ver;
+    const probe_passed = probeInstalledFormula(alloc, null, f.name, ver, f.install_binaries, .active);
     if (!probe_passed) {
         stderr.print("nb: {s}: post-install probe warning: declared binaries or linked executables missing\n", .{f.name}) catch {};
     }
     if (bench) std.debug.print("[nb-bench] {s} postinstall: {d}ms\n", .{ f.name, milliTimestamp() - bench_t });
-
-    phase.store(@intFromEnum(Phase.done), .release);
+    return if (probe_passed) .passed else .failed;
 }
 
 fn fileExists(path: []const u8) bool {
@@ -1934,6 +1979,82 @@ test "reinstall removes first only for cask and deb packages" {
     try std.testing.expect(!isRequestedFormulaName("oniguruma", &.{"user/tap/jq"}));
 }
 
+// ── --json output (#495) ──
+//
+// `nb list --json` and `nb outdated --json` print one JSON document on stdout:
+// `{"schema":1,"packages":[...]}`. Errors still go to stderr with exit 1.
+// Fields are only added under schema 1; a removed or renamed field or a
+// changed meaning bumps `schema`, so tools can refuse a format they do not know.
+
+const json_schema_version: u32 = 1;
+
+const JsonVersionRow = struct { version: []const u8, switchable: bool };
+
+const JsonListEntry = struct {
+    name: []const u8,
+    kind: []const u8,
+    version: []const u8,
+    pinned: bool,
+    /// Only with --versions: newest first, like the text output.
+    versions: ?[]const JsonVersionRow = null,
+};
+
+const JsonOutdatedEntry = struct {
+    name: []const u8,
+    kind: []const u8,
+    installed: []const u8,
+    latest: []const u8,
+    pinned: bool,
+    /// What `nb upgrade` would do with this entry now. Pinned entries are
+    /// skipped by upgrade too, but keep `upgrade_supported` for the package
+    /// itself; `unsupported_reason` is the text upgrade prints.
+    upgrade_supported: bool,
+    unsupported_reason: ?[]const u8,
+};
+
+fn jsonDocument(alloc: std.mem.Allocator, packages: anytype, emit_null: bool) ![]u8 {
+    return std.json.Stringify.valueAlloc(alloc, .{ .schema = json_schema_version, .packages = packages }, .{ .emit_null_optional_fields = emit_null });
+}
+
+/// Print any document struct (it must carry `schema`).
+fn printJsonValue(alloc: std.mem.Allocator, value: anytype) void {
+    const bytes = std.json.Stringify.valueAlloc(alloc, value, .{}) catch {
+        StderrWriter.print(.{}, "nb: out of memory while writing JSON\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer alloc.free(bytes);
+    StdoutWriter.print(.{}, "{s}\n", .{bytes}) catch {};
+}
+
+/// Remove `--json` from args; true when it was present.
+fn takeJsonFlag(alloc: std.mem.Allocator, args: []const []const u8) struct { json: bool, rest: []const []const u8 } {
+    var n: usize = 0;
+    for (args) |a| {
+        if (std.mem.eql(u8, a, "--json")) n += 1;
+    }
+    if (n == 0) return .{ .json = false, .rest = args };
+    const rest = alloc.alloc([]const u8, args.len - n) catch {
+        StderrWriter.print(.{}, "nb: out of memory\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    var i: usize = 0;
+    for (args) |a| {
+        if (std.mem.eql(u8, a, "--json")) continue;
+        rest[i] = a;
+        i += 1;
+    }
+    return .{ .json = true, .rest = rest };
+}
+
+fn printJsonDocument(alloc: std.mem.Allocator, packages: anytype, emit_null: bool) void {
+    const bytes = jsonDocument(alloc, packages, emit_null) catch {
+        StderrWriter.print(.{}, "nb: out of memory while writing JSON\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer alloc.free(bytes);
+    StdoutWriter.print(.{}, "{s}\n", .{bytes}) catch {};
+}
+
 // ── nb list ──
 
 /// One readdir of the content-addressed store into a sha256 set, replacing
@@ -1974,18 +2095,25 @@ fn runList(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     var show_versions = false;
     var names_only = false;
+    var json = false;
     for (args) |a| {
         if (std.mem.eql(u8, a, "--versions")) {
             show_versions = true;
         } else if (std.mem.eql(u8, a, "--names")) {
             names_only = true;
+        } else if (std.mem.eql(u8, a, "--json")) {
+            json = true;
         } else {
-            stderr.print("nb: unknown list option '{s}'\nUsage: nb list [--versions|--names]\n", .{a}) catch {};
+            stderr.print("nb: unknown list option '{s}'\nUsage: nb list [--versions|--names] [--json]\n", .{a}) catch {};
             std.process.exit(1);
         }
     }
     if (show_versions and names_only) {
-        stderr.print("nb: --versions and --names cannot be combined\nUsage: nb list [--versions|--names]\n", .{}) catch {};
+        stderr.print("nb: --versions and --names cannot be combined\nUsage: nb list [--versions|--names] [--json]\n", .{}) catch {};
+        std.process.exit(1);
+    }
+    if (json and names_only) {
+        stderr.print("nb: --json and --names cannot be combined\nUsage: nb list [--versions|--names] [--json]\n", .{}) catch {};
         std.process.exit(1);
     }
 
@@ -2089,6 +2217,44 @@ fn runList(alloc: std.mem.Allocator, args: []const []const u8) void {
         }
     }
 
+    if (json) {
+        var arena = std.heap.ArenaAllocator.init(alloc);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const entries = a.alloc(JsonListEntry, kegs.len + casks.len + debs.len) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        var n: usize = 0;
+        for (kegs, 0..) |keg, ki| {
+            var versions: ?[]const JsonVersionRow = null;
+            if (show_versions) {
+                const rows = if (version_rows) |vrs| vrs[ki] orelse &.{} else &.{};
+                const out = a.alloc(JsonVersionRow, rows.len) catch {
+                    stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+                    std.process.exit(1);
+                };
+                for (out, 0..) |*o, i| {
+                    const row = rows[rows.len - 1 - i];
+                    o.* = .{ .version = row.version, .switchable = row.switchable };
+                }
+                versions = out;
+            }
+            entries[n] = .{ .name = keg.name, .kind = "formula", .version = keg.version, .pinned = keg.pinned, .versions = versions };
+            n += 1;
+        }
+        for (casks) |c| {
+            entries[n] = .{ .name = c.token, .kind = "cask", .version = c.version, .pinned = false };
+            n += 1;
+        }
+        for (debs) |d| {
+            entries[n] = .{ .name = d.name, .kind = "deb", .version = d.version, .pinned = false };
+            n += 1;
+        }
+        printJsonDocument(alloc, entries[0..n], false);
+        return;
+    }
+
     if (kegs.len == 0 and casks.len == 0 and debs.len == 0) {
         if (!names_only) stdout.print("No packages installed.\n", .{}) catch {};
         return;
@@ -2146,12 +2312,81 @@ fn containsAsciiCaseless(haystack: []const u8, needle_lower: []const u8) bool {
     return false;
 }
 
-fn runWhere(alloc: std.mem.Allocator, args: []const []const u8) void {
+const JsonWhereInstalled = struct { name: []const u8, kind: []const u8, version: []const u8, pinned: bool };
+const JsonWhereFile = struct { dir: []const u8, name: []const u8, type: []const u8 };
+const JsonSearchHit = struct { name: []const u8, kind: []const u8, version: []const u8, desc: []const u8 };
+
+fn runWhereJson(alloc: std.mem.Allocator, pattern: []const u8, needle: []const u8) void {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var installed: std.ArrayList(JsonWhereInstalled) = .empty;
+    var installed_error: ?[]const u8 = null;
+    if (nb.database.Database.open(alloc)) |opened_db| {
+        var db = opened_db;
+        defer db.close();
+        const kegs = db.listInstalled(alloc) catch &.{};
+        defer if (kegs.len > 0) alloc.free(kegs);
+        for (kegs) |k| if (containsAsciiCaseless(k.name, needle)) {
+            installed.append(a, .{ .name = a.dupe(u8, k.name) catch "", .kind = "formula", .version = a.dupe(u8, k.version) catch "", .pinned = k.pinned }) catch {};
+        };
+        if (db.listInstalledCasks(alloc)) |casks| {
+            defer alloc.free(casks);
+            for (casks) |c| if (containsAsciiCaseless(c.token, needle)) {
+                installed.append(a, .{ .name = a.dupe(u8, c.token) catch "", .kind = "cask", .version = a.dupe(u8, c.version) catch "", .pinned = false }) catch {};
+            };
+        } else |_| {}
+        if (db.listInstalledDebs(alloc)) |debs| {
+            defer alloc.free(debs);
+            for (debs) |d| if (containsAsciiCaseless(d.name, needle)) {
+                installed.append(a, .{ .name = a.dupe(u8, d.name) catch "", .kind = "deb", .version = a.dupe(u8, d.version) catch "", .pinned = false }) catch {};
+            };
+        } else |_| {}
+    } else |_| {
+        installed_error = "could not open database";
+    }
+    var files: std.ArrayList(JsonWhereFile) = .empty;
+    for ([_][]const u8{ "bin", "lib", "opt" }) |sub| {
+        const dir_path = std.fmt.allocPrint(a, "{s}/{s}", .{ PREFIX, sub }) catch continue;
+        var dir = std.Io.Dir.openDirAbsolute(g_io, dir_path, .{ .iterate = true }) catch continue;
+        defer dir.close(g_io);
+        var iter = dir.iterate();
+        while (iter.next(g_io) catch null) |entry| {
+            if (!containsAsciiCaseless(entry.name, needle)) continue;
+            const kind: []const u8 = switch (entry.kind) {
+                .directory => "directory",
+                .sym_link => "symlink",
+                else => "file",
+            };
+            files.append(a, .{ .dir = dir_path, .name = a.dupe(u8, entry.name) catch continue, .type = kind }) catch {};
+        }
+    }
+    var index: std.ArrayList(JsonSearchHit) = .empty;
+    var index_error: ?[]const u8 = null;
+    if (nb.search_api.search(a, pattern)) |results| {
+        for (results) |r| index.append(a, .{ .name = r.name, .kind = if (r.is_cask) "cask" else "formula", .version = r.version, .desc = r.desc }) catch {};
+    } else |err| {
+        index_error = @errorName(err);
+    }
+    printJsonValue(alloc, .{
+        .schema = json_schema_version,
+        .pattern = pattern,
+        .installed = installed.items,
+        .installed_error = installed_error,
+        .files = files.items,
+        .index = index.items,
+        .index_error = index_error,
+    });
+}
+
+fn runWhere(alloc: std.mem.Allocator, all_args: []const []const u8) void {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
+    const json_flag = takeJsonFlag(alloc, all_args);
+    const args = json_flag.rest;
 
     if (args.len == 0) {
-        stderr.print("nb: no pattern specified\nUsage: nb where <pattern>\n", .{}) catch {};
+        stderr.print("nb: no pattern specified\nUsage: nb where <pattern> [--json]\n", .{}) catch {};
         std.process.exit(1);
     }
 
@@ -2160,6 +2395,7 @@ fn runWhere(alloc: std.mem.Allocator, args: []const []const u8) void {
     const plen = @min(pattern.len, lower_buf.len);
     for (pattern[0..plen], 0..) |c, i| lower_buf[i] = std.ascii.toLower(c);
     const needle = lower_buf[0..plen];
+    if (json_flag.json) return runWhereJson(alloc, pattern, needle);
 
     // 1. Installed (kegs, casks, debs)
     stdout.print("\x1b[1m==> installed matching \"{s}\":\x1b[0m\n", .{pattern}) catch {};
@@ -2256,6 +2492,9 @@ fn runWhere(alloc: std.mem.Allocator, args: []const []const u8) void {
 
 // ── nb leaves ──
 
+const JsonLeafDep = struct { name: []const u8, version: []const u8 };
+const JsonLeaf = struct { name: []const u8, kind: []const u8, version: []const u8, pinned: bool, dependencies: ?[]const JsonLeafDep = null };
+
 fn runLeaves(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
@@ -2263,20 +2502,29 @@ fn runLeaves(alloc: std.mem.Allocator, args: []const []const u8) void {
     const show_tree = for (args) |a| {
         if (std.mem.eql(u8, a, "--tree")) break true;
     } else false;
+    const json = for (args) |a| {
+        if (std.mem.eql(u8, a, "--json")) break true;
+    } else false;
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: could not open database\n", .{}) catch {};
+        if (json) std.process.exit(1);
         return;
     };
     defer db.close();
 
     const kegs = db.listInstalled(alloc) catch {
         stderr.print("nb: failed to list packages\n", .{}) catch {};
+        if (json) std.process.exit(1);
         return;
     };
     defer alloc.free(kegs);
 
     if (kegs.len == 0) {
+        if (json) {
+            printJsonValue(alloc, .{ .schema = json_schema_version, .packages = &[_]JsonLeaf{}, .unresolved = &[_][]const u8{} });
+            return;
+        }
         stdout.print("No packages installed.\n", .{}) catch {};
         return;
     }
@@ -2429,6 +2677,34 @@ fn runLeaves(alloc: std.mem.Allocator, args: []const []const u8) void {
         stderr.print("    (run `nb cleanup --prune-kegs` to remove phantom DB entries — see #279)\n", .{}) catch {};
     }
 
+    if (json) {
+        var arena_state = std.heap.ArenaAllocator.init(alloc);
+        defer arena_state.deinit();
+        const a = arena_state.allocator();
+        var leaves: std.ArrayList(JsonLeaf) = .empty;
+        for (kegs) |keg| {
+            if (depended_on.contains(keg.name)) continue;
+            var deps_out: ?[]const JsonLeafDep = null;
+            if (show_tree) {
+                var list: std.ArrayList(JsonLeafDep) = .empty;
+                if (pkg_deps.get(keg.name)) |deps| {
+                    for (deps) |dep| if (keg_set.get(dep)) |other| {
+                        list.append(a, .{ .name = dep, .version = other.version }) catch {};
+                    };
+                }
+                deps_out = list.items;
+            }
+            leaves.append(a, .{ .name = keg.name, .kind = "formula", .version = keg.version, .pinned = keg.pinned, .dependencies = deps_out }) catch {};
+        }
+        // Packages whose metadata could not be fetched (also warned on stderr).
+        const bytes = std.json.Stringify.valueAlloc(a, .{ .schema = json_schema_version, .packages = leaves.items, .unresolved = failed_names.items }, .{ .emit_null_optional_fields = false }) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        stdout.print("{s}\n", .{bytes}) catch {};
+        return;
+    }
+
     // Print leaves (packages not depended on by any other installed package)
     for (kegs) |keg| {
         if (!depended_on.contains(keg.name)) {
@@ -2556,10 +2832,28 @@ fn ownedCaskBinaryTarget(cask: nb.database.CaskRecord, linked: []const u8, targe
 
     for (cask.apps) |app| {
         var app_buf: [1024]u8 = undefined;
-        const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{app}) catch continue;
+        const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{std.fs.path.basename(app)}) catch continue;
         if (pathIsWithin(target, app_path)) return target;
     }
     return null;
+}
+
+/// True when `target` is `<app>/Contents/MacOS/<CFBundleExecutable>` of one
+/// of the cask's apps, the GUI app itself rather than a command-line tool.
+fn isAppMainExecutable(alloc: std.mem.Allocator, applications_dir: []const u8, apps: []const []const u8, target: []const u8) bool {
+    if (comptime builtin.os.tag != .macos) return false;
+    const dir = std.fs.path.dirname(target) orelse return false;
+    for (apps) |app| {
+        var app_buf: [1024]u8 = undefined;
+        const app_path = std.fmt.bufPrint(&app_buf, "{s}/{s}", .{ applications_dir, std.fs.path.basename(app) }) catch continue;
+        var macos_buf: [1100]u8 = undefined;
+        const macos_dir = std.fmt.bufPrint(&macos_buf, "{s}/Contents/MacOS", .{app_path}) catch continue;
+        if (!std.mem.eql(u8, std.mem.trimEnd(u8, dir, "/"), macos_dir)) continue;
+        const exe = nb.cask_upgrade.bundleInfoString(alloc, g_io, app_path, "CFBundleExecutable") orelse continue;
+        defer alloc.free(exe);
+        if (std.mem.eql(u8, std.fs.path.basename(target), exe)) return true;
+    }
+    return false;
 }
 
 fn probeInstalledCask(
@@ -2590,7 +2884,8 @@ fn probeInstalledCask(
 
     for (cask.apps) |app| {
         var app_buf: [1024]u8 = undefined;
-        const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{app}) catch {
+        // Records from v0.1.214 and older can keep the source subfolder ("Sub/Foo.app").
+        const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{std.fs.path.basename(app)}) catch {
             ok = false;
             continue;
         };
@@ -2631,6 +2926,13 @@ fn probeInstalledCask(
             ok = false;
             continue;
         };
+        if (mode == .active and isAppMainExecutable(alloc, "/Applications", cask.apps, target)) {
+            // `--version` on a GUI app's main executable can start the whole
+            // app and never exit (electerm, #494). The apps loop above already
+            // ran codesign on that app, so skip the argv probe.
+            if (stdout) |out| out.print("    {s}: {s} is the app's main executable; checked by codesign, not run\n", .{ cask.token, base }) catch {};
+            continue;
+        }
         if (mode == .active) {
             if (active_session) |*session| {
                 switch (probeExecutableCommand(alloc, stdout, cask.token, target, session, .fail)) {
@@ -2852,11 +3154,14 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     // Parse --cask flag
     var is_cask = false;
+    var json = false;
     var names: std.ArrayList([]const u8) = .empty;
     defer names.deinit(alloc);
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--cask")) {
             is_cask = true;
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            json = true;
         } else {
             names.append(alloc, arg) catch {};
         }
@@ -2877,10 +3182,21 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
     var client: std.http.Client = .{ .allocator = alloc, .io = g_io };
     defer client.deinit();
 
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var json_entries: std.ArrayList(JsonInfo) = .empty;
+
     var had_error = false;
     for (names.items) |name| {
         if (is_cask) {
-            if (!showCaskInfo(alloc, stdout, stderr, name, if (db) |*d| d else null)) had_error = true;
+            const ok = if (json) blk: {
+                var entry: JsonInfo = undefined;
+                const found = showCaskInfo(alloc, NullWriter{}, stderr, name, if (db) |*d| d else null, &entry, arena);
+                if (found) json_entries.append(arena, entry) catch {};
+                break :blk found;
+            } else showCaskInfo(alloc, stdout, stderr, name, if (db) |*d| d else null, null, arena);
+            if (!ok) had_error = true;
         } else {
             // Try formula first; on failure, try cask as fallback for a hint.
             const f = nb.api_client.fetchFormulaWithClientAndUpstreamRegistry(
@@ -2901,93 +3217,187 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
                 continue;
             };
             defer f.deinit(alloc);
-            const bottled = f.bottle_url.len > 0;
-            var version_buf: [256]u8 = undefined;
-            const displayed_version = f.effectiveVersion(&version_buf);
-            stdout.print("{s} {s}{s}\n", .{
-                f.name,
-                displayed_version,
-                if (bottled) " (bottled)" else "",
-            }) catch {};
-            if (f.desc.len > 0) stdout.print("  {s}\n", .{f.desc}) catch {};
-            if (f.homepage.len > 0) stdout.print("  homepage: {s}\n", .{f.homepage}) catch {};
-            if (f.license.len > 0) stdout.print("  license: {s}\n", .{f.license}) catch {};
-            const artifact_sha = formulaArtifactSha(f);
-            var trust_tier: []const u8 = if (artifact_sha.len > 0) "checksum-verified" else "unverified";
-            if (sourceVerified(alloc, f)) trust_tier = "source-verified";
-            showPublishedTrust(alloc, stdout, f.name, .formula, displayed_version, artifact_sha, &trust_tier);
-            var local_probe_status: []const u8 = "not recorded";
-            var local_probe_time: i64 = 0;
-            if (db) |*loaded_db| {
-                if (loaded_db.findKeg(f.name)) |keg| {
-                    // Install evidence is version/checksum/platform-specific: an
-                    // older keg or a probe produced under different semantics must
-                    // not promote the metadata currently displayed.
-                    if (artifact_sha.len > 0 and
-                        std.mem.eql(u8, keg.version, displayed_version) and
-                        std.mem.eql(u8, keg.sha256, artifact_sha) and
-                        keg.probed_at >= keg.installed_at and
-                        keg.probed_at > 0)
-                    {
-                        local_probe_time = keg.probed_at;
-                        const compatible = keg.probe_schema == LOCAL_PROBE_SCHEMA and
-                            keg.probe_platform == LOCAL_PROBE_PLATFORM;
-                        const structurally_valid = compatible and
-                            keg.probe_success and
-                            probeInstalledFormula(alloc, null, f.name, keg.version, f.install_binaries, .structural);
-                        local_probe_status = if (!compatible)
-                            "stale"
-                        else if (!keg.probe_success)
-                            "failed"
-                        else if (structurally_valid)
-                            "passed"
-                        else
-                            "invalidated";
-                        if (structurally_valid) trust_tier = "install-verified";
-                    }
-                }
-            }
-            if (local_probe_time > 0) {
-                stdout.print("  trust: {s} (local probe: {s}, {d})\n", .{ trust_tier, local_probe_status, local_probe_time }) catch {};
+            if (json) {
+                var entry: JsonInfo = undefined;
+                showFormulaInfo(alloc, NullWriter{}, f, if (db) |*d| d else null, &entry, arena);
+                json_entries.append(arena, entry) catch {};
             } else {
-                stdout.print("  trust: {s} (local probe: not recorded; run `nb doctor --probe {s}`)\n", .{ trust_tier, f.name }) catch {};
-            }
-            if (bottled) {
-                stdout.print("  url: {s}\n", .{f.bottle_url}) catch {};
-                if (f.bottle_sha256.len > 0) stdout.print("  sha256: {s}\n", .{f.bottle_sha256}) catch {};
-            } else if (f.source_url.len > 0) {
-                stdout.print("  url: {s} (source)\n", .{f.source_url}) catch {};
-                if (f.source_sha256.len > 0) stdout.print("  sha256: {s}\n", .{f.source_sha256}) catch {};
-            }
-            stdout.print("  deps: ", .{}) catch {};
-            for (f.dependencies, 0..) |dep, i| {
-                if (i > 0) stdout.print(", ", .{}) catch {};
-                stdout.print("{s}", .{dep}) catch {};
-            }
-            stdout.print("\n", .{}) catch {};
-            if (f.build_deps.len > 0) {
-                stdout.print("  build deps: ", .{}) catch {};
-                for (f.build_deps, 0..) |dep, i| {
-                    if (i > 0) stdout.print(", ", .{}) catch {};
-                    stdout.print("{s}", .{dep}) catch {};
-                }
-                stdout.print("\n", .{}) catch {};
-            }
-            if (f.caveats.len > 0) {
-                stdout.print("  caveats:\n", .{}) catch {};
-                var line_it = std.mem.splitScalar(u8, f.caveats, '\n');
-                while (line_it.next()) |line| {
-                    stdout.print("    {s}\n", .{line}) catch {};
-                }
+                showFormulaInfo(alloc, stdout, f, if (db) |*d| d else null, null, arena);
             }
         }
+    }
+    if (json) {
+        const bytes = std.json.Stringify.valueAlloc(arena, .{ .schema = json_schema_version, .packages = json_entries.items }, .{ .emit_null_optional_fields = false }) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        stdout.print("{s}\n", .{bytes}) catch {};
     }
     // info only reads the database, so skipping the deferred close loses nothing.
     if (had_error) std.process.exit(1);
 }
 
+const NullWriter = struct {
+    pub fn print(_: NullWriter, comptime _: []const u8, _: anytype) error{}!void {}
+};
+
+const JsonPublished = struct { source: []const u8, result: []const u8, observed_at: i64, platform: []const u8 };
+const JsonTrust = struct {
+    tier: []const u8,
+    local_probe: []const u8,
+    probed_at: ?i64 = null,
+    published: ?JsonPublished = null,
+};
+const JsonArtifact = struct {
+    type: []const u8,
+    path: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+    target: ?[]const u8 = null,
+    executable: ?[]const u8 = null,
+    args: ?[]const []const u8 = null,
+    quit: ?[]const u8 = null,
+    pkgutil: ?[]const u8 = null,
+};
+const JsonInstalledState = struct { version: []const u8, pinned: bool };
+const JsonInfo = struct {
+    name: []const u8,
+    kind: []const u8,
+    version: []const u8,
+    desc: []const u8,
+    homepage: []const u8,
+    url: ?[]const u8 = null,
+    sha256: ?[]const u8 = null,
+    trust: JsonTrust,
+    installed: ?JsonInstalledState = null,
+    // formula only
+    license: ?[]const u8 = null,
+    bottled: ?bool = null,
+    url_kind: ?[]const u8 = null,
+    dependencies: ?[]const []const u8 = null,
+    build_dependencies: ?[]const []const u8 = null,
+    caveats: ?[]const u8 = null,
+    // cask only
+    display_name: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+    auto_updates: ?bool = null,
+    security_warnings: ?[]const nb.cask.SecurityWarning = null,
+    artifacts: ?[]const JsonArtifact = null,
+};
+
+fn dupeStrings(a: std.mem.Allocator, items: []const []const u8) []const []const u8 {
+    const out = a.alloc([]const u8, items.len) catch return &.{};
+    for (items, out) |item, *o| o.* = a.dupe(u8, item) catch "";
+    return out;
+}
+
+/// Text (stdout = StdoutWriter) or JSON (stdout = NullWriter, json_out set)
+/// share one evaluation so both report the same trust tier and probe state.
+fn showFormulaInfo(alloc: std.mem.Allocator, stdout: anytype, f: nb.formula.Formula, db: ?*nb.database.Database, json_out: ?*JsonInfo, arena: std.mem.Allocator) void {
+    const bottled = f.bottle_url.len > 0;
+    var version_buf: [256]u8 = undefined;
+    const displayed_version = f.effectiveVersion(&version_buf);
+    stdout.print("{s} {s}{s}\n", .{
+        f.name,
+        displayed_version,
+        if (bottled) " (bottled)" else "",
+    }) catch {};
+    if (f.desc.len > 0) stdout.print("  {s}\n", .{f.desc}) catch {};
+    if (f.homepage.len > 0) stdout.print("  homepage: {s}\n", .{f.homepage}) catch {};
+    if (f.license.len > 0) stdout.print("  license: {s}\n", .{f.license}) catch {};
+    const artifact_sha = formulaArtifactSha(f);
+    var trust_tier: []const u8 = if (artifact_sha.len > 0) "checksum-verified" else "unverified";
+    if (sourceVerified(alloc, f)) trust_tier = "source-verified";
+    const published = showPublishedTrust(alloc, stdout, f.name, .formula, displayed_version, artifact_sha, &trust_tier, arena);
+    var local_probe_status: []const u8 = "not recorded";
+    var local_probe_time: i64 = 0;
+    if (db) |loaded_db| {
+        if (loaded_db.findKeg(f.name)) |keg| {
+            // Install evidence is version/checksum/platform-specific: an
+            // older keg or a probe produced under different semantics must
+            // not promote the metadata currently displayed.
+            if (artifact_sha.len > 0 and
+                std.mem.eql(u8, keg.version, displayed_version) and
+                std.mem.eql(u8, keg.sha256, artifact_sha) and
+                keg.probed_at >= keg.installed_at and
+                keg.probed_at > 0)
+            {
+                local_probe_time = keg.probed_at;
+                const compatible = keg.probe_schema == LOCAL_PROBE_SCHEMA and
+                    keg.probe_platform == LOCAL_PROBE_PLATFORM;
+                const structurally_valid = compatible and
+                    keg.probe_success and
+                    probeInstalledFormula(alloc, null, f.name, keg.version, f.install_binaries, .structural);
+                local_probe_status = if (!compatible)
+                    "stale"
+                else if (!keg.probe_success)
+                    "failed"
+                else if (structurally_valid)
+                    "passed"
+                else
+                    "invalidated";
+                if (structurally_valid) trust_tier = "install-verified";
+            }
+        }
+    }
+    if (local_probe_time > 0) {
+        stdout.print("  trust: {s} (local probe: {s}, {d})\n", .{ trust_tier, local_probe_status, local_probe_time }) catch {};
+    } else {
+        stdout.print("  trust: {s} (local probe: not recorded; run `nb doctor --probe {s}`)\n", .{ trust_tier, f.name }) catch {};
+    }
+    if (bottled) {
+        stdout.print("  url: {s}\n", .{f.bottle_url}) catch {};
+        if (f.bottle_sha256.len > 0) stdout.print("  sha256: {s}\n", .{f.bottle_sha256}) catch {};
+    } else if (f.source_url.len > 0) {
+        stdout.print("  url: {s} (source)\n", .{f.source_url}) catch {};
+        if (f.source_sha256.len > 0) stdout.print("  sha256: {s}\n", .{f.source_sha256}) catch {};
+    }
+    stdout.print("  deps: ", .{}) catch {};
+    for (f.dependencies, 0..) |dep, i| {
+        if (i > 0) stdout.print(", ", .{}) catch {};
+        stdout.print("{s}", .{dep}) catch {};
+    }
+    stdout.print("\n", .{}) catch {};
+    if (f.build_deps.len > 0) {
+        stdout.print("  build deps: ", .{}) catch {};
+        for (f.build_deps, 0..) |dep, i| {
+            if (i > 0) stdout.print(", ", .{}) catch {};
+            stdout.print("{s}", .{dep}) catch {};
+        }
+        stdout.print("\n", .{}) catch {};
+    }
+    if (f.caveats.len > 0) {
+        stdout.print("  caveats:\n", .{}) catch {};
+        var line_it = std.mem.splitScalar(u8, f.caveats, '\n');
+        while (line_it.next()) |line| {
+            stdout.print("    {s}\n", .{line}) catch {};
+        }
+    }
+    if (json_out) |out| {
+        const installed: ?JsonInstalledState = if (db) |d| (if (d.findKeg(f.name)) |k| JsonInstalledState{ .version = arena.dupe(u8, k.version) catch "", .pinned = k.pinned } else null) else null;
+        const url: []const u8 = if (bottled) f.bottle_url else f.source_url;
+        const sha: []const u8 = if (bottled) f.bottle_sha256 else f.source_sha256;
+        out.* = .{
+            .name = arena.dupe(u8, f.name) catch "",
+            .kind = "formula",
+            .version = arena.dupe(u8, displayed_version) catch "",
+            .desc = arena.dupe(u8, f.desc) catch "",
+            .homepage = arena.dupe(u8, f.homepage) catch "",
+            .url = if (url.len > 0) (arena.dupe(u8, url) catch "") else null,
+            .sha256 = if (url.len > 0 and sha.len > 0) (arena.dupe(u8, sha) catch "") else null,
+            .trust = .{ .tier = trust_tier, .local_probe = local_probe_status, .probed_at = if (local_probe_time > 0) local_probe_time else null, .published = published },
+            .installed = installed,
+            .license = if (f.license.len > 0) (arena.dupe(u8, f.license) catch "") else null,
+            .bottled = bottled,
+            .url_kind = if (url.len == 0) null else if (bottled) "bottle" else "source",
+            .dependencies = dupeStrings(arena, f.dependencies),
+            .build_dependencies = dupeStrings(arena, f.build_deps),
+            .caveats = if (f.caveats.len > 0) (arena.dupe(u8, f.caveats) catch "") else null,
+        };
+    }
+}
+
 /// Returns false when the cask was not found.
-fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name: []const u8, db: ?*nb.database.Database) bool {
+fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name: []const u8, db: ?*nb.database.Database, json_out: ?*JsonInfo, arena: std.mem.Allocator) bool {
     const cask = nb.api_client.fetchCask(alloc, name) catch {
         stderr.print("nb: cask '{s}' not found\n", .{name}) catch {};
         return false;
@@ -3022,7 +3432,7 @@ fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name
     const has_immutable_identity = has_valid_sha256 and
         !cask.auto_updates and
         !std.mem.eql(u8, cask.version, "latest");
-    showPublishedTrust(alloc, stdout, cask.token, .cask, cask.version, cask.sha256, &trust_tier);
+    const published = showPublishedTrust(alloc, stdout, cask.token, .cask, cask.version, cask.sha256, &trust_tier, arena);
     var local_probe_status: []const u8 = "not recorded";
     var local_probe_time: i64 = 0;
     if (has_immutable_identity) {
@@ -3081,6 +3491,57 @@ fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name
             }
         }
     }
+    if (json_out) |out| {
+        var arts: std.ArrayList(JsonArtifact) = .empty;
+        for (cask.artifacts) |art| {
+            const d = struct {
+                fn s(al: std.mem.Allocator, v: []const u8) []const u8 {
+                    return al.dupe(u8, v) catch "";
+                }
+            }.s;
+            const item: JsonArtifact = switch (art) {
+                .app => |v| .{ .type = "app", .path = d(arena, v) },
+                .binary => |v| .{ .type = "binary", .source = d(arena, v.source), .target = d(arena, v.target) },
+                .pkg => |v| .{ .type = "pkg", .path = d(arena, v) },
+                .font => |v| .{ .type = "font", .path = d(arena, v) },
+                .artifact => |v| .{ .type = "artifact", .source = d(arena, v.source), .target = d(arena, v.target) },
+                .suite => |v| .{ .type = "suite", .source = d(arena, v.source), .target = d(arena, v.target) },
+                .installer_script => |v| .{ .type = "installer", .executable = d(arena, v.executable), .args = dupeStrings(arena, v.args) },
+                .uninstall => |v| .{ .type = "uninstall", .quit = if (v.quit.len > 0) d(arena, v.quit) else null, .pkgutil = if (v.pkgutil.len > 0) d(arena, v.pkgutil) else null },
+            };
+            arts.append(arena, item) catch {};
+        }
+        const warnings = arena.alloc(nb.cask.SecurityWarning, cask.security_warnings.len) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        for (cask.security_warnings, warnings) |w, *o| o.* = .{
+            .ghsa_id = arena.dupe(u8, w.ghsa_id) catch "",
+            .cve_id = arena.dupe(u8, w.cve_id) catch "",
+            .severity = arena.dupe(u8, w.severity) catch "",
+            .summary = arena.dupe(u8, w.summary) catch "",
+            .url = arena.dupe(u8, w.url) catch "",
+            .affected_versions = arena.dupe(u8, w.affected_versions) catch "",
+            .patched_versions = arena.dupe(u8, w.patched_versions) catch "",
+        };
+        const installed: ?JsonInstalledState = if (db) |dbp| (if (dbp.findCask(cask.token) orelse dbp.findCask(name)) |c| JsonInstalledState{ .version = arena.dupe(u8, c.version) catch "", .pinned = false } else null) else null;
+        out.* = .{
+            .name = arena.dupe(u8, cask.token) catch "",
+            .kind = "cask",
+            .version = arena.dupe(u8, cask.version) catch "",
+            .desc = arena.dupe(u8, cask.desc) catch "",
+            .homepage = arena.dupe(u8, cask.homepage) catch "",
+            .url = arena.dupe(u8, cask.url) catch "",
+            .sha256 = arena.dupe(u8, cask.sha256) catch "",
+            .trust = .{ .tier = trust_tier, .local_probe = local_probe_status, .probed_at = if (local_probe_time > 0) local_probe_time else null, .published = published },
+            .installed = installed,
+            .display_name = arena.dupe(u8, cask.name) catch "",
+            .source = if (cask.metadata_source == .verified_upstream) "verified_upstream" else "homebrew",
+            .auto_updates = cask.auto_updates,
+            .security_warnings = warnings,
+            .artifacts = arts.items,
+        };
+    }
     return true;
 }
 
@@ -3111,17 +3572,22 @@ fn printCaskSecurityWarnings(writer: anytype, indent: []const u8, cask: *const n
 
 // ── nb search ──
 
-fn runSearch(alloc: std.mem.Allocator, args: []const []const u8) void {
+const JsonSearchResult = struct { name: []const u8, kind: []const u8, version: []const u8, desc: []const u8, installed: bool };
+
+fn runSearch(alloc: std.mem.Allocator, all_args: []const []const u8) void {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
+    const json_flag = takeJsonFlag(alloc, all_args);
+    const args = json_flag.rest;
+    const json = json_flag.json;
 
     if (args.len == 0) {
-        stderr.print("nb: no search query specified\nUsage: nb search <query>\n", .{}) catch {};
+        stderr.print("nb: no search query specified\nUsage: nb search <query> [--json]\n", .{}) catch {};
         std.process.exit(1);
     }
 
     const query = args[0];
-    stdout.print("==> Searching for \"{s}\"...\n", .{query}) catch {};
+    if (!json) stdout.print("==> Searching for \"{s}\"...\n", .{query}) catch {};
 
     const results = nb.search_api.search(alloc, query) catch |err| {
         stderr.print("nb: search failed: {}\n", .{err}) catch {};
@@ -3130,6 +3596,22 @@ fn runSearch(alloc: std.mem.Allocator, args: []const []const u8) void {
     defer {
         for (results) |r| r.deinit(alloc);
         alloc.free(results);
+    }
+
+    if (json) {
+        var db_opt: ?nb.database.Database = nb.database.Database.open(alloc) catch null;
+        defer if (db_opt) |*d| d.close();
+        const entries = alloc.alloc(JsonSearchResult, results.len) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        defer alloc.free(entries);
+        for (results, entries) |r, *e| {
+            const installed = if (db_opt) |*d| (if (r.is_cask) d.findCask(r.name) != null else d.findKeg(r.name) != null) else false;
+            e.* = .{ .name = r.name, .kind = if (r.is_cask) "cask" else "formula", .version = r.version, .desc = r.desc, .installed = installed };
+        }
+        printJsonValue(alloc, .{ .schema = json_schema_version, .query = query, .packages = entries });
+        return;
     }
 
     if (results.len == 0) {
@@ -3183,7 +3665,20 @@ const Outdated = struct {
     }
 };
 
-fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filter_names: []const []const u8, check_casks: bool, check_kegs: bool) std.ArrayList(Outdated) {
+/// Rewrite an unambiguous tap short name (`nanobrew-ui`) to the recorded
+/// token (`Rex57/tap/nanobrew-ui`); exit when the short name is ambiguous.
+fn resolveCaskShortName(db: *nb.database.Database, name: *[]const u8, cmd: []const u8) void {
+    switch (db.lookupCask(name.*)) {
+        .found => |c| name.* = c.token,
+        .none => {},
+        .ambiguous => |n| {
+            StderrWriter.print(.{}, "nb: {s}: '{s}' matches {d} installed tap casks; use the full tap token\n", .{ cmd, name.*, n }) catch {};
+            std.process.exit(1);
+        },
+    }
+}
+
+fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filter_names: []const []const u8, check_casks: bool, check_kegs: bool, progress: bool) std.ArrayList(Outdated) {
     const stdout = StdoutWriter{};
     var result: std.ArrayList(Outdated) = .empty;
 
@@ -3193,6 +3688,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
         old_ver: []const u8,
         is_cask: bool,
         is_pinned: bool,
+        apps: []const []const u8 = &.{},
     };
     var to_check: std.ArrayList(CheckItem) = .empty;
     defer to_check.deinit(alloc);
@@ -3218,6 +3714,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
                 .old_ver = c.version,
                 .is_cask = true,
                 .is_pinned = false,
+                .apps = c.apps,
             }) catch {};
         }
     }
@@ -3247,7 +3744,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
 
     if (to_check.items.len == 0) return result;
 
-    stdout.print("==> Checking {d} package(s) for updates...\n", .{to_check.items.len}) catch {};
+    if (progress) stdout.print("==> Checking {d} package(s) for updates...\n", .{to_check.items.len}) catch {};
 
     // Bulk fast path: resolve available versions from the cached Homebrew
     // bulk lists (one streaming scan each, shared with `nb search`, 1h TTL)
@@ -3292,6 +3789,8 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
         new_ver_buf: [128]u8 = undefined,
         new_ver_len: usize = 0,
         has_update: bool = false,
+        /// The live lookup failed (for example a connect timeout, #503).
+        failed: ?anyerror = null,
     };
 
     const version_results = alloc.alloc(VersionResult, to_check.items.len) catch return result;
@@ -3349,7 +3848,10 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
                 const item = ctx.items[idx];
 
                 if (item.is_cask) {
-                    const cask = nb.api_client.fetchCask(ctx.alloc_, item.name) catch continue;
+                    const cask = nb.api_client.fetchCask(ctx.alloc_, item.name) catch |err| {
+                        ctx.results[idx].failed = err;
+                        continue;
+                    };
                     defer cask.deinit(ctx.alloc_);
                     if (nb.version.isNewer(cask.version, item.old_ver)) {
                         const len = @min(cask.version.len, 128);
@@ -3363,7 +3865,10 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
                     // the normal live freshness cross-check for correctness.
                     const formula = nb.api_client.fetchFormulaWithClientOptions(ctx.alloc_, &client, item.name, .{
                         .check_upstream_freshness = !request.proven_bulk_miss,
-                    }) catch continue;
+                    }) catch |err| {
+                        ctx.results[idx].failed = err;
+                        continue;
+                    };
                     defer formula.deinit(ctx.alloc_);
                     var latest_buf: [256]u8 = undefined;
                     const latest = formula.effectiveVersion(&latest_buf);
@@ -3399,10 +3904,19 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
         for (threads[0..spawned]) |t| t.join();
     }
 
+    // Say which packages could not be checked instead of dropping them silently.
+    for (to_check.items, 0..) |item, i| {
+        if (version_results[i].failed) |err| {
+            const stderr = StderrWriter{};
+            stderr.print("nb: could not check {s} for updates: {s}\n", .{ item.name, @errorName(err) }) catch {};
+        }
+    }
+
     // Collect results
     for (to_check.items, 0..) |item, i| {
         if (version_results[i].has_update) {
             const new_ver = version_results[i].new_ver_buf[0..version_results[i].new_ver_len];
+            if (item.is_cask and caskAppUpdatedItself(alloc, stdout, item.name, item.apps, item.old_ver, new_ver)) continue;
             const n = alloc.dupe(u8, item.name) catch continue;
             const ov = alloc.dupe(u8, item.old_ver) catch {
                 alloc.free(n);
@@ -3429,6 +3943,23 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
     }
 
     return result;
+}
+
+/// True when an auto-updating app on disk is already at or past `candidate`,
+/// so listing or upgrading it would be a downgrade.
+fn caskAppUpdatedItself(alloc: std.mem.Allocator, stdout: StdoutWriter, token: []const u8, apps: []const []const u8, recorded: []const u8, candidate: []const u8) bool {
+    if (apps.len == 0) return false;
+    var app_buf: [1024]u8 = undefined;
+    const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{std.fs.path.basename(apps[0])}) catch return false;
+    const bundle = nb.cask_upgrade.bundleShortVersion(alloc, g_io, app_path) orelse return false;
+    defer alloc.free(bundle);
+    if (nb.cask_upgrade.outdated(recorded, candidate, true, bundle)) return false;
+    // The bulk version index has no auto_updates flag; fetch it only in this rare case.
+    const cask = nb.api_client.fetchCask(alloc, token) catch return false;
+    defer cask.deinit(alloc);
+    if (nb.cask_upgrade.outdated(recorded, candidate, cask.auto_updates, bundle)) return false;
+    stdout.print("    {s}: app updated itself to {s}; skipping {s}\n", .{ token, bundle, candidate }) catch {};
+    return true;
 }
 
 fn fetchCaskUpgradeCandidate(alloc: std.mem.Allocator, token: []const u8) !nb.cask.Cask {
@@ -3491,11 +4022,12 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
     // guard, `nb upgrade nonexistent-pkg` silently returned "all up
     // to date" because nothing matched the outdated set.
     if (names.items.len > 0) {
-        for (names.items) |n| {
-            const found = if (is_cask) (db.findCask(n) != null) else (db.findKeg(n) != null);
+        for (names.items) |*n| {
+            if (is_cask) resolveCaskShortName(&db, n, "upgrade");
+            const found = if (is_cask) (db.findCask(n.*) != null) else (db.findKeg(n.*) != null);
             if (!found) {
                 const kind = if (is_cask) "cask" else "package";
-                stderr.print("nb: upgrade: {s} '{s}' is not installed\n", .{ kind, n }) catch {};
+                stderr.print("nb: upgrade: {s} '{s}' is not installed\n", .{ kind, n.* }) catch {};
                 std.process.exit(1);
             }
         }
@@ -3503,7 +4035,7 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     const check_casks = is_cask or names.items.len == 0;
     const check_kegs = !is_cask;
-    var outdated = getOutdatedPackages(alloc, &db, names.items, check_casks, check_kegs);
+    var outdated = getOutdatedPackages(alloc, &db, names.items, check_casks, check_kegs, true);
     defer {
         for (outdated.items) |*pkg| pkg.deinit(alloc);
         outdated.deinit(alloc);
@@ -3576,6 +4108,8 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
     var upgraded_count: usize = 0;
     // Execute upgrades
     for (upgradeable.items) |pkg| {
+        var new_ver_buf: [256]u8 = undefined;
+        var new_ver: []const u8 = pkg.new_ver;
         if (pkg.is_cask_pkg) {
             const candidate = cask_candidates.get(pkg.name).?;
             nb.cask_upgrade.upgrade(alloc, g_io, pkg.name, candidate, .{}) catch |err| {
@@ -3600,25 +4134,29 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
             // Install new keg first; remove old tree only after upgrade succeeds (#153).
             const old_keg = db.findKeg(pkg.name);
             const names_slice: []const []const u8 = &.{pkg.name};
-            runInstall(alloc, names_slice, false);
+            if (!installFormulae(alloc, names_slice, false)) {
+                failed_count += 1;
+                stderr.print("nb: {s}: upgrade failed; keeping {s}\n", .{ pkg.name, pkg.old_ver }) catch {};
+                continue;
+            }
 
             if (old_keg) |keg| {
-                var ver_buf: [256]u8 = undefined;
-                const installed_new = nb.cellar.detectKegVersion(pkg.name, pkg.new_ver, &ver_buf);
-                const upgraded = blk: {
-                    if (installed_new) |nv| {
-                        if (nb.version.isNewer(nv, keg.version)) break :blk true;
-                        if (std.mem.eql(u8, nv, pkg.new_ver)) break :blk true;
-                    }
-                    break :blk false;
+                // Read back the version the install recorded: it can be newer
+                // than `pkg.new_ver`, which comes from the cached version index.
+                var installed_db = nb.database.Database.open(alloc) catch {
+                    failed_count += 1;
+                    continue;
                 };
-                if (!upgraded) {
+                defer installed_db.close();
+                const installed = installed_db.findKeg(pkg.name);
+                if (installed == null or !nb.version.isNewer(installed.?.version, keg.version)) {
                     failed_count += 1;
                     stderr.print("nb: {s}: upgrade did not install {s}; keeping {s}\n", .{ pkg.name, pkg.new_ver, keg.version }) catch {};
                     continue;
                 }
+                new_ver = std.fmt.bufPrint(&new_ver_buf, "{s}", .{installed.?.version}) catch pkg.new_ver;
 
-                // `runInstall` already persisted the new version, artifact SHA,
+                // `installFormulae` already persisted the new version, artifact SHA,
                 // and probe evidence through its own fresh Database instance.
                 // Keep this outer snapshot read-only: rewriting it here would
                 // overwrite that identity with the old SHA on close (#349).
@@ -3627,7 +4165,7 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
             }
         }
         upgraded_count += 1;
-        stdout.print("==> Upgraded {s} ({s} -> {s})\n", .{ pkg.name, pkg.old_ver, pkg.new_ver }) catch {};
+        stdout.print("==> Upgraded {s} ({s} -> {s})\n", .{ pkg.name, pkg.old_ver, new_ver }) catch {};
     }
 
     const elapsed_ns: u64 = timer.read();
@@ -4212,26 +4750,30 @@ fn runUpdate(alloc: std.mem.Allocator) void {
 
 // ── nb install --cask ──
 
-/// Collect the app and binary names a cask install records in the DB. App
+/// Collect the app, binary and font names a cask install records in the DB. App
 /// artifacts contribute their app name; suite/artifact payloads that land in
-/// /Applications contribute the target basename (so `nb remove` cleans them up).
+/// /Applications contribute the target basename (so `nb remove` cleans them up);
+/// fonts contribute the file name they get in ~/Library/Fonts.
 fn collectCaskDbEntries(
     alloc: std.mem.Allocator,
     artifacts: []const nb.cask.Artifact,
     apps: *std.ArrayList([]const u8),
     binaries: *std.ArrayList([]const u8),
+    fonts: *std.ArrayList([]const u8),
 ) void {
     for (artifacts) |art| {
         switch (art) {
-            .app => |a| apps.append(alloc, a) catch {},
+            // Install copies `app "Sub/Foo.app"` to /Applications/Foo.app.
+            .app => |a| apps.append(alloc, std.fs.path.basename(a)) catch {},
             .binary => |b| binaries.append(alloc, b.target) catch {},
+            .font => |f| fonts.append(alloc, std.fs.path.basename(f)) catch {},
             .suite => |s| if (nb.cask_installer.artifactInstallsToApplications(s.target)) {
                 apps.append(alloc, std.fs.path.basename(s.target)) catch {};
             },
             .artifact => |a| if (nb.cask_installer.artifactInstallsToApplications(a.target)) {
                 apps.append(alloc, std.fs.path.basename(a.target)) catch {};
             },
-            .pkg, .font, .installer_script, .uninstall => {},
+            .pkg, .installer_script, .uninstall => {},
         }
     }
 }
@@ -4373,9 +4915,11 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
                 defer apps.deinit(alloc);
                 var binaries: std.ArrayList([]const u8) = .empty;
                 defer binaries.deinit(alloc);
-                collectCaskDbEntries(alloc, cask_meta.artifacts, &apps, &binaries);
+                var fonts: std.ArrayList([]const u8) = .empty;
+                defer fonts.deinit(alloc);
+                collectCaskDbEntries(alloc, cask_meta.artifacts, &apps, &binaries, &fonts);
                 // Adoption cannot prove which bytes produced an existing payload.
-                db.recordCaskInstall(token, cask_meta.token, disk_ver, "", apps.items, binaries.items) catch |err| {
+                db.recordCaskInstall(token, cask_meta.token, disk_ver, "", apps.items, binaries.items, fonts.items) catch |err| {
                     stderr.print("nb: could not record existing cask install: {}\n", .{err}) catch {};
                     had_error = true;
                     break;
@@ -4411,15 +4955,17 @@ fn runCaskInstall(alloc: std.mem.Allocator, tokens: []const []const u8) void {
         };
         nb.cask_installer.traceCaskPhase(cask_trace, token, "payload_install", phase_timer.read());
 
-        // Collect app/binary names from artifacts for the database.
+        // Collect app/binary/font names from artifacts for the database.
         var apps: std.ArrayList([]const u8) = .empty;
         defer apps.deinit(alloc);
         var binaries: std.ArrayList([]const u8) = .empty;
         defer binaries.deinit(alloc);
-        collectCaskDbEntries(alloc, cask_meta.artifacts, &apps, &binaries);
+        var fonts: std.ArrayList([]const u8) = .empty;
+        defer fonts.deinit(alloc);
+        collectCaskDbEntries(alloc, cask_meta.artifacts, &apps, &binaries, &fonts);
 
         phase_timer = MonoTimer.start();
-        db.recordCaskInstall(token, cask_meta.token, cask_meta.version, cask_meta.sha256, apps.items, binaries.items) catch |err| {
+        db.recordCaskInstall(token, cask_meta.token, cask_meta.version, cask_meta.sha256, apps.items, binaries.items, fonts.items) catch |err| {
             stderr.print("nb: payload installed but its database record failed: {}\n", .{err}) catch {};
             had_error = true;
             break;
@@ -4472,7 +5018,7 @@ fn runCaskRemove(alloc: std.mem.Allocator, tokens: []const []const u8) bool {
         };
 
         const caskroom_token = if (record.canonical_token.len > 0) record.canonical_token else record.token;
-        nb.cask_installer.removeCask(alloc, g_io, caskroom_token, record.version, record.apps, record.binaries) catch |err| {
+        nb.cask_installer.removeCask(alloc, g_io, caskroom_token, record.version, record.apps, record.binaries, record.fonts) catch |err| {
             stderr.print("nb: failed to remove cask '{s}': {}\n", .{ token, err }) catch {};
             had_error = true;
             continue;
@@ -4517,13 +5063,14 @@ fn printUsage() void {
         \\  remove <formula>         Uninstall packages
         \\  remove --cask <app>      Uninstall macOS applications
         \\  remove --deb <pkg>       Uninstall .deb packages (Linux)
-        \\  list [--versions|--names]
+        \\  list [--versions|--names] [--json]
         \\                           List installed packages, casks, and debs
-        \\  leaves [--tree]          List packages with no dependents
-        \\  info <formula>           Show formula info from Homebrew API
-        \\  info --cask <app>        Show cask info from Homebrew API
-        \\  search <query>           Search for formulas and casks
-        \\  where <pattern>          Show installed kegs, prefix files, and index hits matching pattern
+        \\  leaves [--tree] [--json] List packages with no dependents
+        \\  info [--json] <formula>  Show formula info from Homebrew API
+        \\  info --cask [--json] <app>
+        \\                           Show cask info from Homebrew API
+        \\  search <query> [--json]  Search for formulas and casks
+        \\  where <pattern> [--json] Show installed kegs, prefix files, and index hits matching pattern
         \\  upgrade [formula]        Upgrade packages (or all if none specified)
         \\  upgrade --cask [app]     Upgrade casks (or all if none specified)
         \\  upgrade --deb            Upgrade all installed .deb packages
@@ -4534,7 +5081,7 @@ fn printUsage() void {
         \\  version                  Print the installed version
         \\  doctor [--probe [pkg]]   Check installation health / probe installed packages
         \\  cleanup [--dry-run]      Remove stale caches and orphaned files
-        \\  outdated [--cask|--deb] [pkg...]  List packages with newer versions available
+        \\  outdated [--cask|--deb] [--json] [pkg...]  List packages with newer versions available
         \\  pin <package>            Pin a package (skip during upgrade)
         \\  unpin <package>          Unpin a package
         \\  rollback <package>       Rollback to previous version
@@ -4542,8 +5089,9 @@ fn printUsage() void {
         \\  link <package>           Link an installed keg's binaries into the prefix
         \\  unlink <package>         Remove an installed keg's prefix links (keg stays)
         \\  bundle [dump|install]    Export/import package lists (Brewfile-compatible)
-        \\  deps [--tree] <formula>  Show dependency tree
-        \\  services [list|start|stop|restart] [name]
+        \\  deps [--tree] [--json] <formula>
+        \\                           Show dependency tree
+        \\  services [list|start|stop|restart] [name]  (list accepts --json)
         \\                           Manage background services
         \\  completions [zsh|bash|fish]
         \\                           Generate shell completions
@@ -5423,7 +5971,14 @@ fn runSwitch(alloc: std.mem.Allocator, args: []const []const u8) void {
         db.recordInstall(name, prev.version, prev.sha256) catch {};
         stdout.print("==> Switched {s} to {s} (previous version kept in the Cellar; `nb cleanup` prunes it)\n", .{ name, prev.version }) catch {};
     }
-    if (had_error) std.process.exit(1);
+    if (had_error) {
+        // process.exit skips the deferred close: keep the records of the
+        // packages that did switch.
+        db.flush() catch |err| {
+            stderr.print("nb: WARNING: failed to save package database: {}\n", .{err}) catch {};
+        };
+        std.process.exit(1);
+    }
 }
 // ── nb link / nb unlink ──
 //
@@ -5724,6 +6279,7 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     var is_cask = false;
     var is_deb = false;
+    var json = false;
     var names: std.ArrayList([]const u8) = .empty;
     defer names.deinit(alloc);
     for (args) |arg| {
@@ -5731,8 +6287,10 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
             is_cask = true;
         } else if (std.mem.eql(u8, arg, "--deb")) {
             is_deb = true;
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            json = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            stderr.print("nb: outdated: unknown flag '{s}' (supported: --cask, --deb)\n", .{arg}) catch {};
+            stderr.print("nb: outdated: unknown flag '{s}' (supported: --cask, --deb, --json)\n", .{arg}) catch {};
             std.process.exit(1);
         } else {
             names.append(alloc, arg) catch {
@@ -5752,7 +6310,10 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
     };
     defer db.close();
 
-    for (names.items) |name| {
+    for (names.items) |*name_ptr| {
+        if (is_cask or (!is_deb and db.findKeg(name_ptr.*) == null and db.findDeb(name_ptr.*) == null))
+            resolveCaskShortName(&db, name_ptr, "outdated");
+        const name = name_ptr.*;
         const found = if (is_cask) db.findCask(name) != null else if (is_deb) db.findDeb(name) != null else db.findKeg(name) != null or db.findCask(name) != null or db.findDeb(name) != null;
         if (!found) {
             stderr.print("nb: outdated: '{s}' is not installed\n", .{name}) catch {};
@@ -5760,8 +6321,8 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
         }
     }
 
-    stdout.print("==> Checking for outdated packages...\n", .{}) catch {};
-    var outdated = getOutdatedPackages(alloc, &db, names.items, !is_deb, !is_cask and !is_deb);
+    if (!json) stdout.print("==> Checking for outdated packages...\n", .{}) catch {};
+    var outdated = getOutdatedPackages(alloc, &db, names.items, !is_deb, !is_cask and !is_deb, !json);
     defer {
         for (outdated.items) |*pkg| pkg.deinit(alloc);
         outdated.deinit(alloc);
@@ -5769,6 +6330,10 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     // Also check deb packages
     var deb_outdated: usize = 0;
+    var json_arena = std.heap.ArenaAllocator.init(alloc);
+    defer json_arena.deinit();
+    const ja = json_arena.allocator();
+    var json_entries: std.ArrayList(JsonOutdatedEntry) = .empty;
     const installed_debs = db.listInstalledDebs(alloc) catch &.{};
     defer if (installed_debs.len > 0) alloc.free(installed_debs);
 
@@ -5833,11 +6398,50 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
             }
             if (idx.get(deb.name)) |idx_pkg| {
                 if (nb.version.compareDebVersions(idx_pkg.version, deb.version) == .gt) {
-                    stdout.print("{s} ({s} -> {s}) (deb)\n", .{ deb.name, deb.version, idx_pkg.version }) catch {};
+                    if (json) {
+                        json_entries.append(ja, .{
+                            .name = deb.name,
+                            .kind = "deb",
+                            .installed = deb.version,
+                            .latest = ja.dupe(u8, idx_pkg.version) catch "",
+                            .pinned = false,
+                            .upgrade_supported = true,
+                            .unsupported_reason = null,
+                        }) catch {};
+                    } else stdout.print("{s} ({s} -> {s}) (deb)\n", .{ deb.name, deb.version, idx_pkg.version }) catch {};
                     deb_outdated += 1;
                 }
             }
         }
+    }
+
+    if (json) {
+        // Keg and cask entries first, like the text output; debs were collected above.
+        var keg_and_cask: std.ArrayList(JsonOutdatedEntry) = .empty;
+        for (outdated.items) |pkg| {
+            var reason: ?[]const u8 = null;
+            if (pkg.is_cask_pkg) {
+                // The same decision `nb upgrade --cask` makes before it plans.
+                if (fetchCaskUpgradeCandidate(alloc, pkg.name)) |candidate| {
+                    defer candidate.deinit(alloc);
+                    if (nb.cask_upgrade.unsupportedReason(candidate)) |r| reason = r;
+                } else |err| {
+                    reason = std.fmt.allocPrint(ja, "cannot prepare cask upgrade ({s})", .{@errorName(err)}) catch "cannot prepare cask upgrade";
+                }
+            }
+            keg_and_cask.append(ja, .{
+                .name = pkg.name,
+                .kind = if (pkg.is_cask_pkg) "cask" else "formula",
+                .installed = pkg.old_ver,
+                .latest = pkg.new_ver,
+                .pinned = pkg.is_pinned,
+                .upgrade_supported = reason == null,
+                .unsupported_reason = reason,
+            }) catch {};
+        }
+        keg_and_cask.appendSlice(ja, json_entries.items) catch {};
+        printJsonDocument(alloc, keg_and_cask.items, true);
+        return;
     }
 
     if (outdated.items.len == 0 and deb_outdated == 0) {
@@ -5901,22 +6505,25 @@ fn runDeps(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stderr = StderrWriter{};
 
     var tree_mode = false;
+    var json = false;
     var formula_name: ?[]const u8 = null;
 
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--tree") or std.mem.eql(u8, arg, "-t")) {
             tree_mode = true;
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            json = true;
         } else {
             formula_name = arg;
         }
     }
 
     const name = formula_name orelse {
-        stderr.print("nb: no formula specified\nUsage: nb deps [--tree] <formula>\n", .{}) catch {};
+        stderr.print("nb: no formula specified\nUsage: nb deps [--tree] [--json] <formula>\n", .{}) catch {};
         std.process.exit(1);
     };
 
-    stdout.print("==> Resolving dependencies for {s}...\n", .{name}) catch {};
+    if (!json) stdout.print("==> Resolving dependencies for {s}...\n", .{name}) catch {};
 
     var resolver = nb.deps.DepResolver.init(alloc);
     defer resolver.deinit();
@@ -5926,6 +6533,17 @@ fn runDeps(alloc: std.mem.Allocator, args: []const []const u8) void {
         std.process.exit(1);
     };
 
+    if (json and tree_mode) {
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        defer out.deinit();
+        var w: std.json.Stringify = .{ .writer = &out.writer };
+        writeDepTreeJson(&w, &resolver, name, 0) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        stdout.print("{{\"schema\":{d},\"tree\":{s}}}\n", .{ json_schema_version, out.written() }) catch {};
+        return;
+    }
     if (tree_mode) {
         renderDepTree(stdout, &resolver, name, "", true);
     } else {
@@ -5939,6 +6557,16 @@ fn runDeps(alloc: std.mem.Allocator, args: []const []const u8) void {
         };
         defer alloc.free(sorted);
 
+        if (json) {
+            var names: std.ArrayList([]const u8) = .empty;
+            defer names.deinit(alloc);
+            for (sorted) |f| {
+                if (!std.mem.eql(u8, f.name, name)) names.append(alloc, f.name) catch {};
+            }
+            printJsonValue(alloc, .{ .schema = json_schema_version, .name = name, .dependencies = names.items });
+            return;
+        }
+
         var count: usize = 0;
         for (sorted) |f| {
             if (std.mem.eql(u8, f.name, name)) continue;
@@ -5949,6 +6577,23 @@ fn runDeps(alloc: std.mem.Allocator, args: []const []const u8) void {
             stdout.print("(no dependencies)\n", .{}) catch {};
         }
     }
+}
+
+/// `{"name": N, "dependencies": [<same shape>...]}`, like the text tree
+/// (a shared dependency appears under each parent). Depth is capped so a
+/// cycle the resolver let through cannot recurse forever.
+fn writeDepTreeJson(w: *std.json.Stringify, resolver: *nb.deps.DepResolver, name: []const u8, depth: usize) std.Io.Writer.Error!void {
+    try w.beginObject();
+    try w.objectField("name");
+    try w.write(name);
+    try w.objectField("dependencies");
+    try w.beginArray();
+    if (depth < 64) {
+        const dep_list = resolver.edges.get(name) orelse &[_][]const u8{};
+        for (dep_list) |dep| try writeDepTreeJson(w, resolver, dep, depth + 1);
+    }
+    try w.endArray();
+    try w.endObject();
 }
 
 fn renderDepTree(stdout: anytype, resolver: *nb.deps.DepResolver, name: []const u8, prefix: []const u8, is_root: bool) void {
@@ -5972,18 +6617,40 @@ fn renderDepTree(stdout: anytype, resolver: *nb.deps.DepResolver, name: []const 
 
 // ── nb services ──
 
-fn runServices(alloc: std.mem.Allocator, args: []const []const u8) void {
+const JsonService = struct { name: []const u8, formula: []const u8, version: []const u8, status: []const u8 };
+
+fn runServices(alloc: std.mem.Allocator, all_args: []const []const u8) void {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
+    const json_flag = takeJsonFlag(alloc, all_args);
+    const args = json_flag.rest;
 
     const subcmd = if (args.len > 0) args[0] else "list";
+    if (json_flag.json and !std.mem.eql(u8, subcmd, "list")) {
+        stderr.print("nb: --json is only supported for `nb services list`\n", .{}) catch {};
+        std.process.exit(1);
+    }
     const svc_name = if (args.len > 1) args[1] else null;
 
     const services_list = nb.services.discoverServices(alloc, g_io) catch {
         stderr.print("nb: failed to discover services\n", .{}) catch {};
+        if (json_flag.json) std.process.exit(1);
         return;
     };
     defer nb.services.freeServiceList(alloc, services_list);
+
+    if (json_flag.json) {
+        const entries = alloc.alloc(JsonService, services_list.len) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        defer alloc.free(entries);
+        for (services_list, entries) |svc, *e| {
+            e.* = .{ .name = svc.name, .formula = svc.keg_name, .version = svc.keg_version, .status = if (nb.services.isRunning(alloc, g_io, svc.label)) "running" else "stopped" };
+        }
+        printJsonValue(alloc, .{ .schema = json_schema_version, .services = entries });
+        return;
+    }
 
     if (std.mem.eql(u8, subcmd, "list")) {
         if (services_list.len == 0) {
@@ -7319,7 +7986,7 @@ fn runMigrate(alloc: std.mem.Allocator) void {
 
                 const empty_apps: []const []const u8 = &.{};
                 const empty_bins: []const []const u8 = &.{};
-                db.recordCaskInstall(token, token, version, "", empty_apps, empty_bins) catch {
+                db.recordCaskInstall(token, token, version, "", empty_apps, empty_bins, &.{}) catch {
                     stderr.print("nb: failed to record cask {s} {s}\n", .{ token, version }) catch {};
                     continue;
                 };
@@ -7354,12 +8021,13 @@ fn sourceVerified(alloc: std.mem.Allocator, f: nb.formula.Formula) bool {
     return std.ascii.eqlIgnoreCase(asset.sha256, formulaArtifactSha(f));
 }
 
-fn showPublishedTrust(alloc: std.mem.Allocator, stdout: StdoutWriter, token: []const u8, kind: trust.Kind, ver: []const u8, sha: []const u8, tier: *[]const u8) void {
-    var doc = trust.load(alloc) catch return;
+fn showPublishedTrust(alloc: std.mem.Allocator, stdout: anytype, token: []const u8, kind: trust.Kind, ver: []const u8, sha: []const u8, tier: *[]const u8, arena: std.mem.Allocator) ?JsonPublished {
+    var doc = trust.load(alloc) catch return null;
     defer doc.deinit();
-    const e = doc.value.latest(token, kind, ver, trust.platform(), sha, trust.timestamp()) orelse return;
+    const e = doc.value.latest(token, kind, ver, trust.platform(), sha, trust.timestamp()) orelse return null;
     if (e.result == .pass) tier.* = "install-verified";
     stdout.print("  published evidence: {s}, {s}, {d} ({s})\n", .{ @tagName(e.source), @tagName(e.result), e.observed_at, e.platform }) catch {};
+    return .{ .source = @tagName(e.source), .result = @tagName(e.result), .observed_at = e.observed_at, .platform = arena.dupe(u8, e.platform) catch "" };
 }
 
 fn runTrust(alloc: std.mem.Allocator, args: []const []const u8) void {
@@ -7426,4 +8094,97 @@ fn trustCommand(alloc: std.mem.Allocator, args: []const []const u8) !void {
     const json = try std.json.Stringify.valueAlloc(alloc, entry, .{ .whitespace = .indent_2 });
     defer alloc.free(json);
     if (output) |path| try trust.write(path, json) else try std.Io.File.stdout().writeStreamingAll(g_io, json);
+}
+
+test "collectCaskDbEntries records the app and font basenames install uses (#433, #479)" {
+    const alloc = std.testing.allocator;
+    var apps: std.ArrayList([]const u8) = .empty;
+    defer apps.deinit(alloc);
+    var binaries: std.ArrayList([]const u8) = .empty;
+    defer binaries.deinit(alloc);
+    var fonts: std.ArrayList([]const u8) = .empty;
+    defer fonts.deinit(alloc);
+    const artifacts = [_]nb.cask.Artifact{ .{ .app = "Sub/Foo.app" }, .{ .app = "Bar.app" }, .{ .font = "ttf/FiraCode-Regular.ttf" } };
+    collectCaskDbEntries(alloc, &artifacts, &apps, &binaries, &fonts);
+    // Fonts land in ~/Library/Fonts/<basename>; the record keeps that name (#479).
+    try std.testing.expectEqual(@as(usize, 1), fonts.items.len);
+    try std.testing.expectEqualStrings("FiraCode-Regular.ttf", fonts.items[0]);
+    try std.testing.expectEqual(@as(usize, 2), apps.items.len);
+    try std.testing.expectEqualStrings("Foo.app", apps.items[0]);
+    try std.testing.expectEqualStrings("Bar.app", apps.items[1]);
+}
+
+test "isAppMainExecutable matches only the bundle's CFBundleExecutable (#494)" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    const io = std.testing.io;
+    const alloc = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(io, "electerm.app/Contents/MacOS");
+    try tmp.dir.writeFile(io, .{
+        .sub_path = "electerm.app/Contents/Info.plist",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<plist version="1.0"><dict>
+        \\<key>CFBundleExecutable</key><string>electerm</string>
+        \\</dict></plist>
+        \\
+        ,
+    });
+    var root_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const root = root_buf[0..try tmp.dir.realPath(io, &root_buf)];
+    var main_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const main_exe = try std.fmt.bufPrint(&main_buf, "{s}/electerm.app/Contents/MacOS/electerm", .{root});
+    var cli_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const cli = try std.fmt.bufPrint(&cli_buf, "{s}/electerm.app/Contents/MacOS/electerm-cli", .{root});
+    var res_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const res = try std.fmt.bufPrint(&res_buf, "{s}/electerm.app/Contents/Resources/bin/electerm", .{root});
+
+    try std.testing.expect(isAppMainExecutable(alloc, root, &.{"electerm.app"}, main_exe));
+    try std.testing.expect(!isAppMainExecutable(alloc, root, &.{"electerm.app"}, cli));
+    try std.testing.expect(!isAppMainExecutable(alloc, root, &.{"electerm.app"}, res));
+    try std.testing.expect(!isAppMainExecutable(alloc, root, &.{"Other.app"}, main_exe));
+}
+
+test "read-only commands share the operation lock; changes keep it exclusive (#503)" {
+    const none: []const []const u8 = &.{};
+    try std.testing.expectEqual(CommandLock.shared, commandLock(.outdated, &.{"--cask"}));
+    try std.testing.expectEqual(CommandLock.shared, commandLock(.list, none));
+    try std.testing.expectEqual(CommandLock.shared, commandLock(.info, &.{ "--cask", "x" }));
+    try std.testing.expectEqual(CommandLock.shared, commandLock(.services, none));
+    try std.testing.expectEqual(CommandLock.shared, commandLock(.services, &.{"list"}));
+    try std.testing.expectEqual(CommandLock.exclusive, commandLock(.services, &.{ "start", "x" }));
+    try std.testing.expectEqual(CommandLock.exclusive, commandLock(.install, &.{"x"}));
+    try std.testing.expectEqual(CommandLock.exclusive, commandLock(.upgrade, none));
+    try std.testing.expectEqual(CommandLock.exclusive, commandLock(.doctor, none));
+    try std.testing.expectEqual(CommandLock.exclusive, commandLock(.cleanup, none));
+    try std.testing.expectEqual(CommandLock.none, commandLock(.version, none));
+}
+
+test "--json documents keep schema 1 and escape names (#495)" {
+    const alloc = std.testing.allocator;
+    const list = [_]JsonListEntry{
+        .{ .name = "node", .kind = "formula", .version = "26.13.0_2", .pinned = true, .versions = &.{ .{ .version = "26.13.0_2", .switchable = true }, .{ .version = "26.12.0", .switchable = false } } },
+        .{ .name = "Rex57/tap/nanobrew-ui", .kind = "cask", .version = "1.0.0", .pinned = false },
+        .{ .name = "we\"ird", .kind = "deb", .version = "1:2.3-4", .pinned = false },
+    };
+    const list_json = try jsonDocument(alloc, &list, false);
+    defer alloc.free(list_json);
+    try std.testing.expectEqualStrings(
+        \\{"schema":1,"packages":[{"name":"node","kind":"formula","version":"26.13.0_2","pinned":true,"versions":[{"version":"26.13.0_2","switchable":true},{"version":"26.12.0","switchable":false}]},{"name":"Rex57/tap/nanobrew-ui","kind":"cask","version":"1.0.0","pinned":false},{"name":"we\"ird","kind":"deb","version":"1:2.3-4","pinned":false}]}
+    , list_json);
+
+    const outdated = [_]JsonOutdatedEntry{
+        .{ .name = "node", .kind = "formula", .installed = "26.13.0_2", .latest = "26.14.0", .pinned = false, .upgrade_supported = true, .unsupported_reason = null },
+        .{ .name = "tool", .kind = "cask", .installed = "1.0", .latest = "2.0", .pinned = false, .upgrade_supported = false, .unsupported_reason = "external installers cannot be rolled back" },
+    };
+    const outdated_json = try jsonDocument(alloc, &outdated, true);
+    defer alloc.free(outdated_json);
+    try std.testing.expectEqualStrings(
+        \\{"schema":1,"packages":[{"name":"node","kind":"formula","installed":"26.13.0_2","latest":"26.14.0","pinned":false,"upgrade_supported":true,"unsupported_reason":null},{"name":"tool","kind":"cask","installed":"1.0","latest":"2.0","pinned":false,"upgrade_supported":false,"unsupported_reason":"external installers cannot be rolled back"}]}
+    , outdated_json);
+
+    const empty = try jsonDocument(alloc, @as([]const JsonOutdatedEntry, &.{}), true);
+    defer alloc.free(empty);
+    try std.testing.expectEqualStrings("{\"schema\":1,\"packages\":[]}", empty);
 }

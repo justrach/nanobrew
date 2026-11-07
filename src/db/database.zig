@@ -9,6 +9,23 @@ const paths = @import("../platform/paths.zig");
 
 const DB_PATH = paths.DB_PATH;
 
+const LoadProblem = enum { too_large, read, parse };
+
+/// The load warning for the file that was opened, not the default path (#473).
+fn loadWarning(buf: []u8, problem: LoadProblem, path: []const u8) []const u8 {
+    const text = switch (problem) {
+        .too_large => "warning: nanobrew database is too large to load; it will not be modified: ",
+        .read => "warning: nanobrew database read failed; it will not be modified: ",
+        .parse => "warning: nanobrew database parse failed; it will not be modified until repaired or removed: ",
+    };
+    return std.fmt.bufPrint(buf, "{s}{s}\n", .{ text, path }) catch text;
+}
+
+fn warnLoad(problem: LoadProblem, path: []const u8) void {
+    var buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+    std.Io.File.stderr().writeStreamingAll(paths.safe_io, loadWarning(&buf, problem, path)) catch {};
+}
+
 pub const Keg = struct {
     name: []const u8,
     version: []const u8,
@@ -21,6 +38,23 @@ pub const Keg = struct {
     probe_platform: u32 = 0,
 };
 
+pub const InstallAction = enum { install, keep, keep_pinned };
+
+/// How `nb install` treats a resolved formula. `recorded` is its DB record,
+/// `keg_ver` the Cellar keg found for the resolved version (null if none),
+/// `sha256` the resolved artifact digest, and `explicit_version` is set for a
+/// `name@version` / `name@trusted` request.
+pub fn installAction(recorded: ?Keg, keg_ver: ?[]const u8, sha256: []const u8, explicit_version: bool) InstallAction {
+    const keg = recorded orelse return if (keg_ver == null) .install else .keep;
+    const same_keg = if (keg_ver) |ver| std.mem.eql(u8, keg.version, ver) else false;
+    const artifact_changed = same_keg and sha256.len > 0 and
+        keg.sha256.len > 0 and !std.mem.eql(u8, keg.sha256, sha256);
+    // A pin holds the recorded keg against newer versions and rebuilt bottles,
+    // also when it is only a dependency of what the user asked for.
+    if (keg.pinned and !explicit_version and (!same_keg or artifact_changed)) return .keep_pinned;
+    return if (keg_ver == null or artifact_changed) .install else .keep;
+}
+
 pub const CaskRecord = struct {
     token: []const u8,
     canonical_token: []const u8 = "",
@@ -28,6 +62,8 @@ pub const CaskRecord = struct {
     sha256: []const u8 = "",
     apps: []const []const u8,
     binaries: []const []const u8,
+    /// Font file names copied into ~/Library/Fonts, so removal can delete them.
+    fonts: []const []const u8 = &.{},
     probe_success: bool = false,
     probed_at: i64 = 0,
     probe_schema: u32 = 0,
@@ -85,7 +121,7 @@ pub const Database = struct {
         const st = file.stat(lib_io) catch return db;
         db.loaded_mtime_ns = st.mtime.nanoseconds;
         if (st.size > max_state_bytes) {
-            std.Io.File.stderr().writeStreamingAll(paths.safe_io, "warning: nanobrew database is too large to load; it will not be modified: " ++ DB_PATH ++ "\n") catch {};
+            warnLoad(.too_large, path);
             db.unreadable = true;
             return db;
         }
@@ -95,7 +131,7 @@ pub const Database = struct {
         };
         const n_read = file.readPositionalAll(lib_io, contents, 0) catch {
             alloc.free(contents);
-            std.Io.File.stderr().writeStreamingAll(paths.safe_io, "warning: nanobrew database read failed; it will not be modified: " ++ DB_PATH ++ "\n") catch {};
+            warnLoad(.read, path);
             db.unreadable = true;
             return db;
         };
@@ -104,7 +140,7 @@ pub const Database = struct {
         if (data.len == 0) return db;
 
         const parsed = std.json.parseFromSlice(std.json.Value, alloc, data, .{}) catch {
-            std.Io.File.stderr().writeStreamingAll(paths.safe_io, "warning: nanobrew database parse failed; it will not be modified until repaired or removed: " ++ DB_PATH ++ "\n") catch {};
+            warnLoad(.parse, path);
             db.unreadable = true;
             return db;
         };
@@ -190,6 +226,18 @@ pub const Database = struct {
                             }
                         }
 
+                        // Absent in records written before fonts were tracked.
+                        var cfonts: std.ArrayList([]const u8) = .empty;
+                        if (item.object.get("fonts")) |fonts_val| {
+                            if (fonts_val == .array) {
+                                for (fonts_val.array.items) |f| {
+                                    if (f == .string) {
+                                        cfonts.append(alloc, alloc.dupe(u8, f.string) catch continue) catch {};
+                                    }
+                                }
+                            }
+                        }
+
                         const c_token = alloc.dupe(u8, ctoken) catch continue;
                         const c_canonical = alloc.dupe(u8, ccanonical) catch {
                             alloc.free(c_token);
@@ -222,6 +270,17 @@ pub const Database = struct {
                             alloc.free(c_apps);
                             continue;
                         };
+                        const c_fonts = cfonts.toOwnedSlice(alloc) catch {
+                            alloc.free(c_token);
+                            alloc.free(c_canonical);
+                            alloc.free(c_ver);
+                            alloc.free(c_sha);
+                            for (c_apps) |s| alloc.free(s);
+                            alloc.free(c_apps);
+                            for (c_bins) |s| alloc.free(s);
+                            alloc.free(c_bins);
+                            continue;
+                        };
                         db.casks.append(alloc, .{
                             .token = c_token,
                             .canonical_token = c_canonical,
@@ -229,6 +288,7 @@ pub const Database = struct {
                             .sha256 = c_sha,
                             .apps = c_apps,
                             .binaries = c_bins,
+                            .fonts = c_fonts,
                             .probe_success = cprobe,
                             .probed_at = cprobed,
                             .probe_schema = cprobe_schema,
@@ -242,6 +302,8 @@ pub const Database = struct {
                             alloc.free(c_apps);
                             for (c_bins) |s| alloc.free(s);
                             alloc.free(c_bins);
+                            for (c_fonts) |s| alloc.free(s);
+                            alloc.free(c_fonts);
                         };
                     }
                 }
@@ -356,6 +418,8 @@ pub const Database = struct {
             self.alloc.free(c.apps);
             for (c.binaries) |b| self.alloc.free(b);
             self.alloc.free(c.binaries);
+            for (c.fonts) |f| self.alloc.free(f);
+            self.alloc.free(c.fonts);
         }
         self.casks.deinit(self.alloc);
         for (self.debs.items) |d| {
@@ -490,10 +554,10 @@ pub const Database = struct {
         return result;
     }
 
-    pub fn recordCaskInstall(self: *Database, token: []const u8, canonical_token: []const u8, version: []const u8, sha256: []const u8, apps: []const []const u8, binaries: []const []const u8) !void {
+    pub fn recordCaskInstall(self: *Database, token: []const u8, canonical_token: []const u8, version: []const u8, sha256: []const u8, apps: []const []const u8, binaries: []const []const u8, fonts: []const []const u8) !void {
         // Build the replacement first: callers may pass fields borrowed from
         // the existing record, and allocation failure must preserve that record.
-        const replacement = try dupeCaskRecord(self.alloc, .{ .token = token, .canonical_token = canonical_token, .version = version, .sha256 = sha256, .apps = apps, .binaries = binaries });
+        const replacement = try dupeCaskRecord(self.alloc, .{ .token = token, .canonical_token = canonical_token, .version = version, .sha256 = sha256, .apps = apps, .binaries = binaries, .fonts = fonts });
         errdefer freeCaskRecord(self.alloc, replacement);
         try self.casks.ensureUnusedCapacity(self.alloc, 1);
         var i: usize = 0;
@@ -558,6 +622,8 @@ pub const Database = struct {
                 self.alloc.free(old_cask.apps);
                 for (old_cask.binaries) |b| self.alloc.free(b);
                 self.alloc.free(old_cask.binaries);
+                for (old_cask.fonts) |f| self.alloc.free(f);
+                self.alloc.free(old_cask.fonts);
                 _ = self.casks.orderedRemove(i);
             } else {
                 i += 1;
@@ -572,6 +638,39 @@ pub const Database = struct {
                 std.mem.eql(u8, c.canonical_token, token)) return c;
         }
         return null;
+    }
+
+    pub const CaskLookup = union(enum) {
+        none,
+        found: CaskRecord,
+        /// The short name matches more than one installed tap cask.
+        ambiguous: usize,
+    };
+
+    /// `findCask`, plus an unambiguous tap short name: `nanobrew-ui` resolves
+    /// to an installed `Rex57/tap/nanobrew-ui` only when no other installed
+    /// tap cask has that short name (#495). Names containing `/` must match
+    /// exactly.
+    pub fn lookupCask(self: *Database, name: []const u8) CaskLookup {
+        if (name.len == 0) return .none;
+        if (self.findCask(name)) |c| return .{ .found = c };
+        if (std.mem.indexOfScalar(u8, name, '/') != null) return .none;
+        var hit: ?CaskRecord = null;
+        var count: usize = 0;
+        for (self.casks.items) |c| {
+            if (!std.mem.eql(u8, tapShortName(c.token), name) and
+                !std.mem.eql(u8, tapShortName(c.canonical_token), name)) continue;
+            count += 1;
+            hit = c;
+        }
+        if (count == 1) return .{ .found = hit.? };
+        if (count > 1) return .{ .ambiguous = count };
+        return .none;
+    }
+
+    fn tapShortName(token: []const u8) []const u8 {
+        const slash = std.mem.lastIndexOfScalar(u8, token, '/') orelse return "";
+        return token[slash + 1 ..];
     }
 
     pub fn listInstalledCasks(self: *Database, alloc: std.mem.Allocator) ![]CaskRecord {
@@ -796,6 +895,11 @@ pub const Database = struct {
                 if (j > 0) try writer.interface.writeAll(",");
                 try writeJsonStringFallible(&writer.interface, b);
             }
+            try writer.interface.writeAll("],\"fonts\":[");
+            for (c.fonts, 0..) |f, j| {
+                if (j > 0) try writer.interface.writeAll(",");
+                try writeJsonStringFallible(&writer.interface, f);
+            }
             try writer.interface.writeAll("]}");
         }
         try writer.interface.writeAll("],\"history\":{");
@@ -974,6 +1078,57 @@ test "recordInstall keeps an existing pin" {
     try testing.expect(!db.findKeg("other").?.pinned);
 }
 
+test "a pin set after the last flush is lost when the process exits without close()" {
+    const io = testing.io;
+    const path = try std.fmt.allocPrint(testing.allocator, "/tmp/nb-test-db-pin-{d}.json", .{std.c.getpid()});
+    defer testing.allocator.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const lock_path = try std.fmt.allocPrint(testing.allocator, "{s}.lock", .{path});
+    defer testing.allocator.free(lock_path);
+    defer std.Io.Dir.deleteFileAbsolute(io, lock_path) catch {};
+
+    // runInstall on a failed batch: flush, then std.process.exit (no close()).
+    {
+        var db = try Database.openAt(testing.allocator, path);
+        try db.recordInstall("before", "1.0", "abc");
+        try db.recordInstall("after", "1.0", "abc");
+        try db.setPinned("before", true);
+        try db.flush();
+        try db.setPinned("after", true);
+        db.dirty = false; // std.process.exit skips close()'s save
+        db.close();
+    }
+
+    var db = try Database.openAt(testing.allocator, path);
+    defer db.close();
+    try testing.expect(db.findKeg("before").?.pinned);
+    try testing.expect(!db.findKeg("after").?.pinned);
+}
+
+test "installAction keeps a pinned keg" {
+    const old: Keg = .{ .name = "openssl@3", .version = "3.3.0", .sha256 = "aaa" };
+    var pinned = old;
+    pinned.pinned = true;
+    var pinned_new = pinned;
+    pinned_new.version = "3.4.0";
+
+    // Unpinned kegs follow the resolved formula.
+    try testing.expectEqual(InstallAction.install, installAction(old, null, "bbb", false));
+    try testing.expectEqual(InstallAction.install, installAction(old, "3.3.0", "bbb", false));
+    try testing.expectEqual(InstallAction.keep, installAction(old, "3.3.0", "aaa", false));
+    try testing.expectEqual(InstallAction.keep, installAction(null, "3.4.0", "bbb", false));
+
+    // A pinned keg is never replaced as a newer version or a rebuilt bottle.
+    try testing.expectEqual(InstallAction.keep_pinned, installAction(pinned, null, "bbb", false));
+    try testing.expectEqual(InstallAction.keep_pinned, installAction(pinned, "3.4.0", "bbb", false));
+    try testing.expectEqual(InstallAction.keep_pinned, installAction(pinned, "3.3.0", "bbb", false));
+    try testing.expectEqual(InstallAction.keep, installAction(pinned, "3.3.0", "aaa", false));
+    try testing.expectEqual(InstallAction.keep, installAction(pinned_new, "3.4.0", "", false));
+
+    // `name@version` is an explicit request that overrides the pin.
+    try testing.expectEqual(InstallAction.install, installAction(pinned, null, "bbb", true));
+}
+
 test "unparseable state.json is never overwritten" {
     const io = testing.io;
     const path = try std.fmt.allocPrint(testing.allocator, "/tmp/nb-test-db-corrupt-{d}.json", .{std.c.getpid()});
@@ -1032,7 +1187,7 @@ test "probe results persist against current package records" {
     try testing.expectEqual(@as(u32, 9), keg.probe_schema);
     try testing.expectEqual(@as(u32, 10), keg.probe_platform);
 
-    try db.recordCaskInstall("alias", "canonical", "2.0", "def", &.{"App.app"}, &.{});
+    try db.recordCaskInstall("alias", "canonical", "2.0", "def", &.{"App.app"}, &.{}, &.{});
     try db.recordCaskProbe("canonical", "2.0", "def", true, 11, 12);
     var cask = db.findCask("canonical").?;
     try testing.expect(cask.probe_success);
@@ -1046,6 +1201,35 @@ test "probe results persist against current package records" {
     try testing.expect(!cask.probe_success);
     try testing.expectEqual(@as(u32, 13), cask.probe_schema);
     try testing.expectEqual(@as(u32, 14), cask.probe_platform);
+}
+
+test "cask font records survive a reload and legacy records load without them" {
+    const io = testing.io;
+    const path = try std.fmt.allocPrint(testing.allocator, "/tmp/nb-test-db-fonts-{d}.json", .{std.c.getpid()});
+    defer testing.allocator.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const snapshot = try std.fmt.allocPrint(testing.allocator, "{s}.snapshot", .{path});
+    defer testing.allocator.free(snapshot);
+    defer std.Io.Dir.deleteFileAbsolute(io, snapshot) catch {};
+    {
+        const f = try std.Io.Dir.createFileAbsolute(io, path, .{});
+        defer f.close(io);
+        try f.writeStreamingAll(io,
+            \\{"casks":[{"token":"font-fira-code","version":"6.2","apps":[],"binaries":[],"fonts":["FiraCode-Regular.ttf"]},
+            \\{"token":"legacy","version":"1.0","apps":["Legacy.app"],"binaries":[]}]}
+        );
+    }
+
+    var db = try Database.openAt(testing.allocator, path);
+    defer db.close();
+    try db.writeSnapshot(snapshot);
+
+    var buf: [2048]u8 = undefined;
+    const f = try std.Io.Dir.openFileAbsolute(io, snapshot, .{});
+    defer f.close(io);
+    const written = buf[0..try f.readPositionalAll(io, &buf, 0)];
+    try testing.expect(std.mem.indexOf(u8, written, "\"binaries\":[],\"fonts\":[\"FiraCode-Regular.ttf\"]}") != null);
+    try testing.expect(std.mem.indexOf(u8, written, "\"apps\":[\"Legacy.app\"],\"binaries\":[],\"fonts\":[]}") != null);
 }
 
 fn dupeStrings(alloc: std.mem.Allocator, strings: []const []const u8) ![]const []const u8 {
@@ -1077,7 +1261,12 @@ fn dupeCaskRecord(alloc: std.mem.Allocator, c: CaskRecord) !CaskRecord {
         alloc.free(apps);
     }
     const bins = try dupeStrings(alloc, c.binaries);
-    return .{ .token = token, .canonical_token = canonical, .version = version, .sha256 = sha, .apps = apps, .binaries = bins };
+    errdefer {
+        for (bins) |s| alloc.free(s);
+        alloc.free(bins);
+    }
+    const fonts = try dupeStrings(alloc, c.fonts);
+    return .{ .token = token, .canonical_token = canonical, .version = version, .sha256 = sha, .apps = apps, .binaries = bins, .fonts = fonts };
 }
 
 fn freeCaskRecord(alloc: std.mem.Allocator, c: CaskRecord) void {
@@ -1089,6 +1278,8 @@ fn freeCaskRecord(alloc: std.mem.Allocator, c: CaskRecord) void {
     alloc.free(c.apps);
     for (c.binaries) |s| alloc.free(s);
     alloc.free(c.binaries);
+    for (c.fonts) |s| alloc.free(s);
+    alloc.free(c.fonts);
 }
 
 test "cask replacement preserves borrowed fields and is allocation atomic" {
@@ -1107,9 +1298,9 @@ fn testCaskReplacementAllocation(alloc: std.mem.Allocator) !void {
         db.dirty = false;
         db.close();
     }
-    try db.recordCaskInstall("alias", "canonical", "1", "old-sha", &.{"App.app"}, &.{"tool"});
+    try db.recordCaskInstall("alias", "canonical", "1", "old-sha", &.{"App.app"}, &.{"tool"}, &.{"Font.ttf"});
     const old = db.findCask("alias").?;
-    db.recordCaskInstall(old.token, old.canonical_token, "2", "new-sha", old.apps, old.binaries) catch |err| {
+    db.recordCaskInstall(old.token, old.canonical_token, "2", "new-sha", old.apps, old.binaries, old.fonts) catch |err| {
         try testing.expectEqualStrings("1", db.findCask("alias").?.version);
         try testing.expectEqualStrings("old-sha", db.findCask("alias").?.sha256);
         return err;
@@ -1119,4 +1310,45 @@ fn testCaskReplacementAllocation(alloc: std.mem.Allocator) !void {
     try testing.expectEqualStrings("2", new.version);
     try testing.expectEqualStrings("App.app", new.apps[0]);
     try testing.expectEqualStrings("tool", new.binaries[0]);
+    try testing.expectEqualStrings("Font.ttf", new.fonts[0]);
+}
+
+test "lookupCask resolves only unambiguous tap short names (#495)" {
+    const a = testing.allocator;
+    var db: Database = .{
+        .alloc = a,
+        .kegs = .empty,
+        .casks = .empty,
+        .debs = .empty,
+        .history = std.StringHashMap(std.ArrayList(HistoryEntry)).init(a),
+    };
+    defer {
+        db.casks.deinit(a);
+        db.history.deinit();
+    }
+    try db.casks.append(a, .{ .token = "Rex57/tap/nanobrew-ui", .canonical_token = "Rex57/tap/nanobrew-ui", .version = "1", .apps = &.{}, .binaries = &.{} });
+    try db.casks.append(a, .{ .token = "firefox", .version = "1", .apps = &.{}, .binaries = &.{} });
+
+    try testing.expectEqualStrings("Rex57/tap/nanobrew-ui", db.lookupCask("nanobrew-ui").found.token);
+    try testing.expectEqualStrings("Rex57/tap/nanobrew-ui", db.lookupCask("Rex57/tap/nanobrew-ui").found.token);
+    try testing.expectEqualStrings("firefox", db.lookupCask("firefox").found.token);
+    try testing.expect(db.lookupCask("other/tap/nanobrew-ui") == .none);
+    try testing.expect(db.lookupCask("tap/nanobrew-ui") == .none);
+    try testing.expect(db.lookupCask("nanobrew") == .none);
+    try testing.expect(db.lookupCask("") == .none);
+
+    try db.casks.append(a, .{ .token = "someone/apps/nanobrew-ui", .version = "2", .apps = &.{}, .binaries = &.{} });
+    try testing.expectEqual(@as(usize, 2), db.lookupCask("nanobrew-ui").ambiguous);
+    // An exact token still wins over the ambiguous short name.
+    try testing.expectEqualStrings("someone/apps/nanobrew-ui", db.lookupCask("someone/apps/nanobrew-ui").found.token);
+}
+
+test "database load warnings name the file that was opened (#473)" {
+    var buf: [std.fs.max_path_bytes + 128]u8 = undefined;
+    try std.testing.expectEqualStrings(
+        "warning: nanobrew database parse failed; it will not be modified until repaired or removed: /tmp/other.json\n",
+        loadWarning(&buf, .parse, "/tmp/other.json"),
+    );
+    try std.testing.expect(std.mem.endsWith(u8, loadWarning(&buf, .read, "/x/state.json"), "will not be modified: /x/state.json\n"));
+    try std.testing.expect(std.mem.endsWith(u8, loadWarning(&buf, .too_large, "/y.json"), "/y.json\n"));
 }

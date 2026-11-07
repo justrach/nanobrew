@@ -23,6 +23,7 @@ pub const deps = @import("resolve/deps.zig");
 pub const downloader = @import("net/downloader.zig");
 pub const proxy = @import("net/proxy.zig");
 pub const fetch = @import("net/fetch.zig");
+pub const connect = @import("net/connect.zig");
 pub const telemetry = @import("telemetry/client.zig");
 pub const tar = @import("extract/tar.zig");
 pub const native_tar = @import("extract/native_tar.zig");
@@ -62,12 +63,6 @@ pub const deb_extract = @import("deb/extract.zig");
 pub const deb_distro = @import("deb/distro.zig");
 pub const deb_sources = @import("deb/sources.zig");
 
-// Reused from zigrep
-pub const simd_scanner = @import("kernel/simd_scanner.zig");
-pub const mmap_reader = @import("kernel/mmap_reader.zig");
-pub const arena = @import("mem/arena.zig");
-pub const thread_pool = @import("exec/thread_pool.zig");
-
 // Force Zig to discover tests in all imported modules
 pub const security_test = @import("security_test.zig");
 comptime {
@@ -88,6 +83,7 @@ comptime {
     _ = deb_sources;
     _ = version;
     _ = downloader;
+    _ = connect;
     _ = autoupdate;
     _ = trust_probe;
     _ = trust_evidence;
