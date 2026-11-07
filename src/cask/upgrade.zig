@@ -168,6 +168,11 @@ fn addStep(alloc: std.mem.Allocator, io: std.Io, steps: *std.ArrayList(transacti
 
 /// Caller owns the command lock. Take the existing DB lock as well so an older
 /// binary's state writer cannot race the database replacement.
+/// Whether an interrupted upgrade left a journal that `recover` would replay.
+pub fn journalExists(io: std.Io, locations: Locations) !bool {
+    return transaction.exists(io, locations.journal);
+}
+
 pub fn recover(alloc: std.mem.Allocator, io: std.Io, locations: Locations) !bool {
     if (!try transaction.exists(io, locations.journal)) return false;
     const lock_path = try std.fmt.allocPrint(alloc, "{s}.lock", .{locations.database});
