@@ -4,6 +4,7 @@ const paths = @import("../platform/paths.zig");
 const Cask = @import("../api/cask.zig").Cask;
 const Database = @import("../db/database.zig").Database;
 const installer = @import("install.zig");
+const version = @import("../version.zig");
 pub const transaction = @import("transaction.zig");
 
 pub const Locations = struct {
@@ -56,6 +57,72 @@ pub fn unsupportedReason(cask: Cask) ?[]const u8 {
         else => return "artifact requires side effects without rollback support",
     };
     return if (count == 0) "no app or binary artifacts to upgrade" else null;
+}
+
+/// An auto-updating app replaces itself in /Applications, so its recorded
+/// version goes stale. Like Homebrew, trust the installed bundle's version then.
+pub fn outdated(recorded: []const u8, candidate: []const u8, auto_updates: bool, bundle_version: ?[]const u8) bool {
+    if (!version.isNewer(candidate, recorded)) return false;
+    const bundle = bundle_version orelse return true;
+    if (!auto_updates) return true;
+    // A bundle short version has no ",build" part; compare the release part only.
+    const release = candidate[0 .. std.mem.indexOfScalar(u8, candidate, ',') orelse candidate.len];
+    return version.isNewer(release, bundle);
+}
+
+/// CFBundleShortVersionString of an installed app; null when it cannot be read.
+pub fn bundleShortVersion(alloc: std.mem.Allocator, io: std.Io, app: []const u8) ?[]u8 {
+    const plist = std.fmt.allocPrint(alloc, "{s}/Contents/Info.plist", .{app}) catch return null;
+    defer alloc.free(plist);
+    const res = std.process.run(alloc, io, .{
+        .argv = &.{ "/usr/bin/plutil", "-extract", "CFBundleShortVersionString", "raw", "-o", "-", plist },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    }) catch return null;
+    defer alloc.free(res.stdout);
+    defer alloc.free(res.stderr);
+    if (res.term != .exited or res.term.exited != 0) return null;
+    const value = std.mem.trim(u8, res.stdout, " \t\r\n");
+    if (value.len == 0) return null;
+    return alloc.dupe(u8, value) catch null;
+}
+
+test "bundleShortVersion reads an app's Info.plist" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "Fixture.app/Contents");
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "Fixture.app/Contents/Info.plist",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<plist version="1.0"><dict>
+        \\<key>CFBundleShortVersionString</key><string>5.5.80</string>
+        \\</dict></plist>
+        \\
+        ,
+    });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const app = try std.fmt.bufPrint(&buf, ".zig-cache/tmp/{s}/Fixture.app", .{tmp.sub_path[0..]});
+    const found = bundleShortVersion(std.testing.allocator, std.testing.io, app) orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(found);
+    try std.testing.expectEqualStrings("5.5.80", found);
+
+    var missing_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const missing = try std.fmt.bufPrint(&missing_buf, ".zig-cache/tmp/{s}/Missing.app", .{tmp.sub_path[0..]});
+    try std.testing.expect(bundleShortVersion(std.testing.allocator, std.testing.io, missing) == null);
+}
+
+test "outdated trusts the installed bundle of an auto-updating cask" {
+    // Installed at 5.5.70, the app updated itself to 5.5.80, the API still says 5.5.76.
+    try std.testing.expect(!outdated("5.5.70", "5.5.76", true, "5.5.80"));
+    try std.testing.expect(!outdated("5.5.70", "5.5.76", true, "5.5.76"));
+    try std.testing.expect(!outdated("1.2.0", "1.2.3,456", true, "1.2.3"));
+    try std.testing.expect(outdated("5.5.70", "5.5.76", true, "5.5.72"));
+    // No readable bundle, or not an auto-updating cask: keep the recorded-version rule.
+    try std.testing.expect(outdated("5.5.70", "5.5.76", true, null));
+    try std.testing.expect(outdated("5.5.70", "5.5.76", false, "5.5.80"));
+    try std.testing.expect(!outdated("5.5.76", "5.5.76", true, "5.5.70"));
 }
 
 fn contains(items: []const []const u8, value: []const u8) bool {
