@@ -155,11 +155,19 @@ pub fn debUrl(base_url: []const u8, filename: []const u8, buf: []u8) []const u8 
     return std.fmt.bufPrint(buf, "{s}/{s}", .{ base_url, filename }) catch "";
 }
 
-/// Build a package index into a name → DebPackage lookup map.
+/// Build a package index into a name → DebPackage lookup map. When several
+/// sources list a package, the newest version (dpkg ordering) wins, as in
+/// APT with default pin priorities; on equal versions the first source
+/// listed wins (#457).
 pub fn buildIndex(alloc: std.mem.Allocator, packages: []const DebPackage) !std.StringHashMap(DebPackage) {
     var map = std.StringHashMap(DebPackage).init(alloc);
     for (packages) |pkg| {
-        map.put(pkg.name, pkg) catch continue;
+        const slot = map.getOrPut(pkg.name) catch continue;
+        if (!slot.found_existing or
+            @import("../version.zig").compareDebVersions(pkg.version, slot.value_ptr.version) == .gt)
+        {
+            slot.value_ptr.* = pkg;
+        }
     }
     return map;
 }
@@ -583,4 +591,19 @@ test "serializeIndex/deserializeIndex round-trip preserves mirror across multipl
         try testing.expectEqualStrings(expected.description, got.description);
         try testing.expectEqualStrings(expected.mirror, got.mirror);
     }
+}
+
+test "buildIndex - newest version wins across sources, first wins on a tie (#457)" {
+    const updates: DebPackage = .{ .name = "curl", .version = "8.5.0-2ubuntu10.6", .depends = "", .provides = "", .filename = "pool/main/c/curl/u.deb", .sha256 = "", .size = 0, .description = "", .mirror = "http://archive.ubuntu.com/ubuntu" };
+    const security: DebPackage = .{ .name = "curl", .version = "8.5.0-2ubuntu10.5", .depends = "", .provides = "", .filename = "pool/main/c/curl/s.deb", .sha256 = "", .size = 0, .description = "", .mirror = "http://security.ubuntu.com/ubuntu" };
+    const tie: DebPackage = .{ .name = "curl", .version = "8.5.0-2ubuntu10.6", .depends = "", .provides = "", .filename = "pool/main/c/curl/tie.deb", .sha256 = "", .size = 0, .description = "", .mirror = "http://mirror.example/ubuntu" };
+    // updates before security (Ubuntu's ubuntu.sources order), then a tie.
+    var map = try buildIndex(testing.allocator, &.{ updates, security, tie });
+    defer map.deinit();
+    try testing.expectEqualStrings("8.5.0-2ubuntu10.6", map.get("curl").?.version);
+    try testing.expectEqualStrings("http://archive.ubuntu.com/ubuntu", map.get("curl").?.mirror);
+    // Newer version listed last still wins.
+    var map2 = try buildIndex(testing.allocator, &.{ security, updates });
+    defer map2.deinit();
+    try testing.expectEqualStrings("8.5.0-2ubuntu10.6", map2.get("curl").?.version);
 }
