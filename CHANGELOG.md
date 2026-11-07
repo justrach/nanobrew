@@ -5,6 +5,7 @@ All notable changes to nanobrew are documented here.
 ## [Unreleased]
 
 ### Added
+- `--json` on `nb list`, `nb outdated` (also with `--cask`, `--deb`, `--versions` and package names), `nb info` (formula and `--cask`), `nb search`, `nb leaves [--tree]`, `nb deps [--tree]`, `nb services list` and `nb where` prints one schema-1 JSON document instead of text. `nb outdated --json` also reports whether `nb upgrade` can replace each package and, when it cannot, the reason it would print. `nb upgrade --cask` and `nb outdated` accept an installed tap cask by its short name (`nanobrew-ui` for `Rex57/tap/nanobrew-ui`) when no other installed tap cask shares it. The text output is unchanged. See `docs/json-output.md`. Requested by @Rex57. (#495)
 - `nb upgrade --cask` upgrades DMG casks through the same staged, journaled transaction as zip and tar casks, so they are no longer skipped with "this download format does not support staged upgrades yet". The verified image is attached read-only at a private mount point. Only the declared `app` artifacts and relative binary sources are copied out (a symlink in the image that leads outside the volume is refused), and the image is detached before activation. If nb is killed while the image is attached, it stays mounted under `/tmp/nb-dmg-*` until it is detached or the Mac restarts; recovery does not depend on it. Proposed and first implemented by @Rex57. (#491)
 
 ### Fixed

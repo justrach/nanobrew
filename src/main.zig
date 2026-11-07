@@ -1956,6 +1956,82 @@ test "reinstall removes first only for cask and deb packages" {
     try std.testing.expect(!isRequestedFormulaName("oniguruma", &.{"user/tap/jq"}));
 }
 
+// ── --json output (#495) ──
+//
+// `nb list --json` and `nb outdated --json` print one JSON document on stdout:
+// `{"schema":1,"packages":[...]}`. Errors still go to stderr with exit 1.
+// Fields are only added under schema 1; a removed or renamed field or a
+// changed meaning bumps `schema`, so tools can refuse a format they do not know.
+
+const json_schema_version: u32 = 1;
+
+const JsonVersionRow = struct { version: []const u8, switchable: bool };
+
+const JsonListEntry = struct {
+    name: []const u8,
+    kind: []const u8,
+    version: []const u8,
+    pinned: bool,
+    /// Only with --versions: newest first, like the text output.
+    versions: ?[]const JsonVersionRow = null,
+};
+
+const JsonOutdatedEntry = struct {
+    name: []const u8,
+    kind: []const u8,
+    installed: []const u8,
+    latest: []const u8,
+    pinned: bool,
+    /// What `nb upgrade` would do with this entry now. Pinned entries are
+    /// skipped by upgrade too, but keep `upgrade_supported` for the package
+    /// itself; `unsupported_reason` is the text upgrade prints.
+    upgrade_supported: bool,
+    unsupported_reason: ?[]const u8,
+};
+
+fn jsonDocument(alloc: std.mem.Allocator, packages: anytype, emit_null: bool) ![]u8 {
+    return std.json.Stringify.valueAlloc(alloc, .{ .schema = json_schema_version, .packages = packages }, .{ .emit_null_optional_fields = emit_null });
+}
+
+/// Print any document struct (it must carry `schema`).
+fn printJsonValue(alloc: std.mem.Allocator, value: anytype) void {
+    const bytes = std.json.Stringify.valueAlloc(alloc, value, .{}) catch {
+        StderrWriter.print(.{}, "nb: out of memory while writing JSON\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer alloc.free(bytes);
+    StdoutWriter.print(.{}, "{s}\n", .{bytes}) catch {};
+}
+
+/// Remove `--json` from args; true when it was present.
+fn takeJsonFlag(alloc: std.mem.Allocator, args: []const []const u8) struct { json: bool, rest: []const []const u8 } {
+    var n: usize = 0;
+    for (args) |a| {
+        if (std.mem.eql(u8, a, "--json")) n += 1;
+    }
+    if (n == 0) return .{ .json = false, .rest = args };
+    const rest = alloc.alloc([]const u8, args.len - n) catch {
+        StderrWriter.print(.{}, "nb: out of memory\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    var i: usize = 0;
+    for (args) |a| {
+        if (std.mem.eql(u8, a, "--json")) continue;
+        rest[i] = a;
+        i += 1;
+    }
+    return .{ .json = true, .rest = rest };
+}
+
+fn printJsonDocument(alloc: std.mem.Allocator, packages: anytype, emit_null: bool) void {
+    const bytes = jsonDocument(alloc, packages, emit_null) catch {
+        StderrWriter.print(.{}, "nb: out of memory while writing JSON\n", .{}) catch {};
+        std.process.exit(1);
+    };
+    defer alloc.free(bytes);
+    StdoutWriter.print(.{}, "{s}\n", .{bytes}) catch {};
+}
+
 // ── nb list ──
 
 /// One readdir of the content-addressed store into a sha256 set, replacing
@@ -1996,18 +2072,25 @@ fn runList(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     var show_versions = false;
     var names_only = false;
+    var json = false;
     for (args) |a| {
         if (std.mem.eql(u8, a, "--versions")) {
             show_versions = true;
         } else if (std.mem.eql(u8, a, "--names")) {
             names_only = true;
+        } else if (std.mem.eql(u8, a, "--json")) {
+            json = true;
         } else {
-            stderr.print("nb: unknown list option '{s}'\nUsage: nb list [--versions|--names]\n", .{a}) catch {};
+            stderr.print("nb: unknown list option '{s}'\nUsage: nb list [--versions|--names] [--json]\n", .{a}) catch {};
             std.process.exit(1);
         }
     }
     if (show_versions and names_only) {
-        stderr.print("nb: --versions and --names cannot be combined\nUsage: nb list [--versions|--names]\n", .{}) catch {};
+        stderr.print("nb: --versions and --names cannot be combined\nUsage: nb list [--versions|--names] [--json]\n", .{}) catch {};
+        std.process.exit(1);
+    }
+    if (json and names_only) {
+        stderr.print("nb: --json and --names cannot be combined\nUsage: nb list [--versions|--names] [--json]\n", .{}) catch {};
         std.process.exit(1);
     }
 
@@ -2111,6 +2194,44 @@ fn runList(alloc: std.mem.Allocator, args: []const []const u8) void {
         }
     }
 
+    if (json) {
+        var arena = std.heap.ArenaAllocator.init(alloc);
+        defer arena.deinit();
+        const a = arena.allocator();
+        const entries = a.alloc(JsonListEntry, kegs.len + casks.len + debs.len) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        var n: usize = 0;
+        for (kegs, 0..) |keg, ki| {
+            var versions: ?[]const JsonVersionRow = null;
+            if (show_versions) {
+                const rows = if (version_rows) |vrs| vrs[ki] orelse &.{} else &.{};
+                const out = a.alloc(JsonVersionRow, rows.len) catch {
+                    stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+                    std.process.exit(1);
+                };
+                for (out, 0..) |*o, i| {
+                    const row = rows[rows.len - 1 - i];
+                    o.* = .{ .version = row.version, .switchable = row.switchable };
+                }
+                versions = out;
+            }
+            entries[n] = .{ .name = keg.name, .kind = "formula", .version = keg.version, .pinned = keg.pinned, .versions = versions };
+            n += 1;
+        }
+        for (casks) |c| {
+            entries[n] = .{ .name = c.token, .kind = "cask", .version = c.version, .pinned = false };
+            n += 1;
+        }
+        for (debs) |d| {
+            entries[n] = .{ .name = d.name, .kind = "deb", .version = d.version, .pinned = false };
+            n += 1;
+        }
+        printJsonDocument(alloc, entries[0..n], false);
+        return;
+    }
+
     if (kegs.len == 0 and casks.len == 0 and debs.len == 0) {
         if (!names_only) stdout.print("No packages installed.\n", .{}) catch {};
         return;
@@ -2168,12 +2289,81 @@ fn containsAsciiCaseless(haystack: []const u8, needle_lower: []const u8) bool {
     return false;
 }
 
-fn runWhere(alloc: std.mem.Allocator, args: []const []const u8) void {
+const JsonWhereInstalled = struct { name: []const u8, kind: []const u8, version: []const u8, pinned: bool };
+const JsonWhereFile = struct { dir: []const u8, name: []const u8, type: []const u8 };
+const JsonSearchHit = struct { name: []const u8, kind: []const u8, version: []const u8, desc: []const u8 };
+
+fn runWhereJson(alloc: std.mem.Allocator, pattern: []const u8, needle: []const u8) void {
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const a = arena_state.allocator();
+    var installed: std.ArrayList(JsonWhereInstalled) = .empty;
+    var installed_error: ?[]const u8 = null;
+    if (nb.database.Database.open(alloc)) |opened_db| {
+        var db = opened_db;
+        defer db.close();
+        const kegs = db.listInstalled(alloc) catch &.{};
+        defer if (kegs.len > 0) alloc.free(kegs);
+        for (kegs) |k| if (containsAsciiCaseless(k.name, needle)) {
+            installed.append(a, .{ .name = a.dupe(u8, k.name) catch "", .kind = "formula", .version = a.dupe(u8, k.version) catch "", .pinned = k.pinned }) catch {};
+        };
+        if (db.listInstalledCasks(alloc)) |casks| {
+            defer alloc.free(casks);
+            for (casks) |c| if (containsAsciiCaseless(c.token, needle)) {
+                installed.append(a, .{ .name = a.dupe(u8, c.token) catch "", .kind = "cask", .version = a.dupe(u8, c.version) catch "", .pinned = false }) catch {};
+            };
+        } else |_| {}
+        if (db.listInstalledDebs(alloc)) |debs| {
+            defer alloc.free(debs);
+            for (debs) |d| if (containsAsciiCaseless(d.name, needle)) {
+                installed.append(a, .{ .name = a.dupe(u8, d.name) catch "", .kind = "deb", .version = a.dupe(u8, d.version) catch "", .pinned = false }) catch {};
+            };
+        } else |_| {}
+    } else |_| {
+        installed_error = "could not open database";
+    }
+    var files: std.ArrayList(JsonWhereFile) = .empty;
+    for ([_][]const u8{ "bin", "lib", "opt" }) |sub| {
+        const dir_path = std.fmt.allocPrint(a, "{s}/{s}", .{ PREFIX, sub }) catch continue;
+        var dir = std.Io.Dir.openDirAbsolute(g_io, dir_path, .{ .iterate = true }) catch continue;
+        defer dir.close(g_io);
+        var iter = dir.iterate();
+        while (iter.next(g_io) catch null) |entry| {
+            if (!containsAsciiCaseless(entry.name, needle)) continue;
+            const kind: []const u8 = switch (entry.kind) {
+                .directory => "directory",
+                .sym_link => "symlink",
+                else => "file",
+            };
+            files.append(a, .{ .dir = dir_path, .name = a.dupe(u8, entry.name) catch continue, .type = kind }) catch {};
+        }
+    }
+    var index: std.ArrayList(JsonSearchHit) = .empty;
+    var index_error: ?[]const u8 = null;
+    if (nb.search_api.search(a, pattern)) |results| {
+        for (results) |r| index.append(a, .{ .name = r.name, .kind = if (r.is_cask) "cask" else "formula", .version = r.version, .desc = r.desc }) catch {};
+    } else |err| {
+        index_error = @errorName(err);
+    }
+    printJsonValue(alloc, .{
+        .schema = json_schema_version,
+        .pattern = pattern,
+        .installed = installed.items,
+        .installed_error = installed_error,
+        .files = files.items,
+        .index = index.items,
+        .index_error = index_error,
+    });
+}
+
+fn runWhere(alloc: std.mem.Allocator, all_args: []const []const u8) void {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
+    const json_flag = takeJsonFlag(alloc, all_args);
+    const args = json_flag.rest;
 
     if (args.len == 0) {
-        stderr.print("nb: no pattern specified\nUsage: nb where <pattern>\n", .{}) catch {};
+        stderr.print("nb: no pattern specified\nUsage: nb where <pattern> [--json]\n", .{}) catch {};
         std.process.exit(1);
     }
 
@@ -2182,6 +2372,7 @@ fn runWhere(alloc: std.mem.Allocator, args: []const []const u8) void {
     const plen = @min(pattern.len, lower_buf.len);
     for (pattern[0..plen], 0..) |c, i| lower_buf[i] = std.ascii.toLower(c);
     const needle = lower_buf[0..plen];
+    if (json_flag.json) return runWhereJson(alloc, pattern, needle);
 
     // 1. Installed (kegs, casks, debs)
     stdout.print("\x1b[1m==> installed matching \"{s}\":\x1b[0m\n", .{pattern}) catch {};
@@ -2278,6 +2469,9 @@ fn runWhere(alloc: std.mem.Allocator, args: []const []const u8) void {
 
 // ── nb leaves ──
 
+const JsonLeafDep = struct { name: []const u8, version: []const u8 };
+const JsonLeaf = struct { name: []const u8, kind: []const u8, version: []const u8, pinned: bool, dependencies: ?[]const JsonLeafDep = null };
+
 fn runLeaves(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
@@ -2285,20 +2479,29 @@ fn runLeaves(alloc: std.mem.Allocator, args: []const []const u8) void {
     const show_tree = for (args) |a| {
         if (std.mem.eql(u8, a, "--tree")) break true;
     } else false;
+    const json = for (args) |a| {
+        if (std.mem.eql(u8, a, "--json")) break true;
+    } else false;
 
     var db = nb.database.Database.open(alloc) catch {
         stderr.print("nb: could not open database\n", .{}) catch {};
+        if (json) std.process.exit(1);
         return;
     };
     defer db.close();
 
     const kegs = db.listInstalled(alloc) catch {
         stderr.print("nb: failed to list packages\n", .{}) catch {};
+        if (json) std.process.exit(1);
         return;
     };
     defer alloc.free(kegs);
 
     if (kegs.len == 0) {
+        if (json) {
+            printJsonValue(alloc, .{ .schema = json_schema_version, .packages = &[_]JsonLeaf{}, .unresolved = &[_][]const u8{} });
+            return;
+        }
         stdout.print("No packages installed.\n", .{}) catch {};
         return;
     }
@@ -2449,6 +2652,34 @@ fn runLeaves(alloc: std.mem.Allocator, args: []const []const u8) void {
             stderr.print("    ... and {d} more\n", .{failed_names.items.len - max_show}) catch {};
         }
         stderr.print("    (run `nb cleanup --prune-kegs` to remove phantom DB entries — see #279)\n", .{}) catch {};
+    }
+
+    if (json) {
+        var arena_state = std.heap.ArenaAllocator.init(alloc);
+        defer arena_state.deinit();
+        const a = arena_state.allocator();
+        var leaves: std.ArrayList(JsonLeaf) = .empty;
+        for (kegs) |keg| {
+            if (depended_on.contains(keg.name)) continue;
+            var deps_out: ?[]const JsonLeafDep = null;
+            if (show_tree) {
+                var list: std.ArrayList(JsonLeafDep) = .empty;
+                if (pkg_deps.get(keg.name)) |deps| {
+                    for (deps) |dep| if (keg_set.get(dep)) |other| {
+                        list.append(a, .{ .name = dep, .version = other.version }) catch {};
+                    };
+                }
+                deps_out = list.items;
+            }
+            leaves.append(a, .{ .name = keg.name, .kind = "formula", .version = keg.version, .pinned = keg.pinned, .dependencies = deps_out }) catch {};
+        }
+        // Packages whose metadata could not be fetched (also warned on stderr).
+        const bytes = std.json.Stringify.valueAlloc(a, .{ .schema = json_schema_version, .packages = leaves.items, .unresolved = failed_names.items }, .{ .emit_null_optional_fields = false }) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        stdout.print("{s}\n", .{bytes}) catch {};
+        return;
     }
 
     // Print leaves (packages not depended on by any other installed package)
@@ -2874,11 +3105,14 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     // Parse --cask flag
     var is_cask = false;
+    var json = false;
     var names: std.ArrayList([]const u8) = .empty;
     defer names.deinit(alloc);
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--cask")) {
             is_cask = true;
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            json = true;
         } else {
             names.append(alloc, arg) catch {};
         }
@@ -2899,10 +3133,21 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
     var client: std.http.Client = .{ .allocator = alloc, .io = g_io };
     defer client.deinit();
 
+    var arena_state = std.heap.ArenaAllocator.init(alloc);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var json_entries: std.ArrayList(JsonInfo) = .empty;
+
     var had_error = false;
     for (names.items) |name| {
         if (is_cask) {
-            if (!showCaskInfo(alloc, stdout, stderr, name, if (db) |*d| d else null)) had_error = true;
+            const ok = if (json) blk: {
+                var entry: JsonInfo = undefined;
+                const found = showCaskInfo(alloc, NullWriter{}, stderr, name, if (db) |*d| d else null, &entry, arena);
+                if (found) json_entries.append(arena, entry) catch {};
+                break :blk found;
+            } else showCaskInfo(alloc, stdout, stderr, name, if (db) |*d| d else null, null, arena);
+            if (!ok) had_error = true;
         } else {
             // Try formula first; on failure, try cask as fallback for a hint.
             const f = nb.api_client.fetchFormulaWithClientAndUpstreamRegistry(
@@ -2923,93 +3168,187 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
                 continue;
             };
             defer f.deinit(alloc);
-            const bottled = f.bottle_url.len > 0;
-            var version_buf: [256]u8 = undefined;
-            const displayed_version = f.effectiveVersion(&version_buf);
-            stdout.print("{s} {s}{s}\n", .{
-                f.name,
-                displayed_version,
-                if (bottled) " (bottled)" else "",
-            }) catch {};
-            if (f.desc.len > 0) stdout.print("  {s}\n", .{f.desc}) catch {};
-            if (f.homepage.len > 0) stdout.print("  homepage: {s}\n", .{f.homepage}) catch {};
-            if (f.license.len > 0) stdout.print("  license: {s}\n", .{f.license}) catch {};
-            const artifact_sha = formulaArtifactSha(f);
-            var trust_tier: []const u8 = if (artifact_sha.len > 0) "checksum-verified" else "unverified";
-            if (sourceVerified(alloc, f)) trust_tier = "source-verified";
-            showPublishedTrust(alloc, stdout, f.name, .formula, displayed_version, artifact_sha, &trust_tier);
-            var local_probe_status: []const u8 = "not recorded";
-            var local_probe_time: i64 = 0;
-            if (db) |*loaded_db| {
-                if (loaded_db.findKeg(f.name)) |keg| {
-                    // Install evidence is version/checksum/platform-specific: an
-                    // older keg or a probe produced under different semantics must
-                    // not promote the metadata currently displayed.
-                    if (artifact_sha.len > 0 and
-                        std.mem.eql(u8, keg.version, displayed_version) and
-                        std.mem.eql(u8, keg.sha256, artifact_sha) and
-                        keg.probed_at >= keg.installed_at and
-                        keg.probed_at > 0)
-                    {
-                        local_probe_time = keg.probed_at;
-                        const compatible = keg.probe_schema == LOCAL_PROBE_SCHEMA and
-                            keg.probe_platform == LOCAL_PROBE_PLATFORM;
-                        const structurally_valid = compatible and
-                            keg.probe_success and
-                            probeInstalledFormula(alloc, null, f.name, keg.version, f.install_binaries, .structural);
-                        local_probe_status = if (!compatible)
-                            "stale"
-                        else if (!keg.probe_success)
-                            "failed"
-                        else if (structurally_valid)
-                            "passed"
-                        else
-                            "invalidated";
-                        if (structurally_valid) trust_tier = "install-verified";
-                    }
-                }
-            }
-            if (local_probe_time > 0) {
-                stdout.print("  trust: {s} (local probe: {s}, {d})\n", .{ trust_tier, local_probe_status, local_probe_time }) catch {};
+            if (json) {
+                var entry: JsonInfo = undefined;
+                showFormulaInfo(alloc, NullWriter{}, f, if (db) |*d| d else null, &entry, arena);
+                json_entries.append(arena, entry) catch {};
             } else {
-                stdout.print("  trust: {s} (local probe: not recorded; run `nb doctor --probe {s}`)\n", .{ trust_tier, f.name }) catch {};
-            }
-            if (bottled) {
-                stdout.print("  url: {s}\n", .{f.bottle_url}) catch {};
-                if (f.bottle_sha256.len > 0) stdout.print("  sha256: {s}\n", .{f.bottle_sha256}) catch {};
-            } else if (f.source_url.len > 0) {
-                stdout.print("  url: {s} (source)\n", .{f.source_url}) catch {};
-                if (f.source_sha256.len > 0) stdout.print("  sha256: {s}\n", .{f.source_sha256}) catch {};
-            }
-            stdout.print("  deps: ", .{}) catch {};
-            for (f.dependencies, 0..) |dep, i| {
-                if (i > 0) stdout.print(", ", .{}) catch {};
-                stdout.print("{s}", .{dep}) catch {};
-            }
-            stdout.print("\n", .{}) catch {};
-            if (f.build_deps.len > 0) {
-                stdout.print("  build deps: ", .{}) catch {};
-                for (f.build_deps, 0..) |dep, i| {
-                    if (i > 0) stdout.print(", ", .{}) catch {};
-                    stdout.print("{s}", .{dep}) catch {};
-                }
-                stdout.print("\n", .{}) catch {};
-            }
-            if (f.caveats.len > 0) {
-                stdout.print("  caveats:\n", .{}) catch {};
-                var line_it = std.mem.splitScalar(u8, f.caveats, '\n');
-                while (line_it.next()) |line| {
-                    stdout.print("    {s}\n", .{line}) catch {};
-                }
+                showFormulaInfo(alloc, stdout, f, if (db) |*d| d else null, null, arena);
             }
         }
+    }
+    if (json) {
+        const bytes = std.json.Stringify.valueAlloc(arena, .{ .schema = json_schema_version, .packages = json_entries.items }, .{ .emit_null_optional_fields = false }) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        stdout.print("{s}\n", .{bytes}) catch {};
     }
     // info only reads the database, so skipping the deferred close loses nothing.
     if (had_error) std.process.exit(1);
 }
 
+const NullWriter = struct {
+    pub fn print(_: NullWriter, comptime _: []const u8, _: anytype) error{}!void {}
+};
+
+const JsonPublished = struct { source: []const u8, result: []const u8, observed_at: i64, platform: []const u8 };
+const JsonTrust = struct {
+    tier: []const u8,
+    local_probe: []const u8,
+    probed_at: ?i64 = null,
+    published: ?JsonPublished = null,
+};
+const JsonArtifact = struct {
+    type: []const u8,
+    path: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+    target: ?[]const u8 = null,
+    executable: ?[]const u8 = null,
+    args: ?[]const []const u8 = null,
+    quit: ?[]const u8 = null,
+    pkgutil: ?[]const u8 = null,
+};
+const JsonInstalledState = struct { version: []const u8, pinned: bool };
+const JsonInfo = struct {
+    name: []const u8,
+    kind: []const u8,
+    version: []const u8,
+    desc: []const u8,
+    homepage: []const u8,
+    url: ?[]const u8 = null,
+    sha256: ?[]const u8 = null,
+    trust: JsonTrust,
+    installed: ?JsonInstalledState = null,
+    // formula only
+    license: ?[]const u8 = null,
+    bottled: ?bool = null,
+    url_kind: ?[]const u8 = null,
+    dependencies: ?[]const []const u8 = null,
+    build_dependencies: ?[]const []const u8 = null,
+    caveats: ?[]const u8 = null,
+    // cask only
+    display_name: ?[]const u8 = null,
+    source: ?[]const u8 = null,
+    auto_updates: ?bool = null,
+    security_warnings: ?[]const nb.cask.SecurityWarning = null,
+    artifacts: ?[]const JsonArtifact = null,
+};
+
+fn dupeStrings(a: std.mem.Allocator, items: []const []const u8) []const []const u8 {
+    const out = a.alloc([]const u8, items.len) catch return &.{};
+    for (items, out) |item, *o| o.* = a.dupe(u8, item) catch "";
+    return out;
+}
+
+/// Text (stdout = StdoutWriter) or JSON (stdout = NullWriter, json_out set)
+/// share one evaluation so both report the same trust tier and probe state.
+fn showFormulaInfo(alloc: std.mem.Allocator, stdout: anytype, f: nb.formula.Formula, db: ?*nb.database.Database, json_out: ?*JsonInfo, arena: std.mem.Allocator) void {
+    const bottled = f.bottle_url.len > 0;
+    var version_buf: [256]u8 = undefined;
+    const displayed_version = f.effectiveVersion(&version_buf);
+    stdout.print("{s} {s}{s}\n", .{
+        f.name,
+        displayed_version,
+        if (bottled) " (bottled)" else "",
+    }) catch {};
+    if (f.desc.len > 0) stdout.print("  {s}\n", .{f.desc}) catch {};
+    if (f.homepage.len > 0) stdout.print("  homepage: {s}\n", .{f.homepage}) catch {};
+    if (f.license.len > 0) stdout.print("  license: {s}\n", .{f.license}) catch {};
+    const artifact_sha = formulaArtifactSha(f);
+    var trust_tier: []const u8 = if (artifact_sha.len > 0) "checksum-verified" else "unverified";
+    if (sourceVerified(alloc, f)) trust_tier = "source-verified";
+    const published = showPublishedTrust(alloc, stdout, f.name, .formula, displayed_version, artifact_sha, &trust_tier, arena);
+    var local_probe_status: []const u8 = "not recorded";
+    var local_probe_time: i64 = 0;
+    if (db) |loaded_db| {
+        if (loaded_db.findKeg(f.name)) |keg| {
+            // Install evidence is version/checksum/platform-specific: an
+            // older keg or a probe produced under different semantics must
+            // not promote the metadata currently displayed.
+            if (artifact_sha.len > 0 and
+                std.mem.eql(u8, keg.version, displayed_version) and
+                std.mem.eql(u8, keg.sha256, artifact_sha) and
+                keg.probed_at >= keg.installed_at and
+                keg.probed_at > 0)
+            {
+                local_probe_time = keg.probed_at;
+                const compatible = keg.probe_schema == LOCAL_PROBE_SCHEMA and
+                    keg.probe_platform == LOCAL_PROBE_PLATFORM;
+                const structurally_valid = compatible and
+                    keg.probe_success and
+                    probeInstalledFormula(alloc, null, f.name, keg.version, f.install_binaries, .structural);
+                local_probe_status = if (!compatible)
+                    "stale"
+                else if (!keg.probe_success)
+                    "failed"
+                else if (structurally_valid)
+                    "passed"
+                else
+                    "invalidated";
+                if (structurally_valid) trust_tier = "install-verified";
+            }
+        }
+    }
+    if (local_probe_time > 0) {
+        stdout.print("  trust: {s} (local probe: {s}, {d})\n", .{ trust_tier, local_probe_status, local_probe_time }) catch {};
+    } else {
+        stdout.print("  trust: {s} (local probe: not recorded; run `nb doctor --probe {s}`)\n", .{ trust_tier, f.name }) catch {};
+    }
+    if (bottled) {
+        stdout.print("  url: {s}\n", .{f.bottle_url}) catch {};
+        if (f.bottle_sha256.len > 0) stdout.print("  sha256: {s}\n", .{f.bottle_sha256}) catch {};
+    } else if (f.source_url.len > 0) {
+        stdout.print("  url: {s} (source)\n", .{f.source_url}) catch {};
+        if (f.source_sha256.len > 0) stdout.print("  sha256: {s}\n", .{f.source_sha256}) catch {};
+    }
+    stdout.print("  deps: ", .{}) catch {};
+    for (f.dependencies, 0..) |dep, i| {
+        if (i > 0) stdout.print(", ", .{}) catch {};
+        stdout.print("{s}", .{dep}) catch {};
+    }
+    stdout.print("\n", .{}) catch {};
+    if (f.build_deps.len > 0) {
+        stdout.print("  build deps: ", .{}) catch {};
+        for (f.build_deps, 0..) |dep, i| {
+            if (i > 0) stdout.print(", ", .{}) catch {};
+            stdout.print("{s}", .{dep}) catch {};
+        }
+        stdout.print("\n", .{}) catch {};
+    }
+    if (f.caveats.len > 0) {
+        stdout.print("  caveats:\n", .{}) catch {};
+        var line_it = std.mem.splitScalar(u8, f.caveats, '\n');
+        while (line_it.next()) |line| {
+            stdout.print("    {s}\n", .{line}) catch {};
+        }
+    }
+    if (json_out) |out| {
+        const installed: ?JsonInstalledState = if (db) |d| (if (d.findKeg(f.name)) |k| JsonInstalledState{ .version = arena.dupe(u8, k.version) catch "", .pinned = k.pinned } else null) else null;
+        const url: []const u8 = if (bottled) f.bottle_url else f.source_url;
+        const sha: []const u8 = if (bottled) f.bottle_sha256 else f.source_sha256;
+        out.* = .{
+            .name = arena.dupe(u8, f.name) catch "",
+            .kind = "formula",
+            .version = arena.dupe(u8, displayed_version) catch "",
+            .desc = arena.dupe(u8, f.desc) catch "",
+            .homepage = arena.dupe(u8, f.homepage) catch "",
+            .url = if (url.len > 0) (arena.dupe(u8, url) catch "") else null,
+            .sha256 = if (url.len > 0 and sha.len > 0) (arena.dupe(u8, sha) catch "") else null,
+            .trust = .{ .tier = trust_tier, .local_probe = local_probe_status, .probed_at = if (local_probe_time > 0) local_probe_time else null, .published = published },
+            .installed = installed,
+            .license = if (f.license.len > 0) (arena.dupe(u8, f.license) catch "") else null,
+            .bottled = bottled,
+            .url_kind = if (url.len == 0) null else if (bottled) "bottle" else "source",
+            .dependencies = dupeStrings(arena, f.dependencies),
+            .build_dependencies = dupeStrings(arena, f.build_deps),
+            .caveats = if (f.caveats.len > 0) (arena.dupe(u8, f.caveats) catch "") else null,
+        };
+    }
+}
+
 /// Returns false when the cask was not found.
-fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name: []const u8, db: ?*nb.database.Database) bool {
+fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name: []const u8, db: ?*nb.database.Database, json_out: ?*JsonInfo, arena: std.mem.Allocator) bool {
     const cask = nb.api_client.fetchCask(alloc, name) catch {
         stderr.print("nb: cask '{s}' not found\n", .{name}) catch {};
         return false;
@@ -3044,7 +3383,7 @@ fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name
     const has_immutable_identity = has_valid_sha256 and
         !cask.auto_updates and
         !std.mem.eql(u8, cask.version, "latest");
-    showPublishedTrust(alloc, stdout, cask.token, .cask, cask.version, cask.sha256, &trust_tier);
+    const published = showPublishedTrust(alloc, stdout, cask.token, .cask, cask.version, cask.sha256, &trust_tier, arena);
     var local_probe_status: []const u8 = "not recorded";
     var local_probe_time: i64 = 0;
     if (has_immutable_identity) {
@@ -3103,6 +3442,57 @@ fn showCaskInfo(alloc: std.mem.Allocator, stdout: anytype, stderr: anytype, name
             }
         }
     }
+    if (json_out) |out| {
+        var arts: std.ArrayList(JsonArtifact) = .empty;
+        for (cask.artifacts) |art| {
+            const d = struct {
+                fn s(al: std.mem.Allocator, v: []const u8) []const u8 {
+                    return al.dupe(u8, v) catch "";
+                }
+            }.s;
+            const item: JsonArtifact = switch (art) {
+                .app => |v| .{ .type = "app", .path = d(arena, v) },
+                .binary => |v| .{ .type = "binary", .source = d(arena, v.source), .target = d(arena, v.target) },
+                .pkg => |v| .{ .type = "pkg", .path = d(arena, v) },
+                .font => |v| .{ .type = "font", .path = d(arena, v) },
+                .artifact => |v| .{ .type = "artifact", .source = d(arena, v.source), .target = d(arena, v.target) },
+                .suite => |v| .{ .type = "suite", .source = d(arena, v.source), .target = d(arena, v.target) },
+                .installer_script => |v| .{ .type = "installer", .executable = d(arena, v.executable), .args = dupeStrings(arena, v.args) },
+                .uninstall => |v| .{ .type = "uninstall", .quit = if (v.quit.len > 0) d(arena, v.quit) else null, .pkgutil = if (v.pkgutil.len > 0) d(arena, v.pkgutil) else null },
+            };
+            arts.append(arena, item) catch {};
+        }
+        const warnings = arena.alloc(nb.cask.SecurityWarning, cask.security_warnings.len) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        for (cask.security_warnings, warnings) |w, *o| o.* = .{
+            .ghsa_id = arena.dupe(u8, w.ghsa_id) catch "",
+            .cve_id = arena.dupe(u8, w.cve_id) catch "",
+            .severity = arena.dupe(u8, w.severity) catch "",
+            .summary = arena.dupe(u8, w.summary) catch "",
+            .url = arena.dupe(u8, w.url) catch "",
+            .affected_versions = arena.dupe(u8, w.affected_versions) catch "",
+            .patched_versions = arena.dupe(u8, w.patched_versions) catch "",
+        };
+        const installed: ?JsonInstalledState = if (db) |dbp| (if (dbp.findCask(cask.token) orelse dbp.findCask(name)) |c| JsonInstalledState{ .version = arena.dupe(u8, c.version) catch "", .pinned = false } else null) else null;
+        out.* = .{
+            .name = arena.dupe(u8, cask.token) catch "",
+            .kind = "cask",
+            .version = arena.dupe(u8, cask.version) catch "",
+            .desc = arena.dupe(u8, cask.desc) catch "",
+            .homepage = arena.dupe(u8, cask.homepage) catch "",
+            .url = arena.dupe(u8, cask.url) catch "",
+            .sha256 = arena.dupe(u8, cask.sha256) catch "",
+            .trust = .{ .tier = trust_tier, .local_probe = local_probe_status, .probed_at = if (local_probe_time > 0) local_probe_time else null, .published = published },
+            .installed = installed,
+            .display_name = arena.dupe(u8, cask.name) catch "",
+            .source = if (cask.metadata_source == .verified_upstream) "verified_upstream" else "homebrew",
+            .auto_updates = cask.auto_updates,
+            .security_warnings = warnings,
+            .artifacts = arts.items,
+        };
+    }
     return true;
 }
 
@@ -3133,17 +3523,22 @@ fn printCaskSecurityWarnings(writer: anytype, indent: []const u8, cask: *const n
 
 // ── nb search ──
 
-fn runSearch(alloc: std.mem.Allocator, args: []const []const u8) void {
+const JsonSearchResult = struct { name: []const u8, kind: []const u8, version: []const u8, desc: []const u8, installed: bool };
+
+fn runSearch(alloc: std.mem.Allocator, all_args: []const []const u8) void {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
+    const json_flag = takeJsonFlag(alloc, all_args);
+    const args = json_flag.rest;
+    const json = json_flag.json;
 
     if (args.len == 0) {
-        stderr.print("nb: no search query specified\nUsage: nb search <query>\n", .{}) catch {};
+        stderr.print("nb: no search query specified\nUsage: nb search <query> [--json]\n", .{}) catch {};
         std.process.exit(1);
     }
 
     const query = args[0];
-    stdout.print("==> Searching for \"{s}\"...\n", .{query}) catch {};
+    if (!json) stdout.print("==> Searching for \"{s}\"...\n", .{query}) catch {};
 
     const results = nb.search_api.search(alloc, query) catch |err| {
         stderr.print("nb: search failed: {}\n", .{err}) catch {};
@@ -3152,6 +3547,22 @@ fn runSearch(alloc: std.mem.Allocator, args: []const []const u8) void {
     defer {
         for (results) |r| r.deinit(alloc);
         alloc.free(results);
+    }
+
+    if (json) {
+        var db_opt: ?nb.database.Database = nb.database.Database.open(alloc) catch null;
+        defer if (db_opt) |*d| d.close();
+        const entries = alloc.alloc(JsonSearchResult, results.len) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        defer alloc.free(entries);
+        for (results, entries) |r, *e| {
+            const installed = if (db_opt) |*d| (if (r.is_cask) d.findCask(r.name) != null else d.findKeg(r.name) != null) else false;
+            e.* = .{ .name = r.name, .kind = if (r.is_cask) "cask" else "formula", .version = r.version, .desc = r.desc, .installed = installed };
+        }
+        printJsonValue(alloc, .{ .schema = json_schema_version, .query = query, .packages = entries });
+        return;
     }
 
     if (results.len == 0) {
@@ -3205,7 +3616,20 @@ const Outdated = struct {
     }
 };
 
-fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filter_names: []const []const u8, check_casks: bool, check_kegs: bool) std.ArrayList(Outdated) {
+/// Rewrite an unambiguous tap short name (`nanobrew-ui`) to the recorded
+/// token (`Rex57/tap/nanobrew-ui`); exit when the short name is ambiguous.
+fn resolveCaskShortName(db: *nb.database.Database, name: *[]const u8, cmd: []const u8) void {
+    switch (db.lookupCask(name.*)) {
+        .found => |c| name.* = c.token,
+        .none => {},
+        .ambiguous => |n| {
+            StderrWriter.print(.{}, "nb: {s}: '{s}' matches {d} installed tap casks; use the full tap token\n", .{ cmd, name.*, n }) catch {};
+            std.process.exit(1);
+        },
+    }
+}
+
+fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filter_names: []const []const u8, check_casks: bool, check_kegs: bool, progress: bool) std.ArrayList(Outdated) {
     const stdout = StdoutWriter{};
     var result: std.ArrayList(Outdated) = .empty;
 
@@ -3269,7 +3693,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
 
     if (to_check.items.len == 0) return result;
 
-    stdout.print("==> Checking {d} package(s) for updates...\n", .{to_check.items.len}) catch {};
+    if (progress) stdout.print("==> Checking {d} package(s) for updates...\n", .{to_check.items.len}) catch {};
 
     // Bulk fast path: resolve available versions from the cached Homebrew
     // bulk lists (one streaming scan each, shared with `nb search`, 1h TTL)
@@ -3513,11 +3937,12 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
     // guard, `nb upgrade nonexistent-pkg` silently returned "all up
     // to date" because nothing matched the outdated set.
     if (names.items.len > 0) {
-        for (names.items) |n| {
-            const found = if (is_cask) (db.findCask(n) != null) else (db.findKeg(n) != null);
+        for (names.items) |*n| {
+            if (is_cask) resolveCaskShortName(&db, n, "upgrade");
+            const found = if (is_cask) (db.findCask(n.*) != null) else (db.findKeg(n.*) != null);
             if (!found) {
                 const kind = if (is_cask) "cask" else "package";
-                stderr.print("nb: upgrade: {s} '{s}' is not installed\n", .{ kind, n }) catch {};
+                stderr.print("nb: upgrade: {s} '{s}' is not installed\n", .{ kind, n.* }) catch {};
                 std.process.exit(1);
             }
         }
@@ -3525,7 +3950,7 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     const check_casks = is_cask or names.items.len == 0;
     const check_kegs = !is_cask;
-    var outdated = getOutdatedPackages(alloc, &db, names.items, check_casks, check_kegs);
+    var outdated = getOutdatedPackages(alloc, &db, names.items, check_casks, check_kegs, true);
     defer {
         for (outdated.items) |*pkg| pkg.deinit(alloc);
         outdated.deinit(alloc);
@@ -4545,13 +4970,14 @@ fn printUsage() void {
         \\  remove <formula>         Uninstall packages
         \\  remove --cask <app>      Uninstall macOS applications
         \\  remove --deb <pkg>       Uninstall .deb packages (Linux)
-        \\  list [--versions|--names]
+        \\  list [--versions|--names] [--json]
         \\                           List installed packages, casks, and debs
-        \\  leaves [--tree]          List packages with no dependents
-        \\  info <formula>           Show formula info from Homebrew API
-        \\  info --cask <app>        Show cask info from Homebrew API
-        \\  search <query>           Search for formulas and casks
-        \\  where <pattern>          Show installed kegs, prefix files, and index hits matching pattern
+        \\  leaves [--tree] [--json] List packages with no dependents
+        \\  info [--json] <formula>  Show formula info from Homebrew API
+        \\  info --cask [--json] <app>
+        \\                           Show cask info from Homebrew API
+        \\  search <query> [--json]  Search for formulas and casks
+        \\  where <pattern> [--json] Show installed kegs, prefix files, and index hits matching pattern
         \\  upgrade [formula]        Upgrade packages (or all if none specified)
         \\  upgrade --cask [app]     Upgrade casks (or all if none specified)
         \\  upgrade --deb            Upgrade all installed .deb packages
@@ -4562,7 +4988,7 @@ fn printUsage() void {
         \\  version                  Print the installed version
         \\  doctor [--probe [pkg]]   Check installation health / probe installed packages
         \\  cleanup [--dry-run]      Remove stale caches and orphaned files
-        \\  outdated [--cask|--deb] [pkg...]  List packages with newer versions available
+        \\  outdated [--cask|--deb] [--json] [pkg...]  List packages with newer versions available
         \\  pin <package>            Pin a package (skip during upgrade)
         \\  unpin <package>          Unpin a package
         \\  rollback <package>       Rollback to previous version
@@ -4570,8 +4996,9 @@ fn printUsage() void {
         \\  link <package>           Link an installed keg's binaries into the prefix
         \\  unlink <package>         Remove an installed keg's prefix links (keg stays)
         \\  bundle [dump|install]    Export/import package lists (Brewfile-compatible)
-        \\  deps [--tree] <formula>  Show dependency tree
-        \\  services [list|start|stop|restart] [name]
+        \\  deps [--tree] [--json] <formula>
+        \\                           Show dependency tree
+        \\  services [list|start|stop|restart] [name]  (list accepts --json)
         \\                           Manage background services
         \\  completions [zsh|bash|fish]
         \\                           Generate shell completions
@@ -5759,6 +6186,7 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     var is_cask = false;
     var is_deb = false;
+    var json = false;
     var names: std.ArrayList([]const u8) = .empty;
     defer names.deinit(alloc);
     for (args) |arg| {
@@ -5766,8 +6194,10 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
             is_cask = true;
         } else if (std.mem.eql(u8, arg, "--deb")) {
             is_deb = true;
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            json = true;
         } else if (std.mem.startsWith(u8, arg, "-")) {
-            stderr.print("nb: outdated: unknown flag '{s}' (supported: --cask, --deb)\n", .{arg}) catch {};
+            stderr.print("nb: outdated: unknown flag '{s}' (supported: --cask, --deb, --json)\n", .{arg}) catch {};
             std.process.exit(1);
         } else {
             names.append(alloc, arg) catch {
@@ -5787,7 +6217,10 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
     };
     defer db.close();
 
-    for (names.items) |name| {
+    for (names.items) |*name_ptr| {
+        if (is_cask or (!is_deb and db.findKeg(name_ptr.*) == null and db.findDeb(name_ptr.*) == null))
+            resolveCaskShortName(&db, name_ptr, "outdated");
+        const name = name_ptr.*;
         const found = if (is_cask) db.findCask(name) != null else if (is_deb) db.findDeb(name) != null else db.findKeg(name) != null or db.findCask(name) != null or db.findDeb(name) != null;
         if (!found) {
             stderr.print("nb: outdated: '{s}' is not installed\n", .{name}) catch {};
@@ -5795,8 +6228,8 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
         }
     }
 
-    stdout.print("==> Checking for outdated packages...\n", .{}) catch {};
-    var outdated = getOutdatedPackages(alloc, &db, names.items, !is_deb, !is_cask and !is_deb);
+    if (!json) stdout.print("==> Checking for outdated packages...\n", .{}) catch {};
+    var outdated = getOutdatedPackages(alloc, &db, names.items, !is_deb, !is_cask and !is_deb, !json);
     defer {
         for (outdated.items) |*pkg| pkg.deinit(alloc);
         outdated.deinit(alloc);
@@ -5804,6 +6237,10 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     // Also check deb packages
     var deb_outdated: usize = 0;
+    var json_arena = std.heap.ArenaAllocator.init(alloc);
+    defer json_arena.deinit();
+    const ja = json_arena.allocator();
+    var json_entries: std.ArrayList(JsonOutdatedEntry) = .empty;
     const installed_debs = db.listInstalledDebs(alloc) catch &.{};
     defer if (installed_debs.len > 0) alloc.free(installed_debs);
 
@@ -5868,11 +6305,50 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
             }
             if (idx.get(deb.name)) |idx_pkg| {
                 if (nb.version.compareDebVersions(idx_pkg.version, deb.version) == .gt) {
-                    stdout.print("{s} ({s} -> {s}) (deb)\n", .{ deb.name, deb.version, idx_pkg.version }) catch {};
+                    if (json) {
+                        json_entries.append(ja, .{
+                            .name = deb.name,
+                            .kind = "deb",
+                            .installed = deb.version,
+                            .latest = ja.dupe(u8, idx_pkg.version) catch "",
+                            .pinned = false,
+                            .upgrade_supported = true,
+                            .unsupported_reason = null,
+                        }) catch {};
+                    } else stdout.print("{s} ({s} -> {s}) (deb)\n", .{ deb.name, deb.version, idx_pkg.version }) catch {};
                     deb_outdated += 1;
                 }
             }
         }
+    }
+
+    if (json) {
+        // Keg and cask entries first, like the text output; debs were collected above.
+        var keg_and_cask: std.ArrayList(JsonOutdatedEntry) = .empty;
+        for (outdated.items) |pkg| {
+            var reason: ?[]const u8 = null;
+            if (pkg.is_cask_pkg) {
+                // The same decision `nb upgrade --cask` makes before it plans.
+                if (fetchCaskUpgradeCandidate(alloc, pkg.name)) |candidate| {
+                    defer candidate.deinit(alloc);
+                    if (nb.cask_upgrade.unsupportedReason(candidate)) |r| reason = r;
+                } else |err| {
+                    reason = std.fmt.allocPrint(ja, "cannot prepare cask upgrade ({s})", .{@errorName(err)}) catch "cannot prepare cask upgrade";
+                }
+            }
+            keg_and_cask.append(ja, .{
+                .name = pkg.name,
+                .kind = if (pkg.is_cask_pkg) "cask" else "formula",
+                .installed = pkg.old_ver,
+                .latest = pkg.new_ver,
+                .pinned = pkg.is_pinned,
+                .upgrade_supported = reason == null,
+                .unsupported_reason = reason,
+            }) catch {};
+        }
+        keg_and_cask.appendSlice(ja, json_entries.items) catch {};
+        printJsonDocument(alloc, keg_and_cask.items, true);
+        return;
     }
 
     if (outdated.items.len == 0 and deb_outdated == 0) {
@@ -5936,22 +6412,25 @@ fn runDeps(alloc: std.mem.Allocator, args: []const []const u8) void {
     const stderr = StderrWriter{};
 
     var tree_mode = false;
+    var json = false;
     var formula_name: ?[]const u8 = null;
 
     for (args) |arg| {
         if (std.mem.eql(u8, arg, "--tree") or std.mem.eql(u8, arg, "-t")) {
             tree_mode = true;
+        } else if (std.mem.eql(u8, arg, "--json")) {
+            json = true;
         } else {
             formula_name = arg;
         }
     }
 
     const name = formula_name orelse {
-        stderr.print("nb: no formula specified\nUsage: nb deps [--tree] <formula>\n", .{}) catch {};
+        stderr.print("nb: no formula specified\nUsage: nb deps [--tree] [--json] <formula>\n", .{}) catch {};
         std.process.exit(1);
     };
 
-    stdout.print("==> Resolving dependencies for {s}...\n", .{name}) catch {};
+    if (!json) stdout.print("==> Resolving dependencies for {s}...\n", .{name}) catch {};
 
     var resolver = nb.deps.DepResolver.init(alloc);
     defer resolver.deinit();
@@ -5961,6 +6440,17 @@ fn runDeps(alloc: std.mem.Allocator, args: []const []const u8) void {
         std.process.exit(1);
     };
 
+    if (json and tree_mode) {
+        var out: std.Io.Writer.Allocating = .init(alloc);
+        defer out.deinit();
+        var w: std.json.Stringify = .{ .writer = &out.writer };
+        writeDepTreeJson(&w, &resolver, name, 0) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        stdout.print("{{\"schema\":{d},\"tree\":{s}}}\n", .{ json_schema_version, out.written() }) catch {};
+        return;
+    }
     if (tree_mode) {
         renderDepTree(stdout, &resolver, name, "", true);
     } else {
@@ -5974,6 +6464,16 @@ fn runDeps(alloc: std.mem.Allocator, args: []const []const u8) void {
         };
         defer alloc.free(sorted);
 
+        if (json) {
+            var names: std.ArrayList([]const u8) = .empty;
+            defer names.deinit(alloc);
+            for (sorted) |f| {
+                if (!std.mem.eql(u8, f.name, name)) names.append(alloc, f.name) catch {};
+            }
+            printJsonValue(alloc, .{ .schema = json_schema_version, .name = name, .dependencies = names.items });
+            return;
+        }
+
         var count: usize = 0;
         for (sorted) |f| {
             if (std.mem.eql(u8, f.name, name)) continue;
@@ -5984,6 +6484,23 @@ fn runDeps(alloc: std.mem.Allocator, args: []const []const u8) void {
             stdout.print("(no dependencies)\n", .{}) catch {};
         }
     }
+}
+
+/// `{"name": N, "dependencies": [<same shape>...]}`, like the text tree
+/// (a shared dependency appears under each parent). Depth is capped so a
+/// cycle the resolver let through cannot recurse forever.
+fn writeDepTreeJson(w: *std.json.Stringify, resolver: *nb.deps.DepResolver, name: []const u8, depth: usize) std.Io.Writer.Error!void {
+    try w.beginObject();
+    try w.objectField("name");
+    try w.write(name);
+    try w.objectField("dependencies");
+    try w.beginArray();
+    if (depth < 64) {
+        const dep_list = resolver.edges.get(name) orelse &[_][]const u8{};
+        for (dep_list) |dep| try writeDepTreeJson(w, resolver, dep, depth + 1);
+    }
+    try w.endArray();
+    try w.endObject();
 }
 
 fn renderDepTree(stdout: anytype, resolver: *nb.deps.DepResolver, name: []const u8, prefix: []const u8, is_root: bool) void {
@@ -6007,18 +6524,40 @@ fn renderDepTree(stdout: anytype, resolver: *nb.deps.DepResolver, name: []const 
 
 // ── nb services ──
 
-fn runServices(alloc: std.mem.Allocator, args: []const []const u8) void {
+const JsonService = struct { name: []const u8, formula: []const u8, version: []const u8, status: []const u8 };
+
+fn runServices(alloc: std.mem.Allocator, all_args: []const []const u8) void {
     const stdout = StdoutWriter{};
     const stderr = StderrWriter{};
+    const json_flag = takeJsonFlag(alloc, all_args);
+    const args = json_flag.rest;
 
     const subcmd = if (args.len > 0) args[0] else "list";
+    if (json_flag.json and !std.mem.eql(u8, subcmd, "list")) {
+        stderr.print("nb: --json is only supported for `nb services list`\n", .{}) catch {};
+        std.process.exit(1);
+    }
     const svc_name = if (args.len > 1) args[1] else null;
 
     const services_list = nb.services.discoverServices(alloc, g_io) catch {
         stderr.print("nb: failed to discover services\n", .{}) catch {};
+        if (json_flag.json) std.process.exit(1);
         return;
     };
     defer nb.services.freeServiceList(alloc, services_list);
+
+    if (json_flag.json) {
+        const entries = alloc.alloc(JsonService, services_list.len) catch {
+            stderr.print("nb: out of memory while writing JSON\n", .{}) catch {};
+            std.process.exit(1);
+        };
+        defer alloc.free(entries);
+        for (services_list, entries) |svc, *e| {
+            e.* = .{ .name = svc.name, .formula = svc.keg_name, .version = svc.keg_version, .status = if (nb.services.isRunning(alloc, g_io, svc.label)) "running" else "stopped" };
+        }
+        printJsonValue(alloc, .{ .schema = json_schema_version, .services = entries });
+        return;
+    }
 
     if (std.mem.eql(u8, subcmd, "list")) {
         if (services_list.len == 0) {
@@ -7389,12 +7928,13 @@ fn sourceVerified(alloc: std.mem.Allocator, f: nb.formula.Formula) bool {
     return std.ascii.eqlIgnoreCase(asset.sha256, formulaArtifactSha(f));
 }
 
-fn showPublishedTrust(alloc: std.mem.Allocator, stdout: StdoutWriter, token: []const u8, kind: trust.Kind, ver: []const u8, sha: []const u8, tier: *[]const u8) void {
-    var doc = trust.load(alloc) catch return;
+fn showPublishedTrust(alloc: std.mem.Allocator, stdout: anytype, token: []const u8, kind: trust.Kind, ver: []const u8, sha: []const u8, tier: *[]const u8, arena: std.mem.Allocator) ?JsonPublished {
+    var doc = trust.load(alloc) catch return null;
     defer doc.deinit();
-    const e = doc.value.latest(token, kind, ver, trust.platform(), sha, trust.timestamp()) orelse return;
+    const e = doc.value.latest(token, kind, ver, trust.platform(), sha, trust.timestamp()) orelse return null;
     if (e.result == .pass) tier.* = "install-verified";
     stdout.print("  published evidence: {s}, {s}, {d} ({s})\n", .{ @tagName(e.source), @tagName(e.result), e.observed_at, e.platform }) catch {};
+    return .{ .source = @tagName(e.source), .result = @tagName(e.result), .observed_at = e.observed_at, .platform = arena.dupe(u8, e.platform) catch "" };
 }
 
 fn runTrust(alloc: std.mem.Allocator, args: []const []const u8) void {
@@ -7461,4 +8001,32 @@ fn trustCommand(alloc: std.mem.Allocator, args: []const []const u8) !void {
     const json = try std.json.Stringify.valueAlloc(alloc, entry, .{ .whitespace = .indent_2 });
     defer alloc.free(json);
     if (output) |path| try trust.write(path, json) else try std.Io.File.stdout().writeStreamingAll(g_io, json);
+}
+
+test "--json documents keep schema 1 and escape names (#495)" {
+    const alloc = std.testing.allocator;
+    const list = [_]JsonListEntry{
+        .{ .name = "node", .kind = "formula", .version = "26.13.0_2", .pinned = true, .versions = &.{ .{ .version = "26.13.0_2", .switchable = true }, .{ .version = "26.12.0", .switchable = false } } },
+        .{ .name = "Rex57/tap/nanobrew-ui", .kind = "cask", .version = "1.0.0", .pinned = false },
+        .{ .name = "we\"ird", .kind = "deb", .version = "1:2.3-4", .pinned = false },
+    };
+    const list_json = try jsonDocument(alloc, &list, false);
+    defer alloc.free(list_json);
+    try std.testing.expectEqualStrings(
+        \\{"schema":1,"packages":[{"name":"node","kind":"formula","version":"26.13.0_2","pinned":true,"versions":[{"version":"26.13.0_2","switchable":true},{"version":"26.12.0","switchable":false}]},{"name":"Rex57/tap/nanobrew-ui","kind":"cask","version":"1.0.0","pinned":false},{"name":"we\"ird","kind":"deb","version":"1:2.3-4","pinned":false}]}
+    , list_json);
+
+    const outdated = [_]JsonOutdatedEntry{
+        .{ .name = "node", .kind = "formula", .installed = "26.13.0_2", .latest = "26.14.0", .pinned = false, .upgrade_supported = true, .unsupported_reason = null },
+        .{ .name = "tool", .kind = "cask", .installed = "1.0", .latest = "2.0", .pinned = false, .upgrade_supported = false, .unsupported_reason = "external installers cannot be rolled back" },
+    };
+    const outdated_json = try jsonDocument(alloc, &outdated, true);
+    defer alloc.free(outdated_json);
+    try std.testing.expectEqualStrings(
+        \\{"schema":1,"packages":[{"name":"node","kind":"formula","installed":"26.13.0_2","latest":"26.14.0","pinned":false,"upgrade_supported":true,"unsupported_reason":null},{"name":"tool","kind":"cask","installed":"1.0","latest":"2.0","pinned":false,"upgrade_supported":false,"unsupported_reason":"external installers cannot be rolled back"}]}
+    , outdated_json);
+
+    const empty = try jsonDocument(alloc, @as([]const JsonOutdatedEntry, &.{}), true);
+    defer alloc.free(empty);
+    try std.testing.expectEqualStrings("{\"schema\":1,\"packages\":[]}", empty);
 }

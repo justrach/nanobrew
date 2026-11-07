@@ -608,6 +608,39 @@ pub const Database = struct {
         return null;
     }
 
+    pub const CaskLookup = union(enum) {
+        none,
+        found: CaskRecord,
+        /// The short name matches more than one installed tap cask.
+        ambiguous: usize,
+    };
+
+    /// `findCask`, plus an unambiguous tap short name: `nanobrew-ui` resolves
+    /// to an installed `Rex57/tap/nanobrew-ui` only when no other installed
+    /// tap cask has that short name (#495). Names containing `/` must match
+    /// exactly.
+    pub fn lookupCask(self: *Database, name: []const u8) CaskLookup {
+        if (name.len == 0) return .none;
+        if (self.findCask(name)) |c| return .{ .found = c };
+        if (std.mem.indexOfScalar(u8, name, '/') != null) return .none;
+        var hit: ?CaskRecord = null;
+        var count: usize = 0;
+        for (self.casks.items) |c| {
+            if (!std.mem.eql(u8, tapShortName(c.token), name) and
+                !std.mem.eql(u8, tapShortName(c.canonical_token), name)) continue;
+            count += 1;
+            hit = c;
+        }
+        if (count == 1) return .{ .found = hit.? };
+        if (count > 1) return .{ .ambiguous = count };
+        return .none;
+    }
+
+    fn tapShortName(token: []const u8) []const u8 {
+        const slash = std.mem.lastIndexOfScalar(u8, token, '/') orelse return "";
+        return token[slash + 1 ..];
+    }
+
     pub fn listInstalledCasks(self: *Database, alloc: std.mem.Allocator) ![]CaskRecord {
         const result = try alloc.alloc(CaskRecord, self.casks.items.len);
         @memcpy(result, self.casks.items);
@@ -1204,6 +1237,36 @@ fn testCaskReplacementAllocation(alloc: std.mem.Allocator) !void {
     try testing.expectEqualStrings("2", new.version);
     try testing.expectEqualStrings("App.app", new.apps[0]);
     try testing.expectEqualStrings("tool", new.binaries[0]);
+}
+
+test "lookupCask resolves only unambiguous tap short names (#495)" {
+    const a = testing.allocator;
+    var db: Database = .{
+        .alloc = a,
+        .kegs = .empty,
+        .casks = .empty,
+        .debs = .empty,
+        .history = std.StringHashMap(std.ArrayList(HistoryEntry)).init(a),
+    };
+    defer {
+        db.casks.deinit(a);
+        db.history.deinit();
+    }
+    try db.casks.append(a, .{ .token = "Rex57/tap/nanobrew-ui", .canonical_token = "Rex57/tap/nanobrew-ui", .version = "1", .apps = &.{}, .binaries = &.{} });
+    try db.casks.append(a, .{ .token = "firefox", .version = "1", .apps = &.{}, .binaries = &.{} });
+
+    try testing.expectEqualStrings("Rex57/tap/nanobrew-ui", db.lookupCask("nanobrew-ui").found.token);
+    try testing.expectEqualStrings("Rex57/tap/nanobrew-ui", db.lookupCask("Rex57/tap/nanobrew-ui").found.token);
+    try testing.expectEqualStrings("firefox", db.lookupCask("firefox").found.token);
+    try testing.expect(db.lookupCask("other/tap/nanobrew-ui") == .none);
+    try testing.expect(db.lookupCask("tap/nanobrew-ui") == .none);
+    try testing.expect(db.lookupCask("nanobrew") == .none);
+    try testing.expect(db.lookupCask("") == .none);
+
+    try db.casks.append(a, .{ .token = "someone/apps/nanobrew-ui", .version = "2", .apps = &.{}, .binaries = &.{} });
+    try testing.expectEqual(@as(usize, 2), db.lookupCask("nanobrew-ui").ambiguous);
+    // An exact token still wins over the ambiguous short name.
+    try testing.expectEqualStrings("someone/apps/nanobrew-ui", db.lookupCask("someone/apps/nanobrew-ui").found.token);
 }
 
 test "database load warnings name the file that was opened (#473)" {
