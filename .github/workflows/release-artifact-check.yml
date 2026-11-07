@@ -38,7 +38,9 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
         run: |
-          version=$(sed -n 's/^const VERSION = "\([^"]*\)";.*/\1/p' src/main.zig)
+          # Check against the downloaded tag, not this checkout's VERSION; rc builds print the base version.
+          version=${RELEASE_TAG#v}
+          version=${version%%-*}
           test -n "$version"
           mkdir -p dist/release-check
           cd dist/release-check
