@@ -661,19 +661,66 @@ fn detachStagedDmg(alloc: std.mem.Allocator, io: std.Io, volume: []const u8) voi
     std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
 }
 
+/// `hdiutil attach` also fails transiently on CI runners right after other
+/// images were detached (seen as MountFailed twice in a row of DMG cases).
+/// Attach is retried with a fresh mount point; every failure's hdiutil output
+/// is kept and printed if the last attempt fails too.
+const dmg_attach_attempts = 3;
+
+/// Attach `download` read-only at `volume`. Null on success, otherwise the
+/// caller owns hdiutil's combined output (possibly empty).
+fn attachDmg(alloc: std.mem.Allocator, io: std.Io, volume: []const u8, download: []const u8) error{OutOfMemory}!?[]u8 {
+    const result = std.process.run(alloc, io, .{ .argv = &.{ "hdiutil", "attach", "-nobrowse", "-noautoopen", "-noverify", "-noautofsck", "-readonly", "-mountpoint", volume, download } }) catch |err| {
+        if (err == error.OutOfMemory) return error.OutOfMemory;
+        return try std.fmt.allocPrint(alloc, "could not run hdiutil: {s}", .{@errorName(err)});
+    };
+    defer alloc.free(result.stdout);
+    if (result.term == .exited and result.term.exited == 0) {
+        alloc.free(result.stderr);
+        return null;
+    }
+    return result.stderr;
+}
+
+/// After a failed attach: an empty, unmounted mount point is simply removed;
+/// anything else (a partly attached image) is detached first.
+fn releaseFailedMount(alloc: std.mem.Allocator, io: std.Io, volume: []const u8) void {
+    std.Io.Dir.deleteDirAbsolute(io, volume) catch {
+        detachStagedDmg(alloc, io, volume);
+        std.Io.Dir.deleteDirAbsolute(io, volume) catch {};
+    };
+}
+
 /// Like installCask, take only the declared artifacts out of the image.
 fn stageDmg(alloc: std.mem.Allocator, io: std.Io, cask: Cask, directory: []const u8, download: []const u8) !void {
     clearQuarantineIfPresent(alloc, io, download, false);
     // Private mount point outside the journal: if this process dies while
     // mounted, recovery never has to delete a read-only volume.
-    var template = "/tmp/nb-dmg-XXXXXX".*;
-    const volume = std.mem.span(mkdtemp(&template) orelse return error.MountFailed);
+    var template: [18:0]u8 = undefined;
+    var attempt: usize = 0;
+    const volume = while (true) : (attempt += 1) {
+        if (attempt > 0) std.Io.sleep(io, .fromMilliseconds(@intCast(500 * attempt)), .awake) catch {};
+        template = "/tmp/nb-dmg-XXXXXX".*;
+        const candidate = std.mem.span(mkdtemp(&template) orelse return error.MountFailed);
+        const failure = (attachDmg(alloc, io, candidate, download) catch {
+            releaseFailedMount(alloc, io, candidate);
+            return error.MountFailed;
+        }) orelse break candidate;
+        defer alloc.free(failure);
+        releaseFailedMount(alloc, io, candidate);
+        if (attempt + 1 == dmg_attach_attempts) {
+            const trimmed = std.mem.trim(u8, failure, " \t\r\n");
+            var buf: [std.fs.max_path_bytes + 1024]u8 = undefined;
+            const msg = std.fmt.bufPrint(&buf, "nb: could not attach the disk image {s} after {d} attempts: {s}\n", .{
+                download, dmg_attach_attempts, if (trimmed.len == 0) "hdiutil gave no message" else trimmed[0..@min(trimmed.len, 512)],
+            }) catch "nb: could not attach the disk image\n";
+            std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
+            return error.MountFailed;
+        }
+    };
     defer std.Io.Dir.deleteDirAbsolute(io, volume) catch {};
     // Synchronous, so the mount point can be removed; the copies are complete.
-    // Registered before attach so a partly failed attach is also undone.
     defer detachStagedDmg(alloc, io, volume);
-    if (!commandSucceeded(alloc, io, &.{ "hdiutil", "attach", "-nobrowse", "-noautoopen", "-noverify", "-noautofsck", "-readonly", "-mountpoint", volume, download }))
-        return error.MountFailed;
     for (cask.artifacts) |art| if (art == .app) {
         if (!std.mem.endsWith(u8, art.app, ".app")) return error.ArtifactFailed;
         try copyFromVolume(alloc, io, volume, directory, art.app);
