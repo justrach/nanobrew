@@ -9,6 +9,9 @@ All notable changes to nanobrew are documented here.
 - `nb upgrade --cask` upgrades DMG casks through the same staged, journaled transaction as zip and tar casks, so they are no longer skipped with "this download format does not support staged upgrades yet". The verified image is attached read-only at a private mount point. Only the declared `app` artifacts and relative binary sources are copied out (a symlink in the image that leads outside the volume is refused), and the image is detached before activation. If nb is killed while the image is attached, it stays mounted under `/tmp/nb-dmg-*` until it is detached or the Mac restarts; recovery does not depend on it. Proposed and first implemented by @Rex57. (#491)
 
 ### Fixed
+- `nb upgrade fortune` across a revision bump (for example `9708` -> `9708_1`) no longer deletes the new `bin/fortune` link. The old keg's unlink step now removes the link only when it points at that keg's own wrapper. (#443)
+
+### Fixed
 - When several APT sources list the same package, `nb install --deb`, `nb outdated` and deb upgrades now use the newest version (dpkg ordering), as APT does with default priorities, and the first source listed on a tie. Before, the source listed last won, so on stock Ubuntu `-security` could hide a newer `-updates` build. Pin priorities are still not read. Reported by @Rex57. (#457)
 - The database load warnings (too large, read failed, parse failed) now name the file that was opened instead of always `/opt/nanobrew/db/state.json`, so a corrupt temporary or test database no longer reports the real one as corrupt. Reported by @Rex57. (#473)
 - `nb switch` with several specs now saves the new version of each package that switched, even when another spec fails. Before, `state.json` kept the old version while the links pointed at the new keg. (#475)
