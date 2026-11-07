@@ -4,6 +4,8 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+## [0.1.216] - 2026-11-07
+
 ### Added
 - `--json` on `nb list`, `nb outdated` (also with `--cask`, `--deb`, `--versions` and package names), `nb info` (formula and `--cask`), `nb search`, `nb leaves [--tree]`, `nb deps [--tree]`, `nb services list` and `nb where` prints one schema-1 JSON document instead of text. `nb outdated --json` also reports whether `nb upgrade` can replace each package and, when it cannot, the reason it would print. `nb upgrade --cask` and `nb outdated` accept an installed tap cask by its short name (`nanobrew-ui` for `Rex57/tap/nanobrew-ui`) when no other installed tap cask shares it. The text output is unchanged. See `docs/json-output.md`. Requested by @Rex57. (#495)
 - `nb upgrade --cask` upgrades DMG casks through the same staged, journaled transaction as zip and tar casks, so they are no longer skipped with "this download format does not support staged upgrades yet". The verified image is attached read-only at a private mount point. Only the declared `app` artifacts and relative binary sources are copied out (a symlink in the image that leads outside the volume is refused), and the image is detached before activation. If nb is killed while the image is attached, it stays mounted under `/tmp/nb-dmg-*` until it is detached or the Mac restarts; recovery does not depend on it. Proposed and first implemented by @Rex57. (#491)
@@ -26,11 +28,8 @@ All notable changes to nanobrew are documented here.
 - `nb remove --cask` deletes a recorded `bin/` link only when it points into that cask's Caskroom payload or one of its apps, the same ownership rule `nb upgrade --cask` uses. A name the cask recorded but never linked (for example a binary install refused) is left alone when another package now owns it, and nanobrew says so. (#477)
 - `nb remove --cask` now removes an app the cask names inside a subfolder (`app "Sub/Foo.app"`). Install copies it to `/Applications/Foo.app`; the record and the post-install probe now use that basename, and removal also handles records written by older versions. (#433)
 - `nb install` runs post-install and the active probe after every install worker has finished, in dependency order. A small keg such as wget no longer gets probed before its dependency's `opt/` link exists, which used to produce a false "probe warning" and `probe_success=false`. (#461)
-### Fixed
 - `nb install --shims` links its dependencies' `lib`, `include`, `share` and `etc` into the prefix again. Only their executables stay out of `prefix/bin`, as documented. Since v0.1.203 the fast linker removed every link of a private dependency. (#435)
-### Fixed
 - `nb upgrade fortune` across a revision bump (for example `9708` -> `9708_1`) no longer deletes the new `bin/fortune` link. The old keg's unlink step now removes the link only when it points at that keg's own wrapper. (#443)
-### Fixed
 - When several APT sources list the same package, `nb install --deb`, `nb outdated` and deb upgrades now use the newest version (dpkg ordering), as APT does with default priorities, and the first source listed on a tie. Before, the source listed last won, so on stock Ubuntu `-security` could hide a newer `-updates` build. Pin priorities are still not read. Reported by @Rex57. (#457)
 - The database load warnings (too large, read failed, parse failed) now name the file that was opened instead of always `/opt/nanobrew/db/state.json`, so a corrupt temporary or test database no longer reports the real one as corrupt. Reported by @Rex57. (#473)
 - `nb switch` with several specs now saves the new version of each package that switched, even when another spec fails. Before, `state.json` kept the old version while the links pointed at the new keg. (#475)
@@ -44,6 +43,11 @@ All notable changes to nanobrew are documented here.
 - A binary the relocator could not open, read or write back is now counted as incomplete, so the install fails and the keg is not cached instead of silently shipping a half-rewritten binary. `zig build test` now also runs the ELF (Linux) and Mach-O (macOS) relocator tests. (#465)
 - A bottle is extracted into a private staging directory and published as `store/<sha256>` with one rename, so an interrupted or concurrent install can no longer leave a half-extracted store entry that later installs link as complete. (#437)
 - `zig build test` also compiles and runs the tests in `src/main.zig` (not on Windows, where `src/windows_main.zig` is the exe root). (#481)
+
+### Changed
+- Removed internal modules that nothing used: the exec thread pool and directory queue (#483), the SIMD scanner and mmap reader (#485) and the scratch arena (#487). No change in behavior.
+
+Items #429, #431, #433, #435, #437, #439, #441, #443, #445, #447, #449, #453, #455, #457, #461, #463, #465, #467, #471, #473, #475, #477, #479, #481, #483, #485, #487, #489, #491, #494, #495 and #503 were reported or proposed by @Rex57, #425 by @ferntheplant and #499 by @rirze. #495's requested output is complete, but the issue stays open for a separate question. Partial work on running the API's `post_install_steps` (#493) is not in this release.
 
 ## [0.1.215] - 2026-11-02
 
