@@ -4,6 +4,7 @@ No network access, installed packages, or production database are used.
 """
 import hashlib
 import json
+import os
 import pathlib
 import subprocess
 import shutil
@@ -15,7 +16,7 @@ import zipfile
 fixture = str(pathlib.Path(sys.argv[1]).resolve())
 
 
-def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_moves=0):
+def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_moves=0, foreign_removed=False, detach_failures=0):
     with tempfile.TemporaryDirectory(prefix="nb-upgrade-") as temp:
         root = pathlib.Path(temp).resolve()
         old = root / "Caskroom/fixture/1.0"
@@ -32,6 +33,10 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
         (root / "bin/fixture").symlink_to(old / "cli")
         (root / "bin/retired").symlink_to(old / "cli")
         (root / "bin/app-tool").symlink_to(apps / "Fixture.app/Contents/MacOS/tool")
+        if foreign_removed:
+            # The user replaced a link that version 2.0 no longer ships.
+            (root / "bin/retired").unlink()
+            (root / "bin/retired").symlink_to("/usr/bin/true")
         original = {"kegs": [{"name": "untouched", "version": "8"}], "casks": [{
             "token": "fixture", "canonical_token": "fixture", "version": "1.0", "sha256": "a" * 64,
             "apps": ["Fixture.app", "Retired.app"], "binaries": ["fixture", "retired", "app-tool"],
@@ -55,6 +60,11 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
             with zipfile.ZipFile(blob, "w") as z:
                 for p in payload.rglob("*"):
                     z.write(p, p.relative_to(payload))
+        elif fmt == "dmg":
+            if bad == "volume-escape":
+                (payload / "escape").symlink_to(root / "outside")
+            subprocess.run(["hdiutil", "create", "-quiet", "-srcfolder", payload, "-format", "UDZO",
+                            "-volname", "Fixture", blob], check=True)
         else:
             with tarfile.open(blob, "w:" + ("gz" if fmt == "tar.gz" else "xz")) as t:
                 for p in payload.iterdir():
@@ -69,6 +79,11 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
             artifacts = [{"binary": {"source": "fixture", "target": "fixture"}}]
         if bad == "missing-source":
             artifacts[1]["binary"]["source"] = "dist/missing"
+        if bad == "volume-escape":
+            # A symlink inside the image must not lead staging out of the volume.
+            (root / "outside").mkdir()
+            (root / "outside/cli").write_text("#!/bin/sh\necho outside\n")
+            artifacts[1]["binary"]["source"] = "escape/cli"
         if bad == "external-installer":
             artifacts.append({"pkg": "Installer.pkg"})
         if bad == "foreign-link":
@@ -87,7 +102,26 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
             metadata["sha256"] = "0" * 64
         meta = root / "cask.json"
         meta.write_text(json.dumps(metadata))
-        result = subprocess.run([fixture, str(root), str(blob), str(meta), fault], capture_output=True, text=True)
+        env = None
+        if detach_failures:
+            # The first `hdiutil detach` calls fail, as when the system still
+            # holds the fresh volume; staging must retry instead of leaving
+            # the image attached.
+            shim = root / "shim"
+            shim.mkdir()
+            (shim / "hdiutil").write_text(
+                '#!/bin/sh\n'
+                'if [ "$1" = detach ]; then\n'
+                f'  n=$(cat "{root}/detach-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "{root}/detach-calls"\n'
+                f'  [ $n -le {detach_failures} ] && exit 16\n'
+                'fi\n'
+                'exec /usr/bin/hdiutil "$@"\n')
+            (shim / "hdiutil").chmod(0o755)
+            env = dict(os.environ, PATH=f"{shim}:{os.environ['PATH']}")
+        result = subprocess.run([fixture, str(root), str(blob), str(meta), fault], capture_output=True, text=True, env=env)
+        if detach_failures:
+            assert int((root / "detach-calls").read_text()) == detach_failures + 1, result.stderr
+            assert "could not detach" not in result.stderr, result.stderr
         success = fault in ("none", "crash-committed-0", "fail-committed-0") and bad is None
         if fault.startswith("crash-"):
             assert result.returncode == 75, result.stderr
@@ -140,10 +174,17 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
                 assert not (root / "bin/app-tool").is_symlink()
             else:
                 assert (root / "bin/fixture").resolve() == new / "dist/bin/cli"
-                assert subprocess.check_output([str((root / "bin/fixture").resolve())], text=True) == "new"
-                assert (new / "dist/helper").read_text() == "new"
+                if fmt == "dmg":
+                    # As in a fresh DMG install, only artifacts leave the image; the app is moved, not copied.
+                    assert not (new / "dist/companion").exists() and not (new / "Fixture.app").exists()
+                else:
+                    assert subprocess.check_output([str((root / "bin/fixture").resolve())], text=True) == "new"
+                    assert (new / "dist/helper").read_text() == "new"
                 assert subprocess.check_output([str(root / "bin/app-tool")], text=True) == "new-app\n"
-            assert not (root / "bin/retired").is_symlink()
+            if foreign_removed:
+                assert (root / "bin/retired").readlink() == pathlib.Path("/usr/bin/true")
+            else:
+                assert not (root / "bin/retired").is_symlink()
             assert not (apps / "Retired.app").exists()
             assert not record["probe_success"]
             assert record["sha256"] == metadata["sha256"]
@@ -165,11 +206,23 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
                 assert (apps / "Foreign.app/keep").read_text() == "foreign"
         assert not (root / "transaction").exists()
         assert not list(root.rglob("*.nb-upgrade-*"))
-        print("PASS", fmt, fault, bad or "", activation_moves, rollback_moves, flush=True)
+        if fmt == "dmg":
+            assert str(blob) not in subprocess.check_output(["hdiutil", "info"], text=True), "image still attached"
+            assert not list(pathlib.Path("/tmp").glob("nb-dmg-*")), "private mount point left behind"
+        print("PASS", fmt, fault, bad or "", activation_moves, rollback_moves, "foreign-removed" if foreign_removed else "",
+              f"detach-failures={detach_failures}" if detach_failures else "", flush=True)
 
 
 for fmt in ("tar.gz", "tar.xz", "zip", "binary"):
     run_case(fmt=fmt)
+if sys.platform == "darwin":  # hdiutil builds and mounts the image
+    for fault in ("none", "fail-staged-0", "crash-staged-0", "fail-activated-1", "crash-activated-7"):
+        run_case(fault, fmt="dmg")
+    run_case(fmt="dmg", bad="missing-source")
+    run_case(fmt="dmg", bad="volume-escape")
+    run_case(fmt="dmg", detach_failures=2)
+    run_case(fmt="dmg", bad="volume-escape", detach_failures=1)
+run_case(foreign_removed=True)
 for bad in ("missing-source", "checksum", "foreign-link", "foreign-app", "external-installer"):
     run_case(bad=bad)
 for fault in ["late-conflict", "crash-activating-0", "database-failure", "fail-staged-0", "crash-staged-0", "crash-database-7", "fail-committed-0", "crash-committed-0"]:
