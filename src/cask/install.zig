@@ -742,7 +742,11 @@ fn detachImageDevices(alloc: std.mem.Allocator, io: std.Io, download: []const u8
             @memcpy(dev_buf[0..len], devices[0][0..len]);
             return .{ .attached = dev_buf[0..len] };
         }
-        for (devices[0..n]) |dev| _ = commandSucceeded(alloc, io, &.{ "hdiutil", "detach", "-force", "-quiet", dev });
+        // Only the first: it is the image's own disk. An APFS image also
+        // lists the synthesized container disk under the same image, which
+        // goes away with it, so detaching that one too is a redundant call.
+        // Anything still listed is retried on the next round.
+        _ = commandSucceeded(alloc, io, &.{ "hdiutil", "detach", "-force", "-quiet", devices[0] });
     }
 }
 
@@ -798,6 +802,17 @@ test "imageDevices finds the whole-disk device of one image in hdiutil info" {
     try std.testing.expectEqual(@as(usize, 1), n);
     try std.testing.expectEqualStrings("/dev/disk4", out[0]);
     try std.testing.expectEqual(@as(usize, 0), imageDevices(info, "/nope.dmg", "/nope.dmg", &out));
+    // APFS: the image's disk is listed first, then the synthesized
+    // container disk (with the volume) under the same image.
+    const apfs = "================================================\n" ++
+        "image-path      : /private/var/folders/x/T/fixture.dmg\n" ++
+        "/dev/disk4\tGUID_partition_scheme\t\n" ++
+        "/dev/disk4s1\tApple_APFS\t\n" ++
+        "/dev/disk5\tEF57347C-0000-11AA-AA11-0030654\t\n" ++
+        "/dev/disk5s1\t41504653-0000-11AA-AA11-0030654\t/tmp/nb-dmg-abc\n";
+    try std.testing.expectEqual(@as(usize, 2), imageDevices(apfs, "/var/folders/x/T/fixture.dmg", "/private/var/folders/x/T/fixture.dmg", &out));
+    try std.testing.expectEqualStrings("/dev/disk4", out[0]);
+    try std.testing.expectEqualStrings("/dev/disk5", out[1]);
     // An unmounted device (no mount point column) still counts.
     try std.testing.expectEqual(@as(usize, 1), imageDevices(info, "/Users/me/other.dmg", "/Users/me/other.dmg", &out));
     try std.testing.expectEqualStrings("/dev/disk5", out[0]);

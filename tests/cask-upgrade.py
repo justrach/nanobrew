@@ -118,6 +118,7 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
                 '#!/bin/sh\n'
                 'if [ "$1" = detach ]; then\n'
                 f'  n=$(cat "{root}/detach-calls" 2>/dev/null || echo 0); n=$((n + 1)); echo $n > "{root}/detach-calls"\n'
+                f'  echo "$n $*" >> "{root}/detach-args"\n'
                 f'  [ $n -le {detach_failures} ] && exit 16\n'
                 'fi\n'
                 'if [ "$1" = attach ]; then\n'
@@ -126,7 +127,7 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
                 # A partial attach: the image's device is attached but no
                 # volume is mounted at the mount point, and attach fails.
                 f'  if [ $n -le {attach_partial} ]; then\n'
-                f'    /usr/bin/hdiutil attach -nomount -readonly -noverify -nobrowse "{blob}" >/dev/null || exit 2\n'
+                f'    /usr/bin/hdiutil attach -nomount -readonly -noverify -nobrowse "{blob}" > "{root}/partial-devices" || exit 2\n'
                 '    echo "hdiutil: attach failed - partial (shim)" >&2; exit 1\n'
                 '  fi\n'
                 'fi\n'
@@ -142,7 +143,8 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
             # detaches by mount point, the device sweep detaches the image.
             detach_calls = int((root / "detach-calls").read_text()) if (root / "detach-calls").exists() else 0
             expected = (min(detach_failures, DETACH_ATTEMPTS) + 1 if mounted else 0) + attach_partial
-            assert detach_calls == expected, (detach_calls, expected, result.stderr)
+            detach_args = (root / "detach-args").read_text() if (root / "detach-args").exists() else ""
+            assert detach_calls == expected, (detach_calls, expected, detach_args, result.stderr)
             assert "could not detach" not in result.stderr, result.stderr
         if failed_attaches:
             assert int((root / "attach-calls").read_text()) == min(failed_attaches + 1, ATTACH_ATTEMPTS), result.stderr
@@ -240,6 +242,11 @@ def run_case(fault="none", fmt="tar.gz", bad=None, activation_moves=0, rollback_
             info = subprocess.check_output(["hdiutil", "info"], text=True)
             assert str(blob) not in info, ("image still attached", result.stderr, info)
             assert not list(pathlib.Path("/tmp").glob("nb-dmg-*")), "private mount point left behind"
+        if attach_partial:
+            # Native evidence of what a partial attach left (e.g. APFS: image
+            # disk + synthesized container) and which device was detached.
+            print("NOTE partial attach devices:", " | ".join((root / "partial-devices").read_text().split("\n")).strip(" |"),
+                  "; detaches:", " | ".join((root / "detach-args").read_text().strip().split("\n")), flush=True)
         print("PASS", fmt, fault, bad or "", activation_moves, rollback_moves, "foreign-removed" if foreign_removed else "",
               f"detach-failures={detach_failures}" if detach_failures else "",
               f"attach-failures={attach_failures}" if attach_failures else "",
