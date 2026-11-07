@@ -649,15 +649,19 @@ extern "c" fn mkdtemp(template: [*:0]u8) ?[*:0]u8;
 
 /// `hdiutil detach -force` can still fail while the system briefly holds the
 /// fresh volume (seen on CI runners); a failed detach used to be ignored and
-/// left the image attached. Retry, then tell the user how to finish it.
-fn detachStagedDmg(alloc: std.mem.Allocator, io: std.Io, volume: []const u8) void {
+/// left the image attached. Retry; the caller decides what to report.
+fn detachStagedDmg(alloc: std.mem.Allocator, io: std.Io, volume: []const u8) bool {
     var attempt: i64 = 0;
     while (attempt < 4) : (attempt += 1) {
         if (attempt > 0) std.Io.sleep(io, .fromMilliseconds(500 * attempt), .awake) catch {};
-        if (commandSucceeded(alloc, io, &.{ "hdiutil", "detach", "-force", "-quiet", volume })) return;
+        if (commandSucceeded(alloc, io, &.{ "hdiutil", "detach", "-force", "-quiet", volume })) return true;
     }
+    return false;
+}
+
+fn warnStillAttached(io: std.Io, what: []const u8) void {
     var buf: [std.fs.max_path_bytes + 128]u8 = undefined;
-    const msg = std.fmt.bufPrint(&buf, "nb: warning: could not detach the disk image at {s}; run `hdiutil detach -force {s}`\n", .{ volume, volume }) catch return;
+    const msg = std.fmt.bufPrint(&buf, "nb: warning: could not detach the disk image at {s}; run `hdiutil detach -force {s}`\n", .{ what, what }) catch return;
     std.Io.File.stderr().writeStreamingAll(io, msg) catch {};
 }
 
@@ -684,11 +688,119 @@ fn attachDmg(alloc: std.mem.Allocator, io: std.Io, volume: []const u8, download:
 
 /// After a failed attach: an empty, unmounted mount point is simply removed;
 /// anything else (a partly attached image) is detached first.
-fn releaseFailedMount(alloc: std.mem.Allocator, io: std.Io, volume: []const u8) void {
+fn releaseFailedMount(alloc: std.mem.Allocator, io: std.Io, volume: []const u8, download: []const u8) void {
+    var detached = true;
     std.Io.Dir.deleteDirAbsolute(io, volume) catch {
-        detachStagedDmg(alloc, io, volume);
-        std.Io.Dir.deleteDirAbsolute(io, volume) catch {};
+        detached = detachStagedDmg(alloc, io, volume);
     };
+    // A failed attach can still leave the image's device attached with no
+    // volume mounted; that is invisible at the mount point.
+    finishDetach(alloc, io, volume, download, detached);
+    std.Io.Dir.deleteDirAbsolute(io, volume) catch {};
+}
+
+/// Detach the staged volume, then make sure no device of this image is still
+/// attached: a detach by mount point does not cover a device whose volume was
+/// never mounted or was already unmounted, and `hdiutil info` is the record
+/// of what is actually attached.
+fn releaseImage(alloc: std.mem.Allocator, io: std.Io, volume: []const u8, download: []const u8) void {
+    finishDetach(alloc, io, volume, download, detachStagedDmg(alloc, io, volume));
+}
+
+/// Sweep this image's devices and warn only if something is really left:
+/// a device `hdiutil info` still lists, or, when info is unavailable, a
+/// mount point whose detach failed.
+fn finishDetach(alloc: std.mem.Allocator, io: std.Io, volume: []const u8, download: []const u8, volume_detached: bool) void {
+    var dev_buf: [32]u8 = undefined;
+    switch (detachImageDevices(alloc, io, download, &dev_buf)) {
+        .clear => {},
+        .attached => |dev| warnStillAttached(io, dev),
+        .unknown => if (!volume_detached) warnStillAttached(io, volume),
+    }
+}
+
+const SweepResult = union(enum) { clear, unknown, attached: []const u8 };
+
+/// Detach every device `hdiutil info` lists for the image at `download`,
+/// retrying like detachStagedDmg. `.attached` names a device still listed
+/// after the last attempt; `.unknown` means `hdiutil info` did not run.
+fn detachImageDevices(alloc: std.mem.Allocator, io: std.Io, download: []const u8, dev_buf: *[32]u8) SweepResult {
+    var real_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const real: []const u8 = if (std.Io.Dir.cwd().realPathFile(io, download, &real_buf)) |n| real_buf[0..n] else |_| download;
+    var attempt: i64 = 0;
+    while (true) : (attempt += 1) {
+        if (attempt > 0) std.Io.sleep(io, .fromMilliseconds(500 * attempt), .awake) catch {};
+        const result = std.process.run(alloc, io, .{ .argv = &.{ "hdiutil", "info" } }) catch return .unknown;
+        defer alloc.free(result.stdout);
+        defer alloc.free(result.stderr);
+        if (!(result.term == .exited and result.term.exited == 0)) return .unknown;
+        var devices: [8][]const u8 = undefined;
+        const n = imageDevices(result.stdout, download, real, &devices);
+        if (n == 0) return .clear;
+        if (attempt == 4) {
+            const len = @min(devices[0].len, dev_buf.len);
+            @memcpy(dev_buf[0..len], devices[0][0..len]);
+            return .{ .attached = dev_buf[0..len] };
+        }
+        for (devices[0..n]) |dev| _ = commandSucceeded(alloc, io, &.{ "hdiutil", "detach", "-force", "-quiet", dev });
+    }
+}
+
+/// From `hdiutil info` text, the whole-disk devices (`/dev/diskN`) of the
+/// image whose `image-path` is `path` or `real`. Sections are separated by
+/// lines of `=`; device lines start with `/dev/disk`.
+fn imageDevices(info: []const u8, path: []const u8, real: []const u8, out: *[8][]const u8) usize {
+    var count: usize = 0;
+    var matches = false;
+    var lines = std.mem.splitScalar(u8, info, '\n');
+    while (lines.next()) |raw| {
+        const line = std.mem.trimEnd(u8, raw, "\r");
+        if (std.mem.startsWith(u8, line, "====")) {
+            matches = false;
+            continue;
+        }
+        if (std.mem.startsWith(u8, line, "image-path")) {
+            const colon = std.mem.indexOfScalar(u8, line, ':') orelse continue;
+            const value = std.mem.trim(u8, line[colon + 1 ..], " \t");
+            matches = std.mem.eql(u8, value, path) or std.mem.eql(u8, value, real);
+            continue;
+        }
+        if (!matches or !std.mem.startsWith(u8, line, "/dev/disk")) continue;
+        const end = std.mem.indexOfAny(u8, line, " \t") orelse line.len;
+        var dev = line[0..end];
+        // /dev/disk4s1 -> /dev/disk4: detaching the whole disk detaches all.
+        if (std.mem.indexOfScalarPos(u8, dev, "/dev/disk".len, 's')) |cut| dev = dev[0..cut];
+        const dup = for (out[0..count]) |seen| {
+            if (std.mem.eql(u8, seen, dev)) break true;
+        } else false;
+        if (!dup and count < out.len) {
+            out[count] = dev;
+            count += 1;
+        }
+    }
+    return count;
+}
+
+test "imageDevices finds the whole-disk device of one image in hdiutil info" {
+    const info = "framework       : 671.100.2\n" ++
+        "================================================\n" ++
+        "image-path      : /Users/me/other.dmg\n" ++
+        "image-type      : read-only disk image\n" ++
+        "/dev/disk5\tGUID_partition_scheme\t\n" ++
+        "/dev/disk5s1\tApple_HFS\t/Volumes/Other\n" ++
+        "================================================\n" ++
+        "image-path      : /private/var/folders/x/T/blob.dmg\n" ++
+        "image-type      : read-only disk image\n" ++
+        "/dev/disk4\tGUID_partition_scheme\t\n" ++
+        "/dev/disk4s1\tApple_HFS\t\n";
+    var out: [8][]const u8 = undefined;
+    const n = imageDevices(info, "/var/folders/x/T/blob.dmg", "/private/var/folders/x/T/blob.dmg", &out);
+    try std.testing.expectEqual(@as(usize, 1), n);
+    try std.testing.expectEqualStrings("/dev/disk4", out[0]);
+    try std.testing.expectEqual(@as(usize, 0), imageDevices(info, "/nope.dmg", "/nope.dmg", &out));
+    // An unmounted device (no mount point column) still counts.
+    try std.testing.expectEqual(@as(usize, 1), imageDevices(info, "/Users/me/other.dmg", "/Users/me/other.dmg", &out));
+    try std.testing.expectEqualStrings("/dev/disk5", out[0]);
 }
 
 /// Like installCask, take only the declared artifacts out of the image.
@@ -703,11 +815,11 @@ fn stageDmg(alloc: std.mem.Allocator, io: std.Io, cask: Cask, directory: []const
         template = "/tmp/nb-dmg-XXXXXX".*;
         const candidate = std.mem.span(mkdtemp(&template) orelse return error.MountFailed);
         const failure = (attachDmg(alloc, io, candidate, download) catch {
-            releaseFailedMount(alloc, io, candidate);
+            releaseFailedMount(alloc, io, candidate, download);
             return error.MountFailed;
         }) orelse break candidate;
         defer alloc.free(failure);
-        releaseFailedMount(alloc, io, candidate);
+        releaseFailedMount(alloc, io, candidate, download);
         if (attempt + 1 == dmg_attach_attempts) {
             const trimmed = std.mem.trim(u8, failure, " \t\r\n");
             var buf: [std.fs.max_path_bytes + 1024]u8 = undefined;
@@ -720,7 +832,7 @@ fn stageDmg(alloc: std.mem.Allocator, io: std.Io, cask: Cask, directory: []const
     };
     defer std.Io.Dir.deleteDirAbsolute(io, volume) catch {};
     // Synchronous, so the mount point can be removed; the copies are complete.
-    defer detachStagedDmg(alloc, io, volume);
+    defer releaseImage(alloc, io, volume, download);
     for (cask.artifacts) |art| if (art == .app) {
         if (!std.mem.endsWith(u8, art.app, ".app")) return error.ArtifactFailed;
         try copyFromVolume(alloc, io, volume, directory, art.app);
