@@ -12,7 +12,7 @@ Today, `nb install <formula>` materializes bottles from
 `ghcr.io/v2/homebrew/core/<name>/blobs/sha256:<digest>`. The metadata
 arrives via the Homebrew formula API; the binaries arrive from
 Homebrew's GHCR org. Nanobrew's claim of being "native and fast" is
-true for the *runtime* (Zig pipeline, mmap, COW copy, native fetch
+true for the *runtime* (Zig pipeline, COW copy, native fetch
 since v0.1.193), but the *supply chain* is still Homebrew end-to-end.
 
 The goal is a credible, gradual path to **bottles built and hosted by
