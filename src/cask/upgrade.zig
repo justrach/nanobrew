@@ -3,8 +3,8 @@ const builtin = @import("builtin");
 const paths = @import("../platform/paths.zig");
 const Cask = @import("../api/cask.zig").Cask;
 const Database = @import("../db/database.zig").Database;
-const CaskRecord = @import("../db/database.zig").CaskRecord;
 const installer = @import("install.zig");
+const version = @import("../version.zig");
 pub const transaction = @import("transaction.zig");
 
 pub const Locations = struct {
@@ -32,7 +32,7 @@ fn relative(s: []const u8) bool {
 pub fn unsupportedReason(cask: Cask) ?[]const u8 {
     if (builtin.os.tag != .macos) return "casks require macOS";
     switch (cask.downloadFormat()) {
-        .zip, .tar_gz, .tar_xz, .binary => {},
+        .dmg, .zip, .tar_gz, .tar_xz, .binary => {},
         .pkg, .shell_script => return "external installers cannot be rolled back",
         else => return "this download format does not support staged upgrades yet",
     }
@@ -59,6 +59,77 @@ pub fn unsupportedReason(cask: Cask) ?[]const u8 {
     return if (count == 0) "no app or binary artifacts to upgrade" else null;
 }
 
+/// An auto-updating app replaces itself in /Applications, so its recorded
+/// version goes stale. Like Homebrew, trust the installed bundle's version then.
+pub fn outdated(recorded: []const u8, candidate: []const u8, auto_updates: bool, bundle_version: ?[]const u8) bool {
+    if (!version.isNewer(candidate, recorded)) return false;
+    const bundle = bundle_version orelse return true;
+    if (!auto_updates) return true;
+    // A bundle short version has no ",build" part; compare the release part only.
+    const release = candidate[0 .. std.mem.indexOfScalar(u8, candidate, ',') orelse candidate.len];
+    return version.isNewer(release, bundle);
+}
+
+/// CFBundleShortVersionString of an installed app; null when it cannot be read.
+pub fn bundleShortVersion(alloc: std.mem.Allocator, io: std.Io, app: []const u8) ?[]u8 {
+    return bundleInfoString(alloc, io, app, "CFBundleShortVersionString");
+}
+
+/// A string value from an installed app's Info.plist; null when it cannot be read.
+pub fn bundleInfoString(alloc: std.mem.Allocator, io: std.Io, app: []const u8, key: []const u8) ?[]u8 {
+    const plist = std.fmt.allocPrint(alloc, "{s}/Contents/Info.plist", .{app}) catch return null;
+    defer alloc.free(plist);
+    const res = std.process.run(alloc, io, .{
+        .argv = &.{ "/usr/bin/plutil", "-extract", key, "raw", "-o", "-", plist },
+        .stdout_limit = .limited(4096),
+        .stderr_limit = .limited(4096),
+    }) catch return null;
+    defer alloc.free(res.stdout);
+    defer alloc.free(res.stderr);
+    if (res.term != .exited or res.term.exited != 0) return null;
+    const value = std.mem.trim(u8, res.stdout, " \t\r\n");
+    if (value.len == 0) return null;
+    return alloc.dupe(u8, value) catch null;
+}
+
+test "bundleShortVersion reads an app's Info.plist" {
+    if (builtin.os.tag != .macos) return error.SkipZigTest;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    try tmp.dir.createDirPath(std.testing.io, "Fixture.app/Contents");
+    try tmp.dir.writeFile(std.testing.io, .{
+        .sub_path = "Fixture.app/Contents/Info.plist",
+        .data =
+        \\<?xml version="1.0" encoding="UTF-8"?>
+        \\<plist version="1.0"><dict>
+        \\<key>CFBundleShortVersionString</key><string>5.5.80</string>
+        \\</dict></plist>
+        \\
+        ,
+    });
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const app = try std.fmt.bufPrint(&buf, ".zig-cache/tmp/{s}/Fixture.app", .{tmp.sub_path[0..]});
+    const found = bundleShortVersion(std.testing.allocator, std.testing.io, app) orelse return error.TestUnexpectedResult;
+    defer std.testing.allocator.free(found);
+    try std.testing.expectEqualStrings("5.5.80", found);
+
+    var missing_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const missing = try std.fmt.bufPrint(&missing_buf, ".zig-cache/tmp/{s}/Missing.app", .{tmp.sub_path[0..]});
+    try std.testing.expect(bundleShortVersion(std.testing.allocator, std.testing.io, missing) == null);
+}
+
+test "outdated trusts the installed bundle of an auto-updating cask" {
+    // Installed at 5.5.70, the app updated itself to 5.5.80, the API still says 5.5.76.
+    try std.testing.expect(!outdated("5.5.70", "5.5.76", true, "5.5.80"));
+    try std.testing.expect(!outdated("5.5.70", "5.5.76", true, "5.5.76"));
+    try std.testing.expect(!outdated("1.2.0", "1.2.3,456", true, "1.2.3"));
+    try std.testing.expect(outdated("5.5.70", "5.5.76", true, "5.5.72"));
+    // No readable bundle, or not an auto-updating cask: keep the recorded-version rule.
+    try std.testing.expect(outdated("5.5.70", "5.5.76", true, null));
+    try std.testing.expect(outdated("5.5.70", "5.5.76", false, "5.5.80"));
+    try std.testing.expect(!outdated("5.5.76", "5.5.76", true, "5.5.70"));
+}
+
 fn contains(items: []const []const u8, value: []const u8) bool {
     for (items) |item| if (std.mem.eql(u8, std.fs.path.basename(item), value)) return true;
     return false;
@@ -68,13 +139,15 @@ fn within(path: []const u8, root: []const u8) bool {
     return path.len > root.len and std.mem.startsWith(u8, path, root) and path[root.len] == '/';
 }
 
-fn ownedBinary(io: std.Io, link: []const u8, old: CaskRecord, old_payload: []const u8, applications: []const u8) bool {
+/// True when `link` is a symlink into the cask's payload or one of its apps.
+/// Upgrade and remove both use it so neither touches another package's link.
+pub fn ownedBinary(io: std.Io, link: []const u8, old_apps: []const []const u8, old_payload: []const u8, applications: []const u8) bool {
     var buf: [std.fs.max_path_bytes]u8 = undefined;
     const n = std.Io.Dir.readLinkAbsolute(io, link, &buf) catch return false;
     const target = buf[0..n];
     if (!relative(std.mem.trimStart(u8, target, "/"))) return false;
     if (within(target, old_payload)) return true;
-    for (old.apps) |app| {
+    for (old_apps) |app| {
         var app_buf: [std.fs.max_path_bytes]u8 = undefined;
         const root = std.fmt.bufPrint(&app_buf, "{s}/{s}", .{ applications, std.fs.path.basename(app) }) catch return false;
         if (within(target, root)) return true;
@@ -95,6 +168,11 @@ fn addStep(alloc: std.mem.Allocator, io: std.Io, steps: *std.ArrayList(transacti
 
 /// Caller owns the command lock. Take the existing DB lock as well so an older
 /// binary's state writer cannot race the database replacement.
+/// Whether an interrupted upgrade left a journal that `recover` would replay.
+pub fn journalExists(io: std.Io, locations: Locations) !bool {
+    return transaction.exists(io, locations.journal);
+}
+
 pub fn recover(alloc: std.mem.Allocator, io: std.Io, locations: Locations) !bool {
     if (!try transaction.exists(io, locations.journal)) return false;
     const lock_path = try std.fmt.allocPrint(alloc, "{s}.lock", .{locations.database});
@@ -160,7 +238,7 @@ pub fn upgradeWithHooks(alloc: std.mem.Allocator, io: std.Io, requested: []const
     for (cask.artifacts) |art| switch (art) {
         .binary => |bin| {
             const destination = try std.fs.path.join(a, &.{ locations.bin, bin.target });
-            const owned = contains(old.binaries, bin.target) and ownedBinary(io, destination, old, old_payload, locations.applications);
+            const owned = contains(old.binaries, bin.target) and ownedBinary(io, destination, old.apps, old_payload, locations.applications);
             try addStep(a, io, &steps, destination, owned, false);
             try bins.append(a, bin.target);
         },
@@ -172,7 +250,11 @@ pub fn upgradeWithHooks(alloc: std.mem.Allocator, io: std.Io, requested: []const
         if (!component(bin)) return error.UnsafePath;
         if (!contains(bins.items, bin)) {
             const destination = try std.fs.path.join(a, &.{ locations.bin, bin });
-            try addStep(a, io, &steps, destination, ownedBinary(io, destination, old, old_payload, locations.applications), true);
+            const owned = ownedBinary(io, destination, old.apps, old_payload, locations.applications);
+            // Only our own link is removed; nothing replaces a dropped name, so
+            // a file the user put there is left alone instead of a conflict.
+            if (!owned and try transaction.exists(io, destination)) continue;
+            try addStep(a, io, &steps, destination, owned, true);
         }
     }
     for (old.apps) |app| {
@@ -224,8 +306,17 @@ fn run(a: std.mem.Allocator, io: std.Io, cask: Cask, locations: Locations, db: *
         try requireWithin(io, source, payload.staged);
         const app_stat = try std.Io.Dir.cwd().statFile(io, source, .{ .follow_symlinks = false });
         if (app_stat.kind != .directory) return error.ArtifactFailed;
-        const result = try std.process.run(a, io, .{ .argv = &.{ "/bin/cp", "-R", source, journal.steps[step_index].staged } });
-        if (result.term != .exited or result.term.exited != 0) return error.ArtifactFailed;
+        // A DMG payload holds only artifacts, so its app copy has no other use;
+        // a fresh DMG install keeps none either. Keep it if a binary points in.
+        const keep = for (cask.artifacts) |other| {
+            if (other == .binary and within(other.binary.source, art.app)) break true;
+        } else false;
+        const moved = cask.downloadFormat() == .dmg and !keep and
+            if (std.Io.Dir.renameAbsolute(source, journal.steps[step_index].staged, io)) |_| true else |_| false;
+        if (!moved) {
+            const result = try std.process.run(a, io, .{ .argv = &.{ "/bin/cp", "-R", source, journal.steps[step_index].staged } });
+            if (result.term != .exited or result.term.exited != 0) return error.ArtifactFailed;
+        }
         step_index += 1;
     };
     for (cask.artifacts) |art| if (art == .binary) {
@@ -249,7 +340,8 @@ fn run(a: std.mem.Allocator, io: std.Io, cask: Cask, locations: Locations, db: *
         try std.Io.Dir.symLinkAbsolute(io, source, journal.steps[step_index].staged, .{});
         step_index += 1;
     };
-    try db.recordCaskInstall(requested, cask.token, cask.version, cask.sha256, apps, bins);
+    // Staged upgrades never touch fonts, so the old record keeps owning them.
+    try db.recordCaskInstall(requested, cask.token, cask.version, cask.sha256, apps, bins, if (db.findCask(requested)) |old| old.fonts else &.{});
     try hooks.check(.database, journal.steps.len - 1);
     try db.writeSnapshot(journal.steps[journal.steps.len - 1].staged);
     for (journal.steps) |step| if (!step.remove_only) try syncTree(a, io, step.staged);

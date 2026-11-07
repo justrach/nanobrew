@@ -148,8 +148,15 @@ fn runProbe(io: std.Io, path: []const u8, arg: []const u8, cwd: []const u8, dead
         .stdin = .ignore,
         .stdout = .ignore,
         .stderr = .ignore,
+        // Own process group, so a timeout can kill helpers the probe started
+        // (Electron apps leave them running, #494). Windows has no groups.
+        .pgid = if (builtin.os.tag == .windows) null else 0,
     });
-    if (builtin.os.tag != .windows) return waitProbePosix(io, &child, deadline);
+    if (builtin.os.tag != .windows) {
+        const slot = probe_groups.add(child.id.?);
+        defer probe_groups.remove(slot);
+        return waitProbePosix(io, &child, deadline);
+    }
     defer child.kill(io);
     const Event = union(enum) {
         exited: std.process.Child.WaitError!std.process.Child.Term,
@@ -171,12 +178,58 @@ fn runProbe(io: std.Io, path: []const u8, arg: []const u8, cwd: []const u8, dead
 
 extern "c" fn waitpid(pid: c_int, status: *c_int, options: c_int) c_int;
 
+/// Probe children run in their own process group, so a Ctrl-C at the terminal
+/// no longer reaches them. While any probe runs, SIGINT, SIGTERM and SIGHUP
+/// kill the live probe groups first and then take their usual effect on nb.
+const probe_groups = struct {
+    var slots: [64]std.atomic.Value(std.posix.pid_t) = @splat(.init(0));
+    var once = std.atomic.Value(bool).init(false);
+    const signals = [_]std.posix.SIG{ .INT, .TERM, .HUP };
+    var previous: [signals.len]std.posix.Sigaction = undefined;
+
+    fn add(pid: std.posix.pid_t) ?usize {
+        installOnce();
+        for (&slots, 0..) |*slot, i| {
+            if (slot.cmpxchgStrong(0, pid, .acq_rel, .acquire) == null) return i;
+        }
+        return null;
+    }
+
+    fn remove(slot: ?usize) void {
+        if (slot) |i| slots[i].store(0, .release);
+    }
+
+    fn installOnce() void {
+        if (once.swap(true, .acq_rel)) return;
+        const action: std.posix.Sigaction = .{ .handler = .{ .handler = forward }, .mask = std.posix.sigemptyset(), .flags = 0 };
+        for (signals, 0..) |sig, i| {
+            std.posix.sigaction(sig, null, &previous[i]);
+            // Keep an inherited "ignore" (nohup) or a handler someone else set.
+            if (previous[i].handler.handler != std.posix.SIG.DFL) continue;
+            std.posix.sigaction(sig, &action, null);
+        }
+    }
+
+    fn forward(sig: std.posix.SIG) callconv(.c) void {
+        for (&slots) |*slot| {
+            const pid = slot.load(.acquire);
+            if (pid > 0) _ = std.c.kill(-pid, .KILL);
+        }
+        // Then do what the signal would have done without us.
+        const default: std.posix.Sigaction = .{ .handler = .{ .handler = std.posix.SIG.DFL }, .mask = std.posix.sigemptyset(), .flags = 0 };
+        std.posix.sigaction(sig, &default, null);
+        _ = std.c.raise(sig);
+    }
+};
+
 fn waitProbePosix(io: std.Io, child: *std.process.Child, deadline: std.Io.Timeout) !std.process.Child.Term {
     // Zig 0.16's canceled Child.wait clears child.id without killing/reaping it.
     // Keep sole ownership of the PID and use nonblocking waits instead. No
     // concurrent waiter can reap and allow PID reuse before timeout cleanup.
     defer if (child.id) |pid| {
-        // Child.kill uses SIGTERM, which an executable can ignore.
+        // Child.kill uses SIGTERM, which an executable can ignore. Kill the
+        // whole group: helpers the probe started must not outlive it (#494).
+        std.posix.kill(-pid, .KILL) catch {};
         std.posix.kill(pid, .KILL) catch {};
         child.kill(io);
     };
@@ -468,4 +521,51 @@ test "timeout kills and reaps a process that ignores SIGTERM" {
     const pid = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, bytes, "\r\n "), 10);
     try std.testing.expectError(error.ProcessNotFound, std.posix.kill(pid, @enumFromInt(0)));
     try std.testing.expect(session.last_elapsed_ms < 1500);
+}
+
+/// True while `pid` is a live (non-zombie) process. A killed helper is
+/// re-parented and may stay a zombie until its new parent reaps it.
+fn processAlive(io: std.Io, pid: std.posix.pid_t) bool {
+    std.posix.kill(pid, @enumFromInt(0)) catch return false;
+    var pid_buf: [16]u8 = undefined;
+    const pid_text = std.fmt.bufPrint(&pid_buf, "{d}", .{pid}) catch return true;
+    const res = std.process.run(std.testing.allocator, io, .{
+        .argv = &.{ "ps", "-o", "stat=", "-p", pid_text },
+    }) catch return true;
+    defer std.testing.allocator.free(res.stdout);
+    defer std.testing.allocator.free(res.stderr);
+    const stat = std.mem.trim(u8, res.stdout, " \t\r\n");
+    return stat.len > 0 and stat[0] != 'Z';
+}
+
+test "timeout kills the probe's helper processes too (#494)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{});
+    defer tmp.cleanup();
+    // Like electerm: answer, leave a helper running, and never exit.
+    const file = try tmp.dir.createFile(io, "gui-app", .{});
+    try file.writeStreamingAll(io, "#!/bin/sh\necho 5.8.0\nsleep 30 &\necho $! > helper.pid\nwhile :; do sleep 0.05; done\n");
+    try file.setPermissions(io, .executable_file);
+    file.close(io);
+    var buf: [std.fs.max_path_bytes]u8 = undefined;
+    const n = try tmp.dir.realPathFile(io, "gui-app", &buf);
+    var session = try Session.initCask(io, 1);
+    defer session.deinit();
+    session.per_binary_budget.raw = std.Io.Duration.fromMilliseconds(300);
+    try std.testing.expectEqual(Outcome.timed_out, session.probe(a, buf[0..n]));
+
+    const pid_path = try std.fs.path.join(a, &.{ session.cwd(), "helper.pid" });
+    defer a.free(pid_path);
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, pid_path, a, .limited(64));
+    defer a.free(bytes);
+    const helper = try std.fmt.parseInt(std.posix.pid_t, std.mem.trim(u8, bytes, "\r\n "), 10);
+    // Clean up our own helper even when the assertion below fails.
+    defer if (processAlive(io, helper)) std.posix.kill(helper, .KILL) catch {};
+    var waited: usize = 0;
+    while (processAlive(io, helper) and waited < 100) : (waited += 1) {
+        try std.Io.sleep(io, .fromMilliseconds(20), .awake);
+    }
+    try std.testing.expect(!processAlive(io, helper));
 }
