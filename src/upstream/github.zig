@@ -326,12 +326,8 @@ fn fetchLatestReleaseJson(alloc: std.mem.Allocator, repo: []const u8) ![]u8 {
     }) catch return error.FetchFailed;
     errdefer alloc.free(body);
 
-    const io = paths.safe_io;
-    std.Io.Dir.createDirAbsolute(io, API_CACHE_DIR, .default_dir) catch {};
-    if (std.Io.Dir.createFileAbsolute(io, cache_path, .{})) |file| {
-        defer file.close(io);
-        file.writeStreamingAll(io, body) catch {};
-    } else |_| {}
+    std.Io.Dir.createDirAbsolute(paths.safe_io, API_CACHE_DIR, .default_dir) catch {};
+    writeCacheFileAtomic(paths.safe_io, cache_path, body);
 
     return body;
 }
@@ -901,10 +897,35 @@ fn writeCachedFormula(token: []const u8, formula: *const Formula) void {
     const body = out.toOwnedSlice() catch return;
     defer std.heap.smp_allocator.free(body);
 
-    if (std.Io.Dir.createFileAbsolute(io, cache_path, .{})) |file| {
-        defer file.close(io);
-        file.writeStreamingAll(io, body) catch {};
-    } else |_| {}
+    writeCacheFileAtomic(io, cache_path, body);
+}
+
+/// Publish a cache file whole: write a private temp file, sync it, then
+/// rename it over `cache_path`. Read-only commands share the operation lock
+/// (#503), so two of them can refresh the same entry at once; truncating and
+/// rewriting in place let a concurrent reader see an empty or partial file.
+/// The temp name is per process and thread, so concurrent writers never share
+/// one; the last rename wins and readers see either the old or a new file.
+fn writeCacheFileAtomic(io: std.Io, cache_path: []const u8, data: []const u8) void {
+    var tmp_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const tmp_path = std.fmt.bufPrint(&tmp_buf, "{s}.tmp.{d}.{d}", .{
+        cache_path, std.c.getpid(), std.Thread.getCurrentId(),
+    }) catch return;
+    const file = std.Io.Dir.createFileAbsolute(io, tmp_path, .{}) catch return;
+    file.writeStreamingAll(io, data) catch {
+        file.close(io);
+        std.Io.Dir.deleteFileAbsolute(io, tmp_path) catch {};
+        return;
+    };
+    file.sync(io) catch {
+        file.close(io);
+        std.Io.Dir.deleteFileAbsolute(io, tmp_path) catch {};
+        return;
+    };
+    file.close(io);
+    std.Io.Dir.renameAbsolute(tmp_path, cache_path, io) catch {
+        std.Io.Dir.deleteFileAbsolute(io, tmp_path) catch {};
+    };
 }
 
 fn writeJsonNumberField(writer: *std.Io.Writer, key: []const u8, value: u32, comma: bool) !void {
@@ -1491,4 +1512,64 @@ test "caskFromReleaseJson requires asset digest for verified casks" {
     defer reg.deinit(testing.allocator);
     const record = reg.find("missing-digest", .cask).?;
     try testing.expectError(error.AssetDigestMissing, caskFromReleaseJson(testing.allocator, record, release_json));
+}
+
+fn cacheWriterThread(io: std.Io, path: []const u8, body: []const u8, rounds: usize) void {
+    for (0..rounds) |_| writeCacheFileAtomic(io, path, body);
+}
+
+test "cache writes are atomic: concurrent readers never see a partial file (#503)" {
+    if (builtin.os.tag == .windows) return error.SkipZigTest;
+    const io = std.testing.io;
+    const a = std.testing.allocator;
+    var tmp = std.testing.tmpDir(.{ .iterate = true });
+    defer tmp.cleanup();
+    var dir_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dir_len = try tmp.dir.realPath(io, &dir_buf);
+    const path = try std.fmt.allocPrint(a, "{s}/upstream-formula-x.json", .{dir_buf[0..dir_len]});
+    defer a.free(path);
+
+    // Two complete bodies of different sizes, as two refreshes would write.
+    const big = try a.alloc(u8, 256 * 1024);
+    defer a.free(big);
+    @memset(big, 'a');
+    const small = "{\"token\":\"x\"}\n";
+    writeCacheFileAtomic(io, path, big);
+
+    const rounds = 200;
+    const t1 = try std.Thread.spawn(.{}, cacheWriterThread, .{ io, path, big, rounds });
+    const t2 = try std.Thread.spawn(.{}, cacheWriterThread, .{ io, path, small, rounds });
+    var reads: usize = 0;
+    var torn: usize = 0;
+    var deadline: usize = 0;
+    while (deadline < 4000) : (deadline += 1) {
+        const body = readWholeFile(a, io, path) catch continue;
+        defer a.free(body);
+        reads += 1;
+        if (!std.mem.eql(u8, body, big) and !std.mem.eql(u8, body, small)) torn += 1;
+    }
+    t1.join();
+    t2.join();
+    try std.testing.expect(reads > 0);
+    try std.testing.expectEqual(@as(usize, 0), torn);
+
+    // No temp file is left behind.
+    var it = tmp.dir.iterate();
+    var entries: usize = 0;
+    while (try it.next(io)) |entry| {
+        entries += 1;
+        try std.testing.expect(std.mem.indexOf(u8, entry.name, ".tmp.") == null);
+    }
+    try std.testing.expectEqual(@as(usize, 1), entries);
+}
+
+fn readWholeFile(a: std.mem.Allocator, io: std.Io, path: []const u8) ![]u8 {
+    const file = try std.Io.Dir.openFileAbsolute(io, path, .{});
+    defer file.close(io);
+    const st = try file.stat(io);
+    const buf = try a.alloc(u8, st.size);
+    errdefer a.free(buf);
+    const n = try file.readPositionalAll(io, buf, 0);
+    if (n != buf.len) return error.ShortRead;
+    return buf;
 }
