@@ -35,17 +35,27 @@ const SYSTEM_BUNDLES = [_][]const u8{
     "/etc/ssl/cert.pem", // macOS, FreeBSD
 };
 
+/// These names use nanobrew's built-in TLS wiring, not the API's hooks.
+pub fn handlesPostInstall(name: []const u8) bool {
+    if (std.mem.startsWith(u8, name, "openssl@")) {
+        const version = name["openssl@".len..];
+        if (version.len == 0 or !std.ascii.isDigit(version[0])) return false;
+        for (version) |c| if (!std.ascii.isDigit(c) and c != '.') return false;
+        return true;
+    }
+    return std.mem.eql(u8, name, "ca-certificates") or
+        std.mem.eql(u8, name, "openssl") or
+        std.mem.eql(u8, name, "gnutls") or
+        std.mem.eql(u8, name, "libressl");
+}
+
 /// Post-install steps Homebrew implements in Ruby that the script parser
 /// can't run. Called for every installed formula; cheap no-op for names
 /// that don't participate in TLS trust.
 pub fn nativePostInstall(io: std.Io, name: []const u8) void {
     if (std.mem.eql(u8, name, "ca-certificates")) {
         _ = ensureCaStore(io);
-    } else if (std.mem.eql(u8, name, "openssl") or
-        std.mem.startsWith(u8, name, "openssl@") or
-        std.mem.eql(u8, name, "gnutls") or
-        std.mem.eql(u8, name, "libressl"))
-    {
+    } else if (handlesPostInstall(name)) {
         ensureFormulaCertPem(io, name);
     }
 }
@@ -151,6 +161,8 @@ test "ensureSymlink creates, repoints, and leaves regular files alone" {
 }
 
 test "nativePostInstall ignores unrelated formulae" {
+    try testing.expect(handlesPostInstall("openssl@3.6"));
+    try testing.expect(!handlesPostInstall("openssl@3/../../other"));
     // Must be a pure no-op for names outside the TLS set — no /opt access.
     nativePostInstall(testing.io, "wget-not-really");
     nativePostInstall(testing.io, "ripgrep");

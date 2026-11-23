@@ -1109,6 +1109,14 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
     else
         false;
 
+    // Preserve presence, even for [] or the wrong type: structured metadata
+    // must never fall through to a legacy hook.
+    const post_install_steps = if (root.get("post_install_steps")) |steps|
+        try std.json.Stringify.valueAlloc(alloc, steps, .{})
+    else
+        null;
+    errdefer if (post_install_steps) |steps| alloc.free(steps);
+
     var bottle_url = try allocDupe(alloc, "");
     errdefer alloc.free(bottle_url);
     var bottle_sha256 = try allocDupe(alloc, "");
@@ -1161,7 +1169,31 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
         .build_deps = build_deps,
         .caveats = caveats,
         .post_install_defined = post_install_defined,
+        .post_install_steps = post_install_steps,
     };
+}
+
+test "parseFormulaJson preserves structured post-install metadata independently of the legacy flag" {
+    const cases = [_]struct { fields: []const u8, steps: ?[]const u8, legacy: bool }{
+        .{ .fields = "\"post_install_defined\":true,", .steps = null, .legacy = true },
+        .{ .fields = "\"post_install_defined\":true,\"post_install_steps\":[],", .steps = "[]", .legacy = true },
+        .{ .fields = "\"post_install_defined\":true,\"post_install_steps\":null,", .steps = "null", .legacy = true },
+        .{ .fields = "\"post_install_defined\":false,\"post_install_steps\":[{\"type\":\"warn\"}],", .steps = "[{\"type\":\"warn\"}]", .legacy = false },
+    };
+    for (cases) |case| {
+        const json = try std.fmt.allocPrint(testing.allocator,
+            \\{{"name":"demo","versions":{{"stable":"1.0"}},{s}"bottle":{{"stable":{{"files":{{"all":{{"url":"bottle"}}}}}}}}}}
+        , .{case.fields});
+        defer testing.allocator.free(json);
+        const f = try parseFormulaJson(testing.allocator, json);
+        defer f.deinit(testing.allocator);
+        try testing.expectEqual(case.legacy, f.post_install_defined);
+        if (case.steps) |steps| {
+            try testing.expectEqualStrings(steps, f.post_install_steps.?);
+        } else {
+            try testing.expect(f.post_install_steps == null);
+        }
+    }
 }
 
 fn findBottleTag(files: std.json.ObjectMap) ?std.json.Value {
