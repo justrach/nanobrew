@@ -19,7 +19,7 @@ import tempfile
 import urllib.request
 
 VERSION = "1.3.2"
-URL = f"https://zlib.net/zlib-{VERSION}.tar.gz"
+URL = f"https://zlib.net/fossils/zlib-{VERSION}.tar.gz"
 # Pinned from https://formulae.brew.sh/api/formula/zlib.json.
 SHA256 = "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
 PREFIX = f"/opt/nanobrew/prefix/Cellar/zlib/{VERSION}"
