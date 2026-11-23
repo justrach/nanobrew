@@ -813,12 +813,12 @@ fn containsName(names: []const []const u8, name: []const u8) bool {
 }
 
 fn runInstall(alloc: std.mem.Allocator, args: []const []const u8, reinstall: bool) void {
-    if (!installFormulae(alloc, args, reinstall)) std.process.exit(1);
+    if (!installFormulae(alloc, args, reinstall, true)) std.process.exit(1);
 }
 
 /// Returns false where `nb install` must exit 1. `nb upgrade` calls this
 /// directly so one failed keg does not stop the remaining upgrades (#445).
-fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall: bool) bool {
+fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall: bool, allow_cask_fallback: bool) bool {
     const stderr = StderrWriter{};
 
     g_min_trust = trust.minTrust(alloc) catch |err| {
@@ -916,7 +916,7 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall
     // Homebrew accepts `brew install owner/tap/token` for tap casks as well
     // as tap formulae. Preserve formula precedence, but if a single tap token
     // has no formula and does have a cask, route it through the cask installer.
-    if (formulae.items.len == 1 and tapInstallShouldUseCask(alloc, formulae.items[0])) {
+    if (allow_cask_fallback and formulae.items.len == 1 and tapInstallShouldUseCask(alloc, formulae.items[0])) {
         runCaskInstall(alloc, formulae.items);
         return true;
     }
@@ -1105,13 +1105,8 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall
             const expected_ver = f.effectiveVersion(&expected_buf);
             if (containsName(held_pins.items, f.name)) continue;
             var ver_buf6: [256]u8 = undefined;
-            const actual_ver = nb.cellar.detectKegVersion(f.name, expected_ver, &ver_buf6) orelse expected_ver;
-            const existing = db.findKeg(f.name);
-            if (existing) |keg| {
-                if (std.mem.eql(u8, keg.version, actual_ver)) continue;
-            }
-            // A pre-existing untracked keg has unknown artifact provenance.
-            db.recordInstall(f.name, actual_ver, "") catch |err| {
+            const actual_ver = nb.cellar.detectKegVersion(f.name, expected_ver, &ver_buf6) orelse continue;
+            recordKeptFormula(&db, f, actual_ver, expected_ver, formulae.items) catch |err| {
                 stderr.print("nb: warning: failed to record {s} in database: {}\n", .{ f.name, err }) catch {};
             };
         }
@@ -1359,16 +1354,22 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall
         // A failed reinstall can leave the previous same-version keg intact.
         // Never attach the new digest (or adopt a partial new keg) on failure.
         if (queued and !installed_successfully) continue;
-        const record_sha = if (installed_successfully) formulaArtifactSha(f) else "";
-        const probe_value = if (installed_successfully) install_probe.value() else null;
+        if (!installed_successfully) {
+            recordKeptFormula(&db, f, actual_ver, expected_ver, formulae.items) catch |err| {
+                stderr.print("nb: warning: failed to record {s} in database: {}\n", .{ f.name, err }) catch {};
+            };
+            continue;
+        }
+        const record_sha = formulaArtifactSha(f);
+        const probe_value = install_probe.value();
         const existing = db.findKeg(f.name);
         if (existing) |keg| {
-            if (std.mem.eql(u8, keg.version, actual_ver) and !installed_successfully) continue;
             if (std.mem.eql(u8, keg.version, actual_ver) and
                 std.mem.eql(u8, keg.sha256, record_sha))
             {
                 // Same immutable artifact: retain the install record and only
                 // attach newly collected probe evidence, avoiding fake history.
+                if (f.source_token) |token| db.repairKegSource(f.name, actual_ver, token) catch {};
                 if (probe_value) |passed| {
                     db.recordKegProbe(f.name, actual_ver, record_sha, passed, LOCAL_PROBE_SCHEMA, LOCAL_PROBE_PLATFORM) catch {};
                 }
@@ -1376,7 +1377,7 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall
             }
             // Reinstall onto a newer version: drop the old keg only now that
             // the new one landed, as `nb upgrade` does (#153).
-            if (reinstall and installed_successfully and !std.mem.eql(u8, keg.version, actual_ver) and
+            if (reinstall and !std.mem.eql(u8, keg.version, actual_ver) and
                 isRequestedFormulaName(f.name, formulae.items))
             {
                 nb.linker.unlinkKeg(f.name, keg.version) catch {};
@@ -1385,7 +1386,7 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall
         }
 
         var recorded = true;
-        db.recordInstall(f.name, actual_ver, record_sha) catch |err| {
+        db.recordInstallWithSource(f.name, actual_ver, record_sha, f.source_token) catch |err| {
             recorded = false;
             stderr.print("nb: warning: failed to record {s} in database: {}\n", .{ f.name, err }) catch {};
         };
@@ -1437,9 +1438,32 @@ fn installFormulae(alloc: std.mem.Allocator, args: []const []const u8, reinstall
     return !pipeline_failed;
 }
 
+fn recordKeptFormula(db: *nb.database.Database, f: nb.formula.Formula, actual_ver: []const u8, expected_ver: []const u8, requested: []const []const u8) !void {
+    const existing = db.findKeg(f.name);
+    // Only an explicit qualified install can repair a legacy source, and only
+    // when the exact resolved version is already on disk.
+    const source = if (f.source_token) |token|
+        if (containsName(requested, token) and std.mem.eql(u8, actual_ver, expected_ver)) token else null
+    else
+        null;
+    if (existing) |keg| {
+        if (std.mem.eql(u8, keg.version, actual_ver)) {
+            const sha = formulaArtifactSha(f);
+            if (source != null and (keg.sha256.len == 0 or sha.len == 0 or std.ascii.eqlIgnoreCase(keg.sha256, sha))) {
+                try db.repairKegSource(f.name, actual_ver, source.?);
+            }
+            return;
+        }
+    }
+    // Preserve a known route when healing DB drift; untracked bytes have no
+    // digest evidence even when the user supplied a qualified lookup token.
+    const known_source = if (existing) |keg| keg.source_token else null;
+    try db.recordInstallWithSource(f.name, actual_ver, "", known_source orelse source);
+}
+
 test "installFormulae returns false on failure instead of exiting (#445)" {
     g_io = std.testing.io;
-    try std.testing.expect(!installFormulae(std.testing.allocator, &.{"--no-such-flag"}, false));
+    try std.testing.expect(!installFormulae(std.testing.allocator, &.{"--no-such-flag"}, false, true));
 }
 
 /// Render live progress UI with spinners and checkmarks.
@@ -3657,6 +3681,8 @@ fn runSearch(alloc: std.mem.Allocator, all_args: []const []const u8) void {
 
 const Outdated = struct {
     name: []const u8,
+    /// Borrowed from the database snapshot; null for core formulae and casks.
+    source_token: ?[]const u8,
     old_ver: []const u8,
     new_ver: []const u8,
     is_cask_pkg: bool,
@@ -3682,13 +3708,25 @@ fn resolveCaskShortName(db: *nb.database.Database, name: *[]const u8, cmd: []con
     }
 }
 
-fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filter_names: []const []const u8, check_casks: bool, check_kegs: bool, progress: bool) std.ArrayList(Outdated) {
+const OutdatedPackages = struct {
+    packages: std.ArrayList(Outdated) = .empty,
+    failed_checks: usize = 0,
+
+    fn deinit(self: *OutdatedPackages, alloc: std.mem.Allocator) void {
+        for (self.packages.items) |*pkg| pkg.deinit(alloc);
+        self.packages.deinit(alloc);
+    }
+};
+
+fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filter_names: []const []const u8, check_casks: bool, check_kegs: bool, progress: bool) !OutdatedPackages {
     const stdout = StdoutWriter{};
-    var result: std.ArrayList(Outdated) = .empty;
+    var result: OutdatedPackages = .{};
+    errdefer result.deinit(alloc);
 
     // Collect all packages to check
     const CheckItem = struct {
         name: []const u8,
+        source_token: ?[]const u8 = null,
         old_ver: []const u8,
         is_cask: bool,
         is_pinned: bool,
@@ -3698,7 +3736,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
     defer to_check.deinit(alloc);
 
     if (check_casks) {
-        const installed_casks = db.listInstalledCasks(alloc) catch &.{};
+        const installed_casks = try db.listInstalledCasks(alloc);
         defer alloc.free(installed_casks);
         for (installed_casks) |c| {
             if (filter_names.len > 0) {
@@ -3713,36 +3751,37 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
                 }
                 if (!found) continue;
             }
-            to_check.append(alloc, .{
+            try to_check.append(alloc, .{
                 .name = if (c.canonical_token.len > 0) c.canonical_token else c.token,
                 .old_ver = c.version,
                 .is_cask = true,
                 .is_pinned = false,
                 .apps = c.apps,
-            }) catch {};
+            });
         }
     }
 
     if (check_kegs) {
-        const installed_kegs = db.listInstalled(alloc) catch &.{};
+        const installed_kegs = try db.listInstalled(alloc);
         defer alloc.free(installed_kegs);
         for (installed_kegs) |k| {
             if (filter_names.len > 0) {
                 var found = false;
                 for (filter_names) |n| {
-                    if (std.mem.eql(u8, n, k.name)) {
+                    if (k.matchesName(n)) {
                         found = true;
                         break;
                     }
                 }
                 if (!found) continue;
             }
-            to_check.append(alloc, .{
+            try to_check.append(alloc, .{
                 .name = k.name,
+                .source_token = k.source_token,
                 .old_ver = k.version,
                 .is_cask = false,
                 .is_pinned = k.pinned,
-            }) catch {};
+            });
         }
     }
 
@@ -3752,9 +3791,9 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
 
     // Bulk fast path: resolve available versions from the cached Homebrew
     // bulk lists (one streaming scan each, shared with `nb search`, 1h TTL)
-    // instead of one API round trip per installed package. Packages missing
-    // from the lists (tap formulas, upstream-only records) fall through to
-    // the per-name fetch workers below.
+    // instead of one API round trip per installed package. Qualified formulas
+    // must bypass core even when core has a formula with the same short name.
+    // Other packages missing from the lists also fall through to live checks.
     var formula_index: ?nb.bulk_versions.VersionIndex = null;
     defer if (formula_index) |*idx| idx.deinit();
     var cask_index: ?nb.bulk_versions.VersionIndex = null;
@@ -3771,7 +3810,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
                 cask_names.append(alloc, item.name) catch {
                     cask_names_complete = false;
                 };
-            } else {
+            } else if (item.source_token == null) {
                 formula_names.append(alloc, item.name) catch {
                     formula_names_complete = false;
                 };
@@ -3797,7 +3836,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
         failed: ?anyerror = null,
     };
 
-    const version_results = alloc.alloc(VersionResult, to_check.items.len) catch return result;
+    const version_results = try alloc.alloc(VersionResult, to_check.items.len);
     defer alloc.free(version_results);
     for (version_results) |*r| r.* = .{};
 
@@ -3813,8 +3852,10 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
     for (to_check.items, 0..) |item, i| {
         const idx_ref: ?*const nb.bulk_versions.VersionIndex = if (item.is_cask)
             (if (cask_index) |*ci| ci else null)
+        else if (item.source_token == null)
+            (if (formula_index) |*fi| fi else null)
         else
-            (if (formula_index) |*fi| fi else null);
+            null;
         const latest: ?[]const u8 = if (idx_ref) |ir| ir.get(item.name) else null;
         if (latest) |new_ver| {
             if (nb.version.isNewer(new_ver, item.old_ver)) {
@@ -3824,10 +3865,10 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
                 version_results[i].has_update = true;
             }
         } else {
-            fetch_queue.append(alloc, .{
+            try fetch_queue.append(alloc, .{
                 .item_idx = i,
-                .proven_bulk_miss = !item.is_cask and formula_index != null,
-            }) catch {};
+                .proven_bulk_miss = !item.is_cask and idx_ref != null,
+            });
         }
     }
 
@@ -3864,10 +3905,9 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
                         ctx.results[idx].has_update = true;
                     }
                 } else {
-                    // A proven fresh-bulk miss may be a tap or a verified-
-                    // upstream-only token. If the index failed to load, retain
-                    // the normal live freshness cross-check for correctness.
-                    const formula = nb.api_client.fetchFormulaWithClientOptions(ctx.alloc_, &client, item.name, .{
+                    // Only a proven core miss permits bypassing the normal
+                    // freshness check. Qualified tokens never consult core.
+                    const formula = nb.api_client.fetchFormulaWithClientOptions(ctx.alloc_, &client, item.source_token orelse item.name, .{
                         .check_upstream_freshness = !request.proven_bulk_miss,
                     }) catch |err| {
                         ctx.results[idx].failed = err;
@@ -3905,6 +3945,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
             threads[spawned] = std.Thread.spawn(.{}, checkWorkerFn, .{ctx}) catch continue;
             spawned += 1;
         }
+        if (spawned == 0) checkWorkerFn(ctx);
         for (threads[0..spawned]) |t| t.join();
     }
 
@@ -3912,7 +3953,8 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
     for (to_check.items, 0..) |item, i| {
         if (version_results[i].failed) |err| {
             const stderr = StderrWriter{};
-            stderr.print("nb: could not check {s} for updates: {s}\n", .{ item.name, @errorName(err) }) catch {};
+            stderr.print("nb: could not check {s} for updates: {s}\n", .{ item.source_token orelse item.name, @errorName(err) }) catch {};
+            result.failed_checks += 1;
         }
     }
 
@@ -3920,29 +3962,21 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
     for (to_check.items, 0..) |item, i| {
         if (version_results[i].has_update) {
             const new_ver = version_results[i].new_ver_buf[0..version_results[i].new_ver_len];
-            if (item.is_cask and caskAppUpdatedItself(alloc, stdout, item.name, item.apps, item.old_ver, new_ver)) continue;
-            const n = alloc.dupe(u8, item.name) catch continue;
-            const ov = alloc.dupe(u8, item.old_ver) catch {
-                alloc.free(n);
-                continue;
-            };
-            const nv = alloc.dupe(u8, new_ver) catch {
-                alloc.free(n);
-                alloc.free(ov);
-                continue;
-            };
-            result.append(alloc, .{
+            if (item.is_cask and caskAppUpdatedItself(alloc, item.name, item.apps, item.old_ver, new_ver)) continue;
+            const n = try alloc.dupe(u8, item.name);
+            errdefer alloc.free(n);
+            const ov = try alloc.dupe(u8, item.old_ver);
+            errdefer alloc.free(ov);
+            const nv = try alloc.dupe(u8, new_ver);
+            errdefer alloc.free(nv);
+            try result.packages.append(alloc, .{
                 .name = n,
+                .source_token = item.source_token,
                 .old_ver = ov,
                 .new_ver = nv,
                 .is_cask_pkg = item.is_cask,
                 .is_pinned = item.is_pinned,
-            }) catch {
-                alloc.free(n);
-                alloc.free(ov);
-                alloc.free(nv);
-                continue;
-            };
+            });
         }
     }
 
@@ -3951,7 +3985,7 @@ fn getOutdatedPackages(alloc: std.mem.Allocator, db: *nb.database.Database, filt
 
 /// True when an auto-updating app on disk is already at or past `candidate`,
 /// so listing or upgrading it would be a downgrade.
-fn caskAppUpdatedItself(alloc: std.mem.Allocator, stdout: StdoutWriter, token: []const u8, apps: []const []const u8, recorded: []const u8, candidate: []const u8) bool {
+fn caskAppUpdatedItself(alloc: std.mem.Allocator, token: []const u8, apps: []const []const u8, recorded: []const u8, candidate: []const u8) bool {
     if (apps.len == 0) return false;
     var app_buf: [1024]u8 = undefined;
     const app_path = std.fmt.bufPrint(&app_buf, "/Applications/{s}", .{std.fs.path.basename(apps[0])}) catch return false;
@@ -3961,9 +3995,7 @@ fn caskAppUpdatedItself(alloc: std.mem.Allocator, stdout: StdoutWriter, token: [
     // The bulk version index has no auto_updates flag; fetch it only in this rare case.
     const cask = nb.api_client.fetchCask(alloc, token) catch return false;
     defer cask.deinit(alloc);
-    if (nb.cask_upgrade.outdated(recorded, candidate, cask.auto_updates, bundle)) return false;
-    stdout.print("    {s}: app updated itself to {s}; skipping {s}\n", .{ token, bundle, candidate }) catch {};
-    return true;
+    return !nb.cask_upgrade.outdated(recorded, candidate, cask.auto_updates, bundle);
 }
 
 fn fetchCaskUpgradeCandidate(alloc: std.mem.Allocator, token: []const u8) !nb.cask.Cask {
@@ -4028,7 +4060,7 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
     if (names.items.len > 0) {
         for (names.items) |*n| {
             if (is_cask) resolveCaskShortName(&db, n, "upgrade");
-            const found = if (is_cask) (db.findCask(n.*) != null) else (db.findKeg(n.*) != null);
+            const found = if (is_cask) (db.findCask(n.*) != null) else (db.findKegForUpdate(n.*) != null);
             if (!found) {
                 const kind = if (is_cask) "cask" else "package";
                 stderr.print("nb: upgrade: {s} '{s}' is not installed\n", .{ kind, n.* }) catch {};
@@ -4039,11 +4071,11 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     const check_casks = is_cask or names.items.len == 0;
     const check_kegs = !is_cask;
-    var outdated = getOutdatedPackages(alloc, &db, names.items, check_casks, check_kegs, true);
-    defer {
-        for (outdated.items) |*pkg| pkg.deinit(alloc);
-        outdated.deinit(alloc);
-    }
+    var outdated = getOutdatedPackages(alloc, &db, names.items, check_casks, check_kegs, true) catch |err| {
+        stderr.print("nb: could not check for updates: {s}\n", .{@errorName(err)}) catch {};
+        std.process.exit(1);
+    };
+    defer outdated.deinit(alloc);
 
     var cask_candidates: std.StringHashMap(nb.cask.Cask) = .init(alloc);
     defer {
@@ -4057,7 +4089,7 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
     var upgradeable: std.ArrayList(Outdated) = .empty;
     defer upgradeable.deinit(alloc);
     var pinned_count: usize = 0;
-    for (outdated.items) |pkg| {
+    for (outdated.packages.items) |pkg| {
         if (pkg.is_pinned) {
             pinned_count += 1;
             stdout.print("    {s} ({s} -> {s}) [pinned, skipping]\n", .{ pkg.name, pkg.old_ver, pkg.new_ver }) catch {};
@@ -4091,9 +4123,9 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
     }
 
     if (upgradeable.items.len == 0) {
-        if (skipped_count > 0 or failed_count > 0) {
-            stdout.print("==> No packages upgraded ({d} unsupported, {d} failed, {d} pinned)\n", .{ skipped_count, failed_count, pinned_count }) catch {};
-            if (failed_count > 0) std.process.exit(1);
+        if (skipped_count > 0 or failed_count > 0 or outdated.failed_checks > 0) {
+            stdout.print("==> No packages upgraded ({d} unsupported, {d} failed, {d} failed checks, {d} pinned)\n", .{ skipped_count, failed_count, outdated.failed_checks, pinned_count }) catch {};
+            if (failed_count > 0 or outdated.failed_checks > 0) std.process.exit(1);
         } else if (pinned_count > 0) {
             stdout.print("==> All packages are up to date ({d} pinned)\n", .{pinned_count}) catch {};
         } else {
@@ -4137,8 +4169,8 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
         } else {
             // Install new keg first; remove old tree only after upgrade succeeds (#153).
             const old_keg = db.findKeg(pkg.name);
-            const names_slice: []const []const u8 = &.{pkg.name};
-            if (!installFormulae(alloc, names_slice, false)) {
+            const names_slice: []const []const u8 = &.{pkg.source_token orelse pkg.name};
+            if (!installFormulae(alloc, names_slice, false, false)) {
                 failed_count += 1;
                 stderr.print("nb: {s}: upgrade failed; keeping {s}\n", .{ pkg.name, pkg.old_ver }) catch {};
                 continue;
@@ -4174,8 +4206,8 @@ fn runUpgrade(alloc: std.mem.Allocator, args: []const []const u8) void {
 
     const elapsed_ns: u64 = timer.read();
     const elapsed_ms = @as(f64, @floatFromInt(elapsed_ns)) / 1_000_000.0;
-    stdout.print("==> Upgraded {d}; skipped {d} unsupported, {d} pinned; failed {d}. Done in {d:.1}ms\n", .{ upgraded_count, skipped_count, pinned_count, failed_count, elapsed_ms }) catch {};
-    if (failed_count > 0) std.process.exit(1);
+    stdout.print("==> Upgraded {d}; skipped {d} unsupported, {d} pinned; failed {d}, {d} failed checks. Done in {d:.1}ms\n", .{ upgraded_count, skipped_count, pinned_count, failed_count, outdated.failed_checks, elapsed_ms }) catch {};
+    if (failed_count > 0 or outdated.failed_checks > 0) std.process.exit(1);
 }
 
 // ── nb update ──
@@ -5864,7 +5896,7 @@ fn runRollback(alloc: std.mem.Allocator, args: []const []const u8) void {
             continue;
         };
         if (!std.mem.eql(u8, cur_dir, actual_ver)) nb.cellar.remove(name, cur_dir) catch {};
-        db.recordInstall(name, prev.version, prev.sha256) catch {};
+        db.recordInstallWithSource(name, prev.version, prev.sha256, prev.source_token) catch {};
         stdout.print("==> Rolled back {s} to {s}\n", .{ name, prev.version }) catch {};
     }
     if (had_error) {
@@ -5972,7 +6004,7 @@ fn runSwitch(alloc: std.mem.Allocator, args: []const []const u8) void {
         };
 
         nb.linker.linkKeg(name, actual_ver) catch {};
-        db.recordInstall(name, prev.version, prev.sha256) catch {};
+        db.recordInstallWithSource(name, prev.version, prev.sha256, prev.source_token) catch {};
         stdout.print("==> Switched {s} to {s} (previous version kept in the Cellar; `nb cleanup` prunes it)\n", .{ name, prev.version }) catch {};
     }
     if (had_error) {
@@ -6315,10 +6347,10 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
     defer db.close();
 
     for (names.items) |*name_ptr| {
-        if (is_cask or (!is_deb and db.findKeg(name_ptr.*) == null and db.findDeb(name_ptr.*) == null))
+        if (is_cask or (!is_deb and db.findKegForUpdate(name_ptr.*) == null and db.findDeb(name_ptr.*) == null))
             resolveCaskShortName(&db, name_ptr, "outdated");
         const name = name_ptr.*;
-        const found = if (is_cask) db.findCask(name) != null else if (is_deb) db.findDeb(name) != null else db.findKeg(name) != null or db.findCask(name) != null or db.findDeb(name) != null;
+        const found = if (is_cask) db.findCask(name) != null else if (is_deb) db.findDeb(name) != null else db.findKegForUpdate(name) != null or db.findCask(name) != null or db.findDeb(name) != null;
         if (!found) {
             stderr.print("nb: outdated: '{s}' is not installed\n", .{name}) catch {};
             std.process.exit(1);
@@ -6326,11 +6358,11 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
     }
 
     if (!json) stdout.print("==> Checking for outdated packages...\n", .{}) catch {};
-    var outdated = getOutdatedPackages(alloc, &db, names.items, !is_deb, !is_cask and !is_deb, !json);
-    defer {
-        for (outdated.items) |*pkg| pkg.deinit(alloc);
-        outdated.deinit(alloc);
-    }
+    var outdated = getOutdatedPackages(alloc, &db, names.items, !is_deb, !is_cask and !is_deb, !json) catch |err| {
+        stderr.print("nb: could not check for updates: {s}\n", .{@errorName(err)}) catch {};
+        std.process.exit(1);
+    };
+    defer outdated.deinit(alloc);
 
     // Also check deb packages
     var deb_outdated: usize = 0;
@@ -6422,7 +6454,7 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
     if (json) {
         // Keg and cask entries first, like the text output; debs were collected above.
         var keg_and_cask: std.ArrayList(JsonOutdatedEntry) = .empty;
-        for (outdated.items) |pkg| {
+        for (outdated.packages.items) |pkg| {
             var reason: ?[]const u8 = null;
             if (pkg.is_cask_pkg) {
                 // The same decision `nb upgrade --cask` makes before it plans.
@@ -6445,21 +6477,26 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
         }
         keg_and_cask.appendSlice(ja, json_entries.items) catch {};
         printJsonDocument(alloc, keg_and_cask.items, true);
+        if (outdated.failed_checks > 0) std.process.exit(1);
         return;
     }
 
-    if (outdated.items.len == 0 and deb_outdated == 0) {
+    if (outdated.packages.items.len == 0 and deb_outdated == 0 and outdated.failed_checks == 0) {
         stdout.print("All packages are up to date.\n", .{}) catch {};
         return;
     }
 
-    for (outdated.items) |pkg| {
+    for (outdated.packages.items) |pkg| {
         const tag = if (pkg.is_cask_pkg) " (cask)" else "";
         const pin_tag = if (pkg.is_pinned) " [pinned]" else "";
         stdout.print("{s} ({s} -> {s}){s}{s}\n", .{ pkg.name, pkg.old_ver, pkg.new_ver, tag, pin_tag }) catch {};
     }
 
-    stdout.print("\n==> {d} outdated package(s)\n", .{outdated.items.len + deb_outdated}) catch {};
+    stdout.print("\n==> {d} outdated package(s)\n", .{outdated.packages.items.len + deb_outdated}) catch {};
+    if (outdated.failed_checks > 0) {
+        stderr.print("nb: {d} update check(s) failed\n", .{outdated.failed_checks}) catch {};
+        std.process.exit(1);
+    }
 }
 
 // ── nb pin / nb unpin ──

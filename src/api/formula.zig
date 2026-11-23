@@ -15,6 +15,8 @@ pub const Formula = struct {
     };
 
     name: []const u8,
+    /// Qualified metadata lookup token; the Cellar still uses `name`.
+    source_token: ?[]const u8 = null,
     version: []const u8,
     revision: u32 = 0,
     rebuild: u32 = 0,
@@ -64,6 +66,7 @@ pub const Formula = struct {
         for (self.build_deps) |dep| alloc.free(dep);
         alloc.free(self.build_deps);
         alloc.free(self.name);
+        if (self.source_token) |token| alloc.free(token);
         alloc.free(self.version);
         alloc.free(self.desc);
         alloc.free(self.homepage);

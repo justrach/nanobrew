@@ -275,7 +275,7 @@ fn fetchFormulaWithClientAndUpstreamRegistryOptions(
                     live.deinit(alloc);
                 }
             }
-            return upstream_formula;
+            return withTapSource(alloc, upstream_formula, if (tap_ref) name else null);
         } else |err| switch (err) {
             error.UpstreamRecordNotFound,
             error.UnsupportedPlatform,
@@ -290,7 +290,7 @@ fn fetchFormulaWithClientAndUpstreamRegistryOptions(
     // Tap formula: "user/tap/formula" -> fetch from GitHub when no verified
     // upstream record exists for the tap token.
     if (tap_ref) {
-        return tap.fetchTapFormula(alloc, client, name);
+        return withTapSource(alloc, try tap.fetchTapFormula(alloc, client, name), name);
     }
 
     return fetchFormulaLive(alloc, client, name) catch |err| {
@@ -305,6 +305,15 @@ fn fetchFormulaWithClientAndUpstreamRegistryOptions(
         }
         return err;
     };
+}
+
+// Both fetched and cached upstream metadata can have just the local name.
+fn withTapSource(alloc: std.mem.Allocator, formula: Formula, source_token: ?[]const u8) !Formula {
+    errdefer formula.deinit(alloc);
+    var result = formula;
+    result.source_token = if (source_token) |token| try alloc.dupe(u8, token) else null;
+    if (formula.source_token) |token| alloc.free(token);
+    return result;
 }
 
 /// Fetch a formula directly from the live Homebrew API (cache → network),

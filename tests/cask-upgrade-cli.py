@@ -201,10 +201,14 @@ with tempfile.TemporaryDirectory(prefix="nb-cask-app-") as temp:
         # The app updates itself to 3.0 while the API still publishes 2.0.
         set_bundle_version(installed_app, "3.0")
         publish_app(temp, "2.0", True)
-        output = app_run("outdated", "--cask", app_token)
-        assert "app updated itself to 3.0" in output and "All packages are up to date." in output, output
+        state_path = root / "db/state.json"
+        saved_state = state_path.read_bytes()
+        for _ in range(2):
+            output = app_run("outdated", "--cask", app_token)
+            assert "app updated itself" not in output and "All packages are up to date." in output, output
+            assert state_path.read_bytes() == saved_state
         output = app_run("upgrade", "--cask", app_token)
-        assert "Upgraded " + app_token not in output, output
+        assert "app updated itself" not in output and "Upgraded " + app_token not in output, output
         assert app_record()["version"] == "1.0"
         assert plistlib.loads((installed_app / "Contents/Info.plist").read_bytes())["CFBundleShortVersionString"] == "3.0"
         # An app still older than the candidate is outdated as before.
