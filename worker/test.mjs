@@ -36,7 +36,7 @@ try {
   execFileSync('tar', ['-czf', archive, '-C', fixture, 'nb']);
   const digest = createHash('sha256').update(readFileSync(archive)).digest('hex');
   const findTool = name => execFileSync('/bin/sh', ['-c', 'command -v "$1"', 'sh', name], { encoding: 'utf8' }).trim();
-  const tools = ['awk', 'grep', 'cut', 'cp', 'chmod', 'mktemp', 'mkdir', 'rm'];
+  const tools = ['awk', 'grep', 'cut', 'cp', 'chmod', 'mktemp', 'mkdir', 'rm', 'gzip'];
   const toolPaths = tools.map(findTool);
   const tar = findTool('tar');
   let scenario = 0;
