@@ -33,6 +33,15 @@ def run(*args, expected=0):
     return result.stdout + result.stderr
 
 
+def outdated_json(*args):
+    result = subprocess.run([nb, "outdated", "--json", *args], env=env, text=True,
+                            capture_output=True, timeout=40)
+    assert result.returncode == 0 and not result.stderr, result
+    document = json.loads(result.stdout)  # Reject progress/diagnostics on stdout.
+    assert type(document["schema"]) is int and document["schema"] == 1, document
+    return document["packages"]
+
+
 with tempfile.TemporaryDirectory(prefix="nb-cask-cli-") as temp:
     temp = pathlib.Path(temp)
     env["HOME"] = str(temp)
@@ -72,6 +81,13 @@ with tempfile.TemporaryDirectory(prefix="nb-cask-cli-") as temp:
         output = run("outdated", "--cask", token)
         assert token in output and "2.0" in output and "==> 1 outdated package(s)" in output
         assert "==> 1 outdated package(s)" in run("outdated", token)
+        expected_row = {"name": token, "kind": "cask", "installed": "1.0", "latest": "2.0",
+                        "pinned": False, "upgrade_supported": True, "unsupported_reason": None}
+        rows = outdated_json("--cask", token)
+        assert len(rows) == 1 and all(rows[0][k] == v for k, v in expected_row.items()), rows
+        missing = subprocess.run([nb, "outdated", "--cask", "--json", token + "-missing"],
+                                 env=env, text=True, capture_output=True, timeout=40)
+        assert missing.returncode == 1 and not missing.stdout and "is not installed" in missing.stderr, missing
         assert "unknown flag" in run("outdated", "--bogus", expected=1)
         assert "cannot be combined" in run("outdated", "--cask", "--deb", expected=1)
         assert "is not installed" in run("outdated", "--cask", token + "-missing", expected=1)
@@ -82,12 +98,18 @@ with tempfile.TemporaryDirectory(prefix="nb-cask-cli-") as temp:
         assert not (root / "prefix/Caskroom" / token / "1.0").exists()
         assert (root / "prefix/bin" / token).resolve() == root / "prefix/Caskroom" / token / "2.0/dist" / token
         assert "All packages are up to date." in run("outdated", "--cask", token)
+        assert outdated_json("--cask", token) == []
         # Unsupported candidates are skipped outside the actionable plan.
         candidate["version"] = "3.0"
         candidate["artifacts"] = [{"pkg": ["Installer.pkg"]}]
         cache.write_text(json.dumps(candidate))
+        rows = outdated_json("--cask", token)
+        expected_row.update(installed="2.0", latest="3.0", upgrade_supported=False,
+                            unsupported_reason="external installers cannot be rolled back")
+        assert len(rows) == 1 and all(rows[0][k] == v for k, v in expected_row.items()), rows
         output = run("upgrade", "--cask", token)
-        assert "unsupported, skipping" in output and "No packages upgraded" in output
+        assert f"[unsupported, skipping: {rows[0]['unsupported_reason']}]" in output
+        assert "No packages upgraded" in output
         assert "==> Upgrading " not in output and record()["version"] == "2.0"
         # A timeout remains a failed health check after a successful install.
         run("remove", "--cask", token)
