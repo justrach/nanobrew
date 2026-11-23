@@ -211,6 +211,17 @@ As of v0.1.192, the top 100 casks install through nanobrew's native pipeline —
 
 ### Linux / Docker (deb packages)
 
+If you use the installer instead of copying the container image's binary,
+run it as root in the build stage. Download the script separately so a failed
+fetch fails the Docker build even when the shell does not enable `pipefail`:
+
+```dockerfile
+RUN curl -fsSL --connect-timeout 10 --max-time 60 \
+    https://nanobrew.trilok.ai/install -o /tmp/install-nb.sh \
+    && bash /tmp/install-nb.sh && rm /tmp/install-nb.sh
+ENV PATH="/opt/nanobrew/prefix/bin:${PATH}"
+```
+
 ```bash
 nb install --deb curl wget git    # install from Ubuntu/Debian repos
 nb remove --deb curl              # remove a deb package

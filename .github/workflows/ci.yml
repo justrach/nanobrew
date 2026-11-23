@@ -158,6 +158,16 @@ jobs:
     runs-on: windows-latest
     needs: build-windows-native
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+
+      - name: Exercise archive cache recovery on Windows
+        run: zig build test-windows-cache
+
       - name: Download Windows binary
         uses: actions/download-artifact@v4
         with:

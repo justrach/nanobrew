@@ -6460,7 +6460,10 @@ fn runOutdated(alloc: std.mem.Allocator, args: []const []const u8) void {
                 // The same decision `nb upgrade --cask` makes before it plans.
                 if (fetchCaskUpgradeCandidate(alloc, pkg.name)) |candidate| {
                     defer candidate.deinit(alloc);
-                    if (nb.cask_upgrade.unsupportedReason(candidate)) |r| reason = r;
+                    reason = nb.cask_upgrade.unsupportedReason(candidate);
+                    if (reason == null and !std.mem.eql(u8, candidate.version, pkg.new_ver)) {
+                        reason = "candidate changed since outdated check; retry upgrade";
+                    }
                 } else |err| {
                     reason = std.fmt.allocPrint(ja, "cannot prepare cask upgrade ({s})", .{@errorName(err)}) catch "cannot prepare cask upgrade";
                 }
