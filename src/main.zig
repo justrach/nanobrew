@@ -3203,7 +3203,12 @@ fn runInfo(alloc: std.mem.Allocator, args: []const []const u8) void {
                 &client,
                 name,
                 if (registry) |*r| r else null,
-            ) catch {
+            ) catch |err| {
+                if (err == error.TapFormulaVersionUndetermined) {
+                    stderr.print("nb: tap formula '{s}' has no supported Git tag or explicit version\n", .{name}) catch {};
+                    had_error = true;
+                    continue;
+                }
                 // Formula not found — try cask API to give a helpful hint
                 if (nb.api_client.fetchCask(alloc, name)) |cask| {
                     defer cask.deinit(alloc);

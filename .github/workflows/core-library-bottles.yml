@@ -67,7 +67,7 @@ jobs:
           done
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.1
       - name: Build Nanobrew
         run: zig build -Doptimize=ReleaseFast
       - name: Install pinned libraries on disposable runner

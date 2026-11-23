@@ -2146,7 +2146,7 @@ test "removeAppsIn reports apps it could not delete" {
     var applications_buf: [std.fs.max_path_bytes]u8 = undefined;
     const applications_dir = try std.fmt.bufPrint(&applications_buf, ".zig-cache/tmp/{s}", .{tmp_dir.sub_path[0..]});
     var locked_buf: [std.fs.max_path_bytes:0]u8 = undefined;
-    const locked = try std.fmt.bufPrintZ(&locked_buf, "{s}/Locked.app", .{applications_dir});
+    const locked = try std.mem.printSentinel(&locked_buf, "{s}/Locked.app", .{applications_dir}, 0);
     // Read-only bundle: its contents cannot be unlinked, like an app owned by
     // another user or protected by SIP.
     _ = std.c.chmod(locked, 0o555);
@@ -2208,7 +2208,7 @@ test "removeFontsIn deletes only recorded fonts inside the fonts dir" {
         try tmp_dir.dir.writeFile(io, .{ .sub_path = name, .data = "font" });
     }
     var fonts_buf: [std.fs.max_path_bytes:0]u8 = undefined;
-    const fonts_dir = try std.fmt.bufPrintZ(&fonts_buf, ".zig-cache/tmp/{s}/Fonts", .{tmp_dir.sub_path[0..]});
+    const fonts_dir = try std.mem.printSentinel(&fonts_buf, ".zig-cache/tmp/{s}/Fonts", .{tmp_dir.sub_path[0..]}, 0);
 
     try removeFontsIn(io, fonts_dir, &.{ "FiraCode-Regular.ttf", "FiraCode-Bold.ttf", "Missing.ttf", "../outside.ttf", ".." });
     try std.testing.expectError(error.FileNotFound, tmp_dir.dir.access(io, "Fonts/FiraCode-Regular.ttf", .{}));

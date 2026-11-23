@@ -79,10 +79,19 @@ curl -fsSL https://nanobrew.trilok.ai/install | bash
 brew tap justrach/nanobrew https://github.com/justrach/nanobrew
 brew install nanobrew
 
-# Or build from source (needs Zig 0.16.0+)
+# Or build from source (CI uses Zig 0.17.1)
 git clone https://github.com/justrach/nanobrew.git
 cd nanobrew && ./install.sh
 ```
+
+### Intel Mac support
+
+nanobrew publishes a separate `x86_64` macOS binary for Intel Macs, alongside
+its Apple Silicon binary. The Intel release build targets macOS 12.0, but
+individual packages still need a compatible Intel bottle or another supported
+artifact. The [Intel source bottles](docs/intel-source-bottles.md) and
+[Monterey Git stack](scripts/bottles/MONTEREY.md) are opt-in pilots, not general
+Monterey package support.
 
 ### Upgrading
 

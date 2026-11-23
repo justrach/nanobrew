@@ -9,12 +9,8 @@ echo "==> Installing nanobrew..."
 
 # Check for zig
 if ! command -v zig &>/dev/null; then
-    echo "error: zig 0.15+ is required."
-    if [ "$(uname -s)" = "Darwin" ]; then
-        echo "       Install with: brew install zig"
-    else
-        echo "       Install from: https://ziglang.org/download/"
-    fi
+    echo "error: install Zig 0.17.1 and add it to your PATH."
+    echo "       Download it from https://ziglang.org/download/"
     exit 1
 fi
 # Build

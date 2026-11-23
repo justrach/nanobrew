@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to validate
+        description: Release tag to validate (vX.Y.Z or vX.Y.Z-rc.N)
         required: true
         default: v0.1.212
   pull_request:
@@ -35,11 +35,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Download and verify signed release artifact
+        shell: bash
         env:
           ARCH: ${{ matrix.arch }}
         run: |
-          version=$(sed -n 's/^const VERSION = "\([^"]*\)";.*/\1/p' src/main.zig)
-          test -n "$version"
+          if [[ ! $RELEASE_TAG =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-rc\.[0-9]+)?$ ]]; then
+            echo "error: expected a release tag vX.Y.Z or vX.Y.Z-rc.N" >&2
+            exit 1
+          fi
+          # Release candidates report the base version, without the -rc.N suffix.
+          version="${BASH_REMATCH[1]}"
           mkdir -p dist/release-check
           cd dist/release-check
           archive="nb-$ARCH-apple-darwin.tar.gz"
@@ -51,8 +56,12 @@ jobs:
           grep -q 'Authority=Developer ID Application' signature.txt
           grep -q 'flags=0x10000(runtime)' signature.txt
           lipo nb -verify_arch "$ARCH"
-          ./nb version | tee version.txt
-          grep -F "$version" version.txt
+          ./nb version > version.txt
+          cat version.txt
+          if ! cmp -s version.txt <(printf '%s\n' "$version"); then
+            echo "error: expected nb version to report exactly $version for $RELEASE_TAG" >&2
+            exit 1
+          fi
       - name: Install and exercise the default package selection
         run: |
           sudo ./dist/release-check/nb init

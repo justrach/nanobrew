@@ -47,9 +47,9 @@ pub fn replaceKeg(io: std.Io, src_dir: []const u8, dest_dir: []const u8) !void {
     const parent = std.fs.path.dirname(dest_dir) orelse return error.PathTooLong;
     const base = std.fs.path.basename(dest_dir);
     var src_buf: [512]u8 = undefined;
-    const src_z = std.fmt.bufPrintZ(&src_buf, "{s}", .{src_dir}) catch return error.PathTooLong;
+    const src_z = std.mem.printSentinel(&src_buf, "{s}", .{src_dir}, 0) catch return error.PathTooLong;
     var new_buf: [512]u8 = undefined;
-    const new_dir = std.fmt.bufPrintZ(&new_buf, "{s}/.{s}.nb-new", .{ parent, base }) catch return error.PathTooLong;
+    const new_dir = std.mem.printSentinel(&new_buf, "{s}/.{s}.nb-new", .{ parent, base }, 0) catch return error.PathTooLong;
     var prev_buf: [512]u8 = undefined;
     const prev_dir = std.fmt.bufPrint(&prev_buf, "{s}/.{s}" ++ prev_suffix, .{ parent, base }) catch return error.PathTooLong;
     const cwd = std.Io.Dir.cwd();

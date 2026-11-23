@@ -49,7 +49,7 @@ jobs:
           python3 scripts/bottles/source_bottle_release.py prepare --package "$PACKAGE"
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.1
       - name: Build Nanobrew
         run: zig build -Doptimize=ReleaseFast
       - name: Install and test the exact bottle on the disposable runner

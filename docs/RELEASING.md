@@ -15,7 +15,7 @@ https://github.com/justrach/nanobrew/releases/download/v<VERSION>/nb-<arch>-appl
 The tag-triggered release workflow is disabled (`.github/workflows/release.yml.disabled`). macOS binaries are signed and notarized locally; do not assume pushing a tag creates release assets.
 
 1. Bump the version constants and changelog in a maintainer PR, run CI, and merge it.
-2. Build ReleaseFast binaries from that exact commit for macOS ARM64, macOS Intel (`x86_64-macos.12.0`), Linux x86-64/ARM64, and Windows x86-64.
+2. With Zig 0.17.1 (the CI version), build ReleaseFast binaries from that exact commit for macOS ARM64, macOS Intel (`x86_64-macos.12.0`), Linux x86-64/ARM64, and Windows x86-64.
 3. Run `scripts/notarize-macos.sh` on both macOS binaries using the configured local signing identity and notarytool profile. Verify notarization is accepted and smoke tests pass.
 4. Package the binaries and SHA256 sidecars, tag the validated commit, and upload all assets to a draft GitHub Release. Publish only after the asset set is complete.
 5. The `update-formula.yml` workflow downloads the published macOS assets, verifies their checksums, and opens a formula PR. Approve its CI run if GitHub requires it, then merge after checks pass.

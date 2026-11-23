@@ -308,6 +308,9 @@ fn parseRubyFormulaFor(alloc: std.mem.Allocator, name: []const u8, src: []const 
     var unsupported_condition = false;
     var desc: ?[]const u8 = null;
     var source_url: ?[]const u8 = null;
+    var git_tag_version: ?[]const u8 = null;
+    var git_url_options_pending = false;
+    var source_is_git = false;
     var source_sha256: ?[]const u8 = null;
     var bottle_root_url: ?[]const u8 = null;
     var bottle_sha256: ?[]const u8 = null;
@@ -360,6 +363,19 @@ fn parseRubyFormulaFor(alloc: std.mem.Allocator, name: []const u8, src: []const 
     while (line_iter.next()) |raw_line| {
         const line = std.mem.trim(u8, raw_line, " \t\r");
         if (line.len == 0) continue;
+
+        if (startsWith(line, "#")) continue;
+        // Continuations must begin with another keyword from the selected Git
+        // URL call, never a nested declaration or an unrelated statement.
+        if (git_url_options_pending) {
+            git_url_options_pending = false;
+            if (rubyKeyword(line) != null) {
+                const options = gitUrlOptions(line);
+                if (git_tag_version == null) git_tag_version = options.tag;
+                git_url_options_pending = options.continued;
+                continue;
+            }
+        }
 
         // --- def install body: capture bin.install targets, skip everything else ---
         if (in_install_method) {
@@ -429,6 +445,8 @@ fn parseRubyFormulaFor(alloc: std.mem.Allocator, name: []const u8, src: []const 
             if (!platform_skip) {
                 source_url = null;
                 source_sha256 = null;
+                source_is_git = false;
+                git_tag_version = null;
             }
             continue;
         }
@@ -523,19 +541,32 @@ fn parseRubyFormulaFor(alloc: std.mem.Allocator, name: []const u8, src: []const 
             continue;
         }
         // --- Top-level fields ---
-        if (version == null) {
-            if (extractQuotedAfter(line, "version")) |val| {
-                version = val;
-            }
+        if (version == null and startsWith(line, "version") and line.len > 7 and
+            (std.ascii.isWhitespace(line[7]) or line[7] == '('))
+        {
+            version = extractQuotedAfter(line, "version");
         }
         if (desc == null) {
             if (extractQuotedAfter(line, "desc")) |val| {
                 desc = val;
             }
         }
-        if (source_url == null) {
-            if (extractQuotedAfter(line, "url")) |val| {
-                source_url = val;
+        if (source_url == null and startsWith(line, "url") and line.len > 3 and
+            (std.ascii.isWhitespace(line[3]) or line[3] == '('))
+        {
+            var args = std.mem.trimStart(u8, line[3..], " \t");
+            if (startsWith(args, "(")) args = std.mem.trimStart(u8, args[1..], " \t");
+            if (takeRubyQuoted(args)) |url| {
+                source_url = url.value;
+                source_is_git = endsWith(url.value, ".git");
+                const tail = std.mem.trimStart(u8, url.tail, " \t");
+                if (source_is_git and startsWith(tail, ",")) {
+                    const options = gitUrlOptions(tail[1..]);
+                    git_tag_version = options.tag;
+                    git_url_options_pending = options.continued or
+                        std.mem.trim(u8, tail[1..], " \t").len == 0 or
+                        startsWith(std.mem.trimStart(u8, tail[1..], " \t"), "#");
+                }
             }
         }
         if (source_sha256 == null and !in_bottle and startsWith(line, "sha256")) {
@@ -596,14 +627,22 @@ fn parseRubyFormulaFor(alloc: std.mem.Allocator, name: []const u8, src: []const 
         }
     }
 
-    // Extract version from URL if not found explicitly
+    // Git-source tags are version metadata only when they are literal and
+    // version-shaped; never use a Git URL as an archive fallback.
     if (version == null) {
+        if (git_tag_version) |tag| {
+            const candidate = if (tag.len > 1 and tag[0] == 'v') tag[1..] else tag;
+            if (isVersionLiteral(candidate)) version = candidate;
+        }
+    }
+    // Extract version from URL if not found explicitly
+    if (version == null and !source_is_git) {
         if (source_url) |url| {
             version = extractVersionFromUrl(url);
         }
     }
 
-    const ver = version orelse return error.FormulaNotFound;
+    const ver = version orelse return if (source_is_git) error.TapFormulaVersionUndetermined else error.FormulaNotFound;
 
     // A checksum condition nanobrew cannot evaluate, or conditional
     // checksums none of which is for this OS/CPU: refuse before any
@@ -613,16 +652,13 @@ fn parseRubyFormulaFor(alloc: std.mem.Allocator, name: []const u8, src: []const 
 
     // Interpolate #{version} and known constants in source_url. A `#{...}`
     // left over means the URL is not known; do not fetch it (#499).
-    const resolved_url = if (source_url) |url|
-        try interpolateRuby(alloc, url, ver, consts.items)
+    const resolved_url = if (!source_is_git and source_url != null)
+        try interpolateRuby(alloc, source_url.?, ver, consts.items)
     else
         try alloc.dupe(u8, "");
     errdefer alloc.free(resolved_url);
 
-    const resolved_sha = if (source_sha256) |s|
-        try alloc.dupe(u8, s)
-    else
-        try alloc.dupe(u8, "");
+    const resolved_sha = try alloc.dupe(u8, if (source_is_git) "" else source_sha256 orelse "");
 
     // Construct bottle URL
     const b_url = if (bottle_root_url != null and bottle_sha256 != null)
@@ -651,7 +687,7 @@ fn parseRubyFormulaFor(alloc: std.mem.Allocator, name: []const u8, src: []const 
         .desc = try alloc.dupe(u8, desc orelse ""),
         .source_url = resolved_url,
         .source_sha256 = resolved_sha,
-        .source_nounzip = source_nounzip,
+        .source_nounzip = !source_is_git and source_nounzip,
         .bottle_url = b_url,
         .bottle_sha256 = b_sha,
         .dependencies = try deps.toOwnedSlice(alloc),
@@ -1044,7 +1080,79 @@ fn findTagInLine(line: []const u8, tag: []const u8) ?[]const u8 {
     return null;
 }
 
-/// Try to extract version from URL patterns like /v1.3.0/ or /1.3.0/
+fn isVersionLiteral(value: []const u8) bool {
+    var segments = std.mem.splitScalar(u8, value, '.');
+    var count: usize = 0;
+    while (segments.next()) |segment| {
+        if (segment.len == 0) return false;
+        for (segment) |c| {
+            if (!std.ascii.isDigit(c)) return false;
+        }
+        count += 1;
+    }
+    return count >= 2;
+}
+
+fn takeRubyQuoted(text: []const u8) ?struct { value: []const u8, tail: []const u8 } {
+    if (text.len == 0 or (text[0] != '\'' and text[0] != '"')) return null;
+    const end = 1 + (std.mem.indexOfScalar(u8, text[1..], text[0]) orelse return null);
+    if (std.mem.indexOfScalar(u8, text[1..end], '\\') != null) return null;
+    return .{ .value = text[1..end], .tail = text[end + 1 ..] };
+}
+
+fn rubyKeyword(option: []const u8) ?struct { key: []const u8, value: []const u8 } {
+    const trimmed = std.mem.trimStart(u8, option, " \t");
+    const colon = std.mem.indexOfScalar(u8, trimmed, ':') orelse return null;
+    if (colon == 0) return null;
+    for (trimmed[0..colon]) |c| if (!std.ascii.isAlphanumeric(c) and c != '_') return null;
+    return .{ .key = trimmed[0..colon], .value = std.mem.trim(u8, trimmed[colon + 1 ..], " \t") };
+}
+
+// Only top-level comma-separated keywords are part of this URL call. Commas
+// inside a string or expression aren't separators, and comments end the line.
+fn gitUrlOptions(args: []const u8) struct { tag: ?[]const u8 = null, continued: bool = false } {
+    var tag: ?[]const u8 = null;
+    var start: usize = 0;
+    var i: usize = 0;
+    var quote: u8 = 0;
+    var depth: usize = 0;
+    while (i <= args.len) : (i += 1) {
+        const c: u8 = if (i < args.len) args[i] else 0;
+        if (quote != 0) {
+            if (c == '\\') i += 1 else if (c == quote) quote = 0;
+            continue;
+        }
+        switch (c) {
+            '\'', '"' => quote = c,
+            '(', '[', '{' => depth += 1,
+            ')', ']', '}' => if (depth > 0) {
+                depth -= 1;
+            } else if (c == ')') {
+                if (tag == null) tag = literalTag(args[start..i]);
+                return .{ .tag = tag };
+            } else return .{ .tag = tag },
+            ',', '#', 0 => {
+                if (depth != 0) continue;
+                const argument = std.mem.trim(u8, args[start..i], " \t");
+                if (tag == null) tag = literalTag(argument);
+                if (c != ',') return .{ .tag = tag, .continued = start != 0 and argument.len == 0 };
+                start = i + 1;
+            },
+            else => {},
+        }
+    }
+    return .{ .tag = tag };
+}
+
+fn literalTag(argument: []const u8) ?[]const u8 {
+    const option = rubyKeyword(argument) orelse return null;
+    if (!std.mem.eql(u8, option.key, "tag")) return null;
+    const value = takeRubyQuoted(option.value) orelse return null;
+    if (value.tail.len != 0) return null;
+    return value.value;
+}
+
+/// Try to extract version from URL patterns like /v1.3.0/ or /1.3.0/.
 fn extractVersionFromUrl(url: []const u8) ?[]const u8 {
     // Look for /vX.Y.Z/ or /X.Y.Z/ in URL path segments
     var i: usize = 0;
@@ -1399,6 +1507,77 @@ test "parseRubyFormula - version extracted from url" {
     const f = try parseRubyFormula(testing.allocator, "xyz", src);
     defer f.deinit(testing.allocator);
     try testing.expectEqualStrings("3.2.1", f.version);
+}
+
+test "parseRubyFormula - literal Git tag supplies bottle version only for Git source" {
+    const a = testing.allocator;
+    const tag = @import("formula.zig").preferredCompatibleBottleTag();
+    const src = try std.fmt.allocPrint(a,
+        \\url "https://github.com/example/tool.git", tag: "v1.2.3", revision: "deadbeef"
+        \\bottle do
+        \\  root_url "https://example.test/releases"
+        \\  sha256 {s}: "pinned-digest"
+        \\end
+    , .{tag});
+    defer a.free(src);
+    const f = try parseRubyFormula(a, "tool", src);
+    defer f.deinit(a);
+    try testing.expectEqualStrings("1.2.3", f.version);
+    try testing.expectEqualStrings("", f.source_url);
+    try testing.expectEqualStrings("", f.source_sha256);
+    try testing.expectEqualStrings("pinned-digest", f.bottle_sha256);
+    const expected = try std.fmt.allocPrint(a, "https://example.test/releases/tool-1.2.3.{s}.bottle.tar.gz", .{tag});
+    defer a.free(expected);
+    try testing.expectEqualStrings(expected, f.bottle_url);
+}
+
+test "parseRubyFormula - explicit version wins over Git tag and unrelated tags are ignored" {
+    const a = testing.allocator;
+    const explicit = try parseRubyFormula(a, "tool",
+        \\version "2.0.0"
+        \\url "https://github.com/example/tool.git", tag: "v1.2.3"
+    );
+    defer explicit.deinit(a);
+    try testing.expectEqualStrings("2.0.0", explicit.version);
+    try testing.expectEqualStrings("", explicit.source_url);
+    try testing.expectEqualStrings("", explicit.bottle_url);
+    try testing.expectError(error.FormulaNotFound, parseRubyFormula(a, "tool",
+        \\url "https://example.test/archive.tar.gz"
+        \\tag: "v1.2.3"
+    ));
+    for ([_][]const u8{
+        \\url "https://github.com/example/tool-1.2.3.git", tag: TAG
+        ,
+        \\url "https://github.com/example/tool.git", tag: "v1..2"
+        ,
+        \\url "https://github.com/example/tool.git", tag: "v1.2.3" + other
+        ,
+        \\url "https://github.com/example/tool.git" # tag: "v1.2.3"
+        ,
+        \\url "https://github.com/example/tool.git", revision: "foo, tag: 'v1.2.3'"
+    }) |src| try testing.expectError(error.TapFormulaVersionUndetermined, parseRubyFormula(a, "tool", src));
+}
+
+test "parseRubyFormula - Git tag on continued URL options" {
+    const a = testing.allocator;
+    const tag = @import("formula.zig").preferredCompatibleBottleTag();
+    const src = try std.fmt.allocPrint(a,
+        \\url "https://github.com/example/tool.git", # continued options
+        \\  tag: 'v2.4.6',
+        \\  revision: "deadbeef"
+        \\bottle do
+        \\  root_url "https://example.test/releases"
+        \\  sha256 {s}: "continued-digest"
+        \\end
+    , .{tag});
+    defer a.free(src);
+    const f = try parseRubyFormula(a, "tool", src);
+    defer f.deinit(a);
+    try testing.expectEqualStrings("2.4.6", f.version);
+    try testing.expectEqualStrings("continued-digest", f.bottle_sha256);
+    const expected = try std.fmt.allocPrint(a, "https://example.test/releases/tool-2.4.6.{s}.bottle.tar.gz", .{tag});
+    defer a.free(expected);
+    try testing.expectEqualStrings(expected, f.bottle_url);
 }
 
 test "parseRubyFormula - no version returns error" {

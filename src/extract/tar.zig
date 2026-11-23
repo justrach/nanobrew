@@ -124,7 +124,7 @@ extern "c" fn mkfifo(path: [*:0]const u8, mode: std.c.mode_t) c_int;
 fn extractThroughFifo(root: []const u8, sha: []const u8, gz: []const u8, rival: bool) !bool {
     const io = testing.io;
     var fifo_buf: [std.fs.max_path_bytes:0]u8 = undefined;
-    const fifo = try std.fmt.bufPrintZ(&fifo_buf, "{s}/{s}.blob", .{ root, sha });
+    const fifo = try std.mem.printSentinel(&fifo_buf, "{s}/{s}.blob", .{ root, sha }, 0);
     try testing.expectEqual(@as(c_int, 0), mkfifo(fifo.ptr, 0o600));
     var final_buf: [std.fs.max_path_bytes]u8 = undefined;
     const final = try std.fmt.bufPrint(&final_buf, "{s}/{s}", .{ root, sha });
@@ -176,12 +176,12 @@ test "extractToStore publishes store/<sha> only after extraction completes" {
     std.mem.writeInt(u32, gz[end + 4 ..][0..4], @intCast(tar_bytes.len), .little);
     const blob = gz[0 .. end + 8];
 
-    const sha = "ab" ** 32;
+    const sha = &std.fmt.bytesToHex(@as([32]u8, @splat(0xab)), .lower);
     try testing.expect(!try extractThroughFifo(root, sha, blob, false));
     try tmp.dir.access(io, sha ++ "/pkg/1.0/hello", .{});
 
     // A rival nb that published first wins; our copy is dropped, not merged.
-    const raced = "cd" ** 32;
+    const raced = &std.fmt.bytesToHex(@as([32]u8, @splat(0xcd)), .lower);
     try testing.expect(!try extractThroughFifo(root, raced, blob, true));
     try tmp.dir.access(io, raced ++ "/winner", .{});
     try testing.expectError(error.FileNotFound, tmp.dir.access(io, raced ++ "/pkg", .{}));

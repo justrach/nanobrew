@@ -260,8 +260,7 @@ fn installPackage(alloc: std.mem.Allocator, dirs: Dirs, p: Package) !void {
     const archive_name = try std.fmt.bufPrint(&archive_name_buf, "{s}-{s}{s}", .{ p.name, p.version, ext });
     const archive = try join(alloc, &.{ dirs.cache, archive_name });
     defer alloc.free(archive);
-    if (!pathExists(archive)) try powershell(alloc, &.{ "Invoke-WebRequest", "-Uri", p.url, "-OutFile", archive });
-    try verifySha256(alloc, archive, p.sha256);
+    try ensureVerifiedArchive(alloc, archive, p.url, p.sha256, downloadArchive);
 
     const pkg_root = try join(alloc, &.{ dirs.cellar, p.name });
     defer alloc.free(pkg_root);
@@ -396,8 +395,54 @@ fn listInstalled(alloc: std.mem.Allocator, dirs: Dirs) !void {
     for (records.items) |r| out("{s} {s}\n", .{ r.name, r.version });
 }
 
+fn ensureVerifiedArchive(
+    alloc: std.mem.Allocator,
+    archive: []const u8,
+    url: []const u8,
+    expected: []const u8,
+    comptime download: fn (std.mem.Allocator, []const u8, []const u8) anyerror!void,
+) !void {
+    if (try hasVerifiedArchive(alloc, archive, expected)) return;
+
+    var random: [16]u8 = undefined;
+    io().random(&random);
+    const suffix = std.fmt.bytesToHex(random, .lower);
+    const temp = try std.fmt.allocPrint(alloc, "{s}.{s}.tmp", .{ archive, &suffix });
+    defer alloc.free(temp);
+    const staging = try std.Io.Dir.createFileAbsolute(io(), temp, .{ .exclusive = true });
+    staging.close(io());
+    defer std.Io.Dir.cwd().deleteFile(io(), temp) catch {};
+
+    try download(alloc, url, temp);
+    try verifySha256(alloc, temp, expected);
+
+    // Serialize the recheck and rename between installers without locking during
+    // download. Leave the lock file in place so all publishers lock the same file.
+    const lock_path = try std.fmt.allocPrint(alloc, "{s}.lock", .{archive});
+    defer alloc.free(lock_path);
+    const lock = try std.Io.Dir.createFileAbsolute(io(), lock_path, .{ .truncate = false, .lock = .exclusive });
+    defer lock.close(io());
+    if (try hasVerifiedArchive(alloc, archive, expected)) return;
+    try std.Io.Dir.renameAbsolute(temp, archive, io());
+}
+
+fn hasVerifiedArchive(alloc: std.mem.Allocator, archive: []const u8, expected: []const u8) !bool {
+    verifySha256(alloc, archive, expected) catch |e| switch (e) {
+        error.FileNotFound, error.ChecksumMismatch => return false,
+        else => return e,
+    };
+    return true;
+}
+
+fn downloadArchive(alloc: std.mem.Allocator, url: []const u8, temp: []const u8) !void {
+    try powershell(alloc, &.{ "Invoke-WebRequest", "-ErrorAction", "Stop", "-Uri", url, "-OutFile", temp });
+}
+
 fn verifySha256(alloc: std.mem.Allocator, path: []const u8, expected: []const u8) !void {
-    const data = try readFileAlloc(alloc, path, 128 * 1024 * 1024);
+    const data = std.Io.Dir.cwd().readFileAlloc(io(), path, alloc, .limited(128 * 1024 * 1024 + 1)) catch |e| switch (e) {
+        error.StreamTooLong => return error.FileTooBig,
+        else => return e,
+    };
     defer alloc.free(data);
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
@@ -408,6 +453,61 @@ fn verifySha256(alloc: std.mem.Allocator, path: []const u8, expected: []const u8
         hex[idx * 2 + 1] = charset[byte & 0x0f];
     }
     if (!std.mem.eql(u8, &hex, expected)) return error.ChecksumMismatch;
+}
+
+test "Windows archive cache repairs corrupt files without publishing failed downloads" {
+    const Fixture = struct {
+        const verified = "verified archive";
+        const sha = "040a1170825ade3ff37b189dd280153ecfafb99ee929d1cbebb40fe135afdf26";
+        var winner_inode: std.Io.File.INode = undefined;
+
+        fn download(alloc: std.mem.Allocator, source: []const u8, temp: []const u8) !void {
+            if (eql(source, "interrupt")) {
+                try writeFile(temp, "partial");
+                return error.Interrupted;
+            }
+            if (std.fs.path.isAbsolute(source)) {
+                // Simulate another installer publishing while this one downloads.
+                try writeFile(source, verified);
+                winner_inode = (try std.Io.Dir.cwd().statFile(io(), source, .{})).inode;
+                try writeFile(temp, verified);
+            } else {
+                try writeFile(temp, source);
+            }
+            _ = alloc;
+        }
+    };
+    const alloc = std.testing.allocator;
+    g_io = std.testing.io;
+    var dir = std.testing.tmpDir(.{ .iterate = true });
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(io(), ".", alloc);
+    defer alloc.free(root);
+    const archive = try join(alloc, &.{ root, "package.zip" });
+    defer alloc.free(archive);
+
+    try std.testing.expectError(error.Interrupted, ensureVerifiedArchive(alloc, archive, "interrupt", Fixture.sha, Fixture.download));
+    try std.testing.expectError(error.FileNotFound, verifySha256(alloc, archive, Fixture.sha));
+    try writeFile(archive, "partial");
+    try std.testing.expectError(error.ChecksumMismatch, ensureVerifiedArchive(alloc, archive, "bad download", Fixture.sha, Fixture.download));
+    const old = try readFileAlloc(alloc, archive, 64);
+    defer alloc.free(old);
+    try std.testing.expectEqualStrings("partial", old);
+    try ensureVerifiedArchive(alloc, archive, Fixture.verified, Fixture.sha, Fixture.download);
+    try verifySha256(alloc, archive, Fixture.sha);
+    try ensureVerifiedArchive(alloc, archive, "interrupt", Fixture.sha, Fixture.download);
+
+    try std.Io.Dir.cwd().deleteFile(io(), archive);
+    try ensureVerifiedArchive(alloc, archive, archive, Fixture.sha, Fixture.download);
+    try std.testing.expectEqual(Fixture.winner_inode, (try std.Io.Dir.cwd().statFile(io(), archive, .{})).inode);
+    try std.Io.Dir.cwd().deleteFile(io(), archive);
+    try dir.dir.createDir(io(), "package.zip", .default_dir);
+    try std.testing.expectError(error.IsDir, ensureVerifiedArchive(alloc, archive, "interrupt", Fixture.sha, Fixture.download));
+
+    var entries = dir.dir.iterate();
+    while (try entries.next(io())) |entry| {
+        try std.testing.expect(!std.mem.endsWith(u8, entry.name, ".tmp"));
+    }
 }
 
 fn powershell(alloc: std.mem.Allocator, words: []const []const u8) !void {
