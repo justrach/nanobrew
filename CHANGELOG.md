@@ -4,6 +4,18 @@ All notable changes to nanobrew are documented here.
 
 ## [Unreleased]
 
+## [0.1.217] - 2026-11-23
+
+### Added
+- Upgrade the build and CI toolchain to Zig 0.17.1. (#459)
+- Add schema-1 JSON output for read-only CLI commands and retain tap-qualified cask identity through upgrades. (#495, #548)
+
+### Fixed
+- Resolve tap formula Git tags for archive installs and preserve safe verified bottle fallback. (#549)
+- Run only supported, constrained native post-install actions; unsupported script actions remain intentionally skipped. (#493)
+- Recover checksum-invalid Windows archive caches by downloading and verifying a replacement before use. (#469)
+- Bound installer downloads and clarify supported Intel binary, bottle, and Monterey coverage. (#412, #388)
+
 ## [0.1.216] - 2026-11-07
 
 ### Added

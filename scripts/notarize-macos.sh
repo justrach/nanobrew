@@ -73,8 +73,13 @@ codesign --verify --deep --strict "$BIN"
 echo "==> notarize via profile '$PROFILE'"
 rm -f "$ZIPFILE"
 ditto -c -k --keepParent "$BIN" "$ZIPFILE"
-xcrun notarytool submit "$ZIPFILE" --keychain-profile "$PROFILE" --wait
+NOTARY_OUTPUT="$(xcrun notarytool submit "$ZIPFILE" --keychain-profile "$PROFILE" --wait --output-format json)"
+printf '%s\n' "$NOTARY_OUTPUT"
 rm -f "$ZIPFILE"
+if ! grep -Eq '"status"[[:space:]]*:[[:space:]]*"Accepted"' <<<"$NOTARY_OUTPUT"; then
+  echo "notarize-macos.sh: notarization did not report Accepted" >&2
+  exit 1
+fi
 
 # Standalone Mach-O CLI binaries are not .app bundles, so `spctl --assess
 # --type execute` will reject them even when correctly notarized. Verify the
@@ -139,7 +144,6 @@ cp "$BIN" "$STAGE_DIR/nb"
 tar -czf "$TARBALL" -C "$STAGE_DIR" nb
 rm -rf "$STAGE_DIR"
 (cd "$OUT_DIR" && shasum -a 256 "$(basename "$TARBALL")" > "$(basename "$SHAFILE")")
-shasum -a 256 "$TARBALL" > "$SHAFILE"
 
 echo ""
 echo "done:"

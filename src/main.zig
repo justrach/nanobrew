@@ -159,7 +159,7 @@ fn milliTimestamp() i64 {
 
 const ROOT = paths.ROOT;
 const PREFIX = paths.PREFIX;
-const VERSION = "0.1.216";
+const VERSION = "0.1.217";
 
 /// Which operation lock a command takes. Commands that only read installed
 /// state share the lock, so one slow read (for example `nb outdated` on a bad
