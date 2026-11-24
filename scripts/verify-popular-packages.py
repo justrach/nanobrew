@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Exercise installed upstream tools on a disposable native macOS runner."""
+import argparse
 import hashlib
 import json
 import os
@@ -23,14 +24,36 @@ CHECKS = {
 }
 
 
+def expected_packages(mode, target, nb):
+    if mode == 'pinned':
+        registry = json.loads((ROOT / 'registry/upstream.json').read_text())
+        return {r['token']: {'version': r['resolved']['version'],
+                             'sha256': r['resolved']['assets'][target]['sha256']}
+                for r in registry['records'] if r['kind'] == 'formula' and r['token'] in CHECKS}
+
+    # Compare the installed receipt with the selected archive, not the stale
+    # registry pin or the receipt's own copy of the expected values.
+    info = json.loads(subprocess.check_output([str(nb), 'info', '--json', *CHECKS], text=True, timeout=60))
+    return {r['name']: r for r in info['packages'] if r['kind'] == 'formula'}
+
+
+def verify_receipt(name, actual, expected):
+    sha = expected.get('sha256', '')
+    assert re.fullmatch(r'[0-9a-f]{64}', sha), (name, expected)
+    assert actual['version'] == expected['version'], (name, actual, expected)
+    assert actual['sha256'] == sha, (name, actual, expected)
+
+
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('nb', type=Path, nargs='?', default=ROOT / 'zig-out/bin/nb')
+    args = parser.parse_args()
     arch = platform.machine()
     assert platform.system() == 'Darwin' and arch in ('arm64', 'x86_64')
     target = 'macos-' + arch
     mode = os.environ.get('NB_TEST_RESOLUTION', 'pinned')
     assert mode in ('pinned', 'default')
-    records = {r['token']: r for r in json.loads((ROOT / 'registry/upstream.json').read_text())['records']
-               if r['kind'] == 'formula'}
+    expected = expected_packages(mode, target, args.nb.resolve())
     installed = {r['name']: r for r in json.loads(Path('/opt/nanobrew/db/state.json').read_text())['kegs']}
     prefix = Path('/opt/nanobrew/prefix/bin')
     evidence = []
@@ -50,15 +73,15 @@ def main():
             return subprocess.check_output(list(map(str, args)), cwd=work, env=env, input=input, text=True, timeout=60)
 
         for name, (binary, flag) in CHECKS.items():
-            pin = records[name]['resolved']
-            assert installed[name]['version'] == pin['version'], (name, installed[name])
-            assert installed[name]['sha256'] == pin['assets'][target]['sha256'], (name, installed[name])
+            verify_receipt(name, installed[name], expected[name])
             path = prefix / binary
             run('/usr/bin/lipo', path, '-verify_arch', arch)
             output = run(path, flag)
-            assert re.search(r'(?<![0-9.])' + re.escape(pin['version']) + r'(?![0-9.])', output), output
+            # Homebrew's packaging revision is in the receipt, not the CLI version.
+            version = re.sub(r'_[0-9]+$', '', expected[name]['version'])
+            assert re.search(r'(?<![0-9.])' + re.escape(version) + r'(?![0-9.])', output), output
             print(output)
-            evidence.append({'package': name, 'version': pin['version'],
+            evidence.append({'package': name, 'version': installed[name]['version'],
                              'sha256': installed[name]['sha256'], 'native_arch': arch})
 
         (work / 'needle.txt').write_text('nanobrew native search\n')

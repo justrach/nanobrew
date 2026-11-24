@@ -1,4 +1,56 @@
 {
+  "zlib": {
+    "version": "1.4",
+    "source_url": "https://github.com/madler/zlib/releases/download/v1.4/zlib-1.4.tar.gz",
+    "source_sha256": "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584",
+    "source_license": "Zlib",
+    "metadata_source": "https://raw.githubusercontent.com/Homebrew/homebrew-core/76915903901480e1741a9f000f4e470657ece58f/Formula/z/zlib.rb",
+    "metadata": {
+      "name": "zlib",
+      "desc": "General-purpose lossless data-compression library",
+      "homepage": "https://zlib.net/",
+      "versions": {
+        "stable": "1.4",
+        "head": "HEAD",
+        "bottle": true
+      },
+      "revision": 0,
+      "dependencies": [],
+      "bottle": {
+        "stable": {
+          "rebuild": 0,
+          "root_url": "https://ghcr.io/v2/homebrew/core",
+          "files": {
+            "arm64_golden_gate": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:4fce88358803cd0dfdcc14e2afaf932af2a6a63927c197029e36bf13a072b002",
+              "sha256": "4fce88358803cd0dfdcc14e2afaf932af2a6a63927c197029e36bf13a072b002"
+            },
+            "arm64_tahoe": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:af30c0eda23564e812e00202ef7ae256584016dcbb0b88afb1120e768224de87",
+              "sha256": "af30c0eda23564e812e00202ef7ae256584016dcbb0b88afb1120e768224de87"
+            },
+            "arm64_sequoia": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:89a6f0a9841c9d3b38fd8733bd905fe2f2b218f803c77c7043a6116dd9f3b037",
+              "sha256": "89a6f0a9841c9d3b38fd8733bd905fe2f2b218f803c77c7043a6116dd9f3b037"
+            },
+            "arm64_linux": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:49e4dcb67cdd2c48deebe117d4cd1507641535d94f309e268b9e0e2ae9bf7a04",
+              "sha256": "49e4dcb67cdd2c48deebe117d4cd1507641535d94f309e268b9e0e2ae9bf7a04"
+            },
+            "x86_64_linux": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:b3eb31f74b7bdd08a084eef995399d27553b97f9639aa59eb525c402db67becc",
+              "sha256": "b3eb31f74b7bdd08a084eef995399d27553b97f9639aa59eb525c402db67becc"
+            }
+          }
+        }
+      }
+    }
+  },
   "xz": {
     "version": "5.8.4",
     "source_url": "https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4.tar.gz",

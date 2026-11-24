@@ -266,12 +266,12 @@ fn installPackage(alloc: std.mem.Allocator, dirs: Dirs, p: Package) !void {
     defer alloc.free(pkg_root);
     const pkg_dir = try join(alloc, &.{ pkg_root, p.version });
     defer alloc.free(pkg_dir);
-    std.Io.Dir.cwd().deleteTree(io(), pkg_dir) catch {};
+    try std.Io.Dir.cwd().deleteTree(io(), pkg_dir);
     try std.Io.Dir.cwd().createDirPath(io(), pkg_dir);
 
     switch (p.kind) {
         .zip => {
-            try powershell(alloc, &.{ "Expand-Archive", "-LiteralPath", archive, "-DestinationPath", pkg_dir, "-Force" });
+            try extractZip(alloc, archive, pkg_dir);
             for (p.bins) |bin| {
                 const src = try findFileRecursive(alloc, pkg_dir, bin) orelse return error.BinaryNotFound;
                 defer alloc.free(src);
@@ -510,6 +510,63 @@ test "Windows archive cache repairs corrupt files without publishing failed down
     }
 }
 
+test "Windows ZIP extraction finds a binary under a slash-terminated directory entry" {
+    if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+    // Match watchexec's ZIP layout: an explicit `wrapper/` record followed by a nested EXE.
+    const encoded = "UEsDBBQAAAAAAAAAIQAAAAAAAAAAAAAAAAAPAAAAdG9vbC0yLjUuMS13aW4vUEsDBBQAAAAIAAAA" ++
+        "IQCeUllYHAAAABoAAAAXAAAAdG9vbC0yLjUuMS13aW4vdG9vbC5leGXLSy0uSU1RSK1ITS4tSUzK" ++
+        "SVUoSKzMyU9M4QIAUEsBAhQAFAAAAAAAAAAhAAAAAAAAAAAAAAAAAA8AAAAAAAAAAAAQAAAAAAAA" ++
+        "AHRvb2wtMi41LjEtd2luL1BLAQIUABQAAAAIAAAAIQCeUllYHAAAABoAAAAXAAAAAAAAAAAAIAAA" ++
+        "AC0AAAB0b29sLTIuNS4xLXdpbi90b29sLmV4ZVBLBQYAAAAAAgACAIIAAAB+AAAAAAA=";
+    const decoder = std.base64.standard.Decoder;
+    var zip: [decoder.calcSizeForSlice(encoded) catch unreachable]u8 = undefined;
+    try decoder.decode(&zip, encoded);
+
+    const alloc = std.testing.allocator;
+    g_io = std.testing.io;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(io(), ".", alloc);
+    defer alloc.free(root);
+    const archive = try join(alloc, &.{ root, "tool's [archive].zip" });
+    defer alloc.free(archive);
+    const dest = try join(alloc, &.{ root, "tool's [cellar]" });
+    defer alloc.free(dest);
+    try writeFile(archive, &zip);
+    try std.Io.Dir.cwd().createDirPath(io(), dest);
+    try extractZip(alloc, archive, dest);
+
+    const bin = try findFileRecursive(alloc, dest, "tool.exe") orelse return error.BinaryNotFound;
+    defer alloc.free(bin);
+    const expected = try join(alloc, &.{ dest, "tool-2.5.1-win", "tool.exe" });
+    defer alloc.free(expected);
+    try std.testing.expectEqualStrings(expected, bin);
+    const contents = try readFileAlloc(alloc, bin, 64);
+    defer alloc.free(contents);
+    try std.testing.expectEqualStrings("nested executable payload\n", contents);
+}
+
+fn extractZip(alloc: std.mem.Allocator, archive: []const u8, dest: []const u8) !void {
+    var script: std.Io.Writer.Allocating = .init(alloc);
+    defer script.deinit();
+    // Use the ZIP API's directory-entry and destination-containment checks,
+    // not the legacy Expand-Archive provider path handling.
+    try script.writer.writeAll("$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory(");
+    try writePowerShellLiteral(&script.writer, archive);
+    try script.writer.writeAll(", ");
+    try writePowerShellLiteral(&script.writer, dest);
+    try script.writer.writeByte(')');
+    try runPowerShell(script.written());
+}
+
+fn writePowerShellLiteral(writer: *std.Io.Writer, value: []const u8) !void {
+    try writer.writeByte('\'');
+    for (value) |c| {
+        if (c == '\'') try writer.writeAll("''") else try writer.writeByte(c);
+    }
+    try writer.writeByte('\'');
+}
+
 fn powershell(alloc: std.mem.Allocator, words: []const []const u8) !void {
     var script: std.Io.Writer.Allocating = .init(alloc);
     defer script.deinit();
@@ -518,16 +575,14 @@ fn powershell(alloc: std.mem.Allocator, words: []const []const u8) !void {
         if (i == 0 or std.mem.startsWith(u8, w, "-")) {
             try script.writer.writeAll(w);
         } else {
-            try script.writer.writeByte('\'');
-            for (w) |c| {
-                if (c == '\'') try script.writer.writeAll("''") else try script.writer.writeByte(c);
-            }
-            try script.writer.writeByte('\'');
+            try writePowerShellLiteral(&script.writer, w);
         }
     }
-    const s = try script.toOwnedSlice();
-    defer alloc.free(s);
-    const result = std.process.run(std.heap.smp_allocator, io(), .{ .argv = &.{ "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", s }, .stdout_limit = .unlimited, .stderr_limit = .unlimited }) catch |err_| {
+    try runPowerShell(script.written());
+}
+
+fn runPowerShell(script: []const u8) !void {
+    const result = std.process.run(std.heap.smp_allocator, io(), .{ .argv = &.{ "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script }, .stdout_limit = .unlimited, .stderr_limit = .unlimited }) catch |err_| {
         err("powershell launch failed: {}\n", .{err_});
         return error.PowerShellFailed;
     };

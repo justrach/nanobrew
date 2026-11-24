@@ -55,6 +55,7 @@ jobs:
     env:
       NANOBREW_NO_TELEMETRY: '1'
       NANOBREW_DISABLE_UPSTREAM_REGISTRY_REMOTE: '1'
+      NANOBREW_DISABLE_UPSTREAM_FRESHNESS: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

@@ -3,7 +3,7 @@
 
 Requires macOS, Xcode command-line tools, Python 3.12+, and Rosetta on ARM.
 Builds and tests in a temporary directory; never installs into the host prefix
-or publishes. Output: dist/zlib-1.3.2.macos-x86_64.source.tar.gz.
+or publishes. Output: dist/zlib-<version>.macos-x86_64.source.tar.gz.
 """
 import gzip
 import hashlib
@@ -18,10 +18,10 @@ import tarfile
 import tempfile
 import urllib.request
 
-VERSION = "1.3.2"
-URL = f"https://zlib.net/fossils/zlib-{VERSION}.tar.gz"
-# Pinned from https://formulae.brew.sh/api/formula/zlib.json.
-SHA256 = "bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16"
+RECIPE = json.loads(Path(__file__).with_name("intel-library-recipes.json").read_text())["zlib"]
+VERSION = RECIPE["version"]
+URL = RECIPE["source_url"]
+SHA256 = RECIPE["source_sha256"]
 PREFIX = f"/opt/nanobrew/prefix/Cellar/zlib/{VERSION}"
 
 
