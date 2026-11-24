@@ -63,12 +63,18 @@ jobs:
             echo "error: expected nb version to report exactly $version for $RELEASE_TAG" >&2
             exit 1
           fi
-      - name: Install and exercise the default package selection
+      # The artifact predates source selection fixes in this checkout. Use
+      # checksum-pinned inputs here; popular-package-coverage tests live
+      # resolution with the newly built binary.
+      - name: Install and exercise the checksum-pinned package selection
+        env:
+          NANOBREW_DISABLE_UPSTREAM_FRESHNESS: '1'
+          NB_TEST_RESOLUTION: pinned
         run: |
           sudo ./dist/release-check/nb init
           sudo chown -R "$(id -un)" /opt/nanobrew
           ./dist/release-check/nb install gh uv oras ripgrep just fd git-lfs codedb codegraff
-          NB_TEST_RESOLUTION=default python3 scripts/verify-popular-packages.py ./dist/release-check/nb
+          python3 scripts/verify-popular-packages.py ./dist/release-check/nb
       - uses: actions/upload-artifact@v4
         with:
           name: signed-release-${{ matrix.arch }}

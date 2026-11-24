@@ -390,19 +390,33 @@ fn fetchFormulaLive(alloc: std.mem.Allocator, client: ?*std.http.Client, name: [
 }
 
 // A newer source-only formula must not displace a working binary pin.
-// Otherwise Homebrew dropping Intel bottles undoes our maintained coverage.
+// Upstream release archives are stored in source_url and carry install rules;
+// Homebrew bottles instead use bottle_url. Preserve both on platforms where
+// Homebrew has no compatible live bottle.
 fn preferLiveFormula(live: Formula, upstream: Formula) bool {
-    if (upstream.bottle_url.len > 0 and live.bottle_url.len == 0) return false;
+    const has_binary_pin = upstream.bottle_url.len > 0 or
+        (upstream.source_url.len > 0 and upstream.source_sha256.len > 0 and upstream.install_binaries.len > 0);
+    if (has_binary_pin and live.bottle_url.len == 0) return false;
     return formulaMetadataIsNewer(live, upstream) or upstreamHasRemovedDependency(live, upstream);
 }
 
-test "freshness preserves maintained Intel bottle when live is source-only" {
-    const pin = Formula{ .name = "expat", .version = "2.8.1", .bottle_url = "https://example.test/pin" };
-    const source = Formula{ .name = "expat", .version = "2.8.4" };
-    try std.testing.expect(!preferLiveFormula(source, pin));
+test "freshness preserves both bottle and release archive pins when live is source-only" {
+    const bottle_pin = Formula{ .name = "ripgrep", .version = "15.1.0", .bottle_url = "https://example.test/bottle" };
+    const archive_pin = Formula{
+        .name = "ripgrep",
+        .version = "15.1.0",
+        .source_url = "https://example.test/rg-macos.tar.gz",
+        .source_sha256 = "5aeca67f2283f75235de40d0bd9c0a5bbc5fce23b6d48b3bf9fa1b2db08382ca",
+        .install_binaries = &.{"rg"},
+    };
+    const source = Formula{ .name = "ripgrep", .version = "16.0.0", .source_url = "https://example.test/16.0.0.tar.gz" };
+    try std.testing.expect(!preferLiveFormula(source, bottle_pin));
+    try std.testing.expect(!preferLiveFormula(source, archive_pin));
+    try std.testing.expect(preferLiveFormula(source, .{ .name = "ripgrep", .version = "15.1.0" }));
     var bottle = source;
-    bottle.bottle_url = "https://example.test/new";
-    try std.testing.expect(preferLiveFormula(bottle, pin));
+    bottle.bottle_url = "https://example.test/new-bottle";
+    try std.testing.expect(preferLiveFormula(bottle, bottle_pin));
+    try std.testing.expect(preferLiveFormula(bottle, archive_pin));
 }
 
 fn formulaMetadataIsNewer(candidate: Formula, current: Formula) bool {
