@@ -3,7 +3,9 @@
 The default catalog refresh pairs Apple Silicon Homebrew bottles with the
 validated Intel source bottles from
 [the Intel library release](https://github.com/justrach/nanobrew/releases/tag/intel-libraries-35003597184-1).
-Both architectures use zlib 1.3.2, xz 5.8.4, lz4 1.10.0 and OpenSSL 3.6.4.
+Both architectures use zlib 1.3.2, xz 5.8.4, lz4 1.10.0 and OpenSSL 3.6.5.
+The updated OpenSSL source bottle and scan evidence are in the
+[3.6.5 Intel library release](https://github.com/justrach/nanobrew/releases/tag/intel-libraries-45799733378-1).
 The shared ca-certificates pin is 2026-08-13. Matching Linux companion pins
 are retained; native execution checks cover macOS only.
 
@@ -16,8 +18,8 @@ generate and verify an OpenSSL certificate. Results are saved as artifacts.
 The workflow repeats on catalog changes and can be dispatched manually.
 
 Apple Silicon pins use the oldest available reviewed Homebrew bottle for
-each version: Sonoma for zlib/lz4/OpenSSL and Sequoia for xz. Consequently,
-this xz ARM pin requires macOS 15 or later. These checks do not establish
+each version: Sonoma for zlib/lz4 and Sequoia for xz/OpenSSL. The xz and
+OpenSSL ARM pins require macOS 15 or later. These checks do not establish
 compatibility with older macOS releases, nor with every downstream package.
 
 After this catalog lands, `nb update-registry` fetches the new default pins.

@@ -5967,25 +5967,27 @@
         "sha256": "required"
       },
       "resolved": {
-        "version": "3.6.4",
+        "version": "3.6.5",
         "revision": 0,
         "rebuild": 0,
         "assets": {
           "macos-arm64": {
-            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:01887accd1964e9940ba516509e948eed9850d58d55cc02ca52c503435750685",
-            "sha256": "01887accd1964e9940ba516509e948eed9850d58d55cc02ca52c503435750685"
+            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:0994a8029175af4578c3b93b3020e58dffa638ca21dc22d862c6bc02fea7e73b",
+            "sha256": "0994a8029175af4578c3b93b3020e58dffa638ca21dc22d862c6bc02fea7e73b",
+            "minimum_macos_major": 15
           },
           "linux-x86_64": {
-            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:73c4159878b98d82e6f4e343ef34a79b74ca2224927d38c0956ce3ea781d6d20",
-            "sha256": "73c4159878b98d82e6f4e343ef34a79b74ca2224927d38c0956ce3ea781d6d20"
+            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:d1059270d1dfaae5e945745c7d5930c76a178b270a964ff450c16a2f2cda5ad2",
+            "sha256": "d1059270d1dfaae5e945745c7d5930c76a178b270a964ff450c16a2f2cda5ad2"
           },
           "linux-aarch64": {
-            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:e0f84cb8ab776813a17750423a6ce1b75b870df3ab2c21c54df9ce02646c1e1c",
-            "sha256": "e0f84cb8ab776813a17750423a6ce1b75b870df3ab2c21c54df9ce02646c1e1c"
+            "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:5074ccc96209b4a63a1aed9eaa226b0c2976dfaa62f4b0c04eb3344c7ea8d005",
+            "sha256": "5074ccc96209b4a63a1aed9eaa226b0c2976dfaa62f4b0c04eb3344c7ea8d005"
           },
           "macos-x86_64": {
-            "url": "https://ghcr.io/v2/justrach/nb-bottles/openssl/3/blobs/sha256:20d0d7b1790b59187f9aeae1ae718db6880b729eee8478ec4cc281b318cc96a6",
-            "sha256": "20d0d7b1790b59187f9aeae1ae718db6880b729eee8478ec4cc281b318cc96a6"
+            "url": "https://ghcr.io/v2/justrach/nb-bottles/openssl/3/blobs/sha256:dcccd7c15de0feb8fcec4d03ef5b160f39760aa6fcdea87e85f2b944e3f022f1",
+            "sha256": "dcccd7c15de0feb8fcec4d03ef5b160f39760aa6fcdea87e85f2b944e3f022f1",
+            "minimum_macos_major": 12
           }
         }
       }
