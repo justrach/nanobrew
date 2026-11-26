@@ -84,7 +84,7 @@ def prepare_registry(registry, evidence, url):
             assets[platform] = {"url": files[tag]["url"], "sha256": files[tag]["sha256"]}
             minimum = {"arm64_sonoma": 14, "arm64_sequoia": 15,
                        "arm64_tahoe": 26, "arm64_golden_gate": 27}.get(tag)
-            if name == "zlib" and minimum is not None:
+            if name in ("zlib", "openssl@3") and minimum is not None:
                 assets[platform]["minimum_macos_major"] = minimum
         elif platform in old.get("assets", {}):
             raise ValueError(f"No matching-version companion for {name} {platform}")

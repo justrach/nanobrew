@@ -95,6 +95,22 @@ class RegistryTests(unittest.TestCase):
                 prepare_registry(registry, {"package": "xz", "version": recipe["version"], "bottle_sha256": "a" * 64}, "intel")
         self.assertEqual(registry, before)
 
+    def test_openssl_upgrade_uses_matching_companions_and_macos_minimum(self):
+        recipe = recipe_for("openssl@3")
+        registry = {"records": [{"token": "openssl@3", "kind": "formula", "resolved": {
+            "version": "old", "assets": {"macos-arm64": {"url": "old-arm"}}}}]}
+        evidence = {"package": "openssl@3", "version": recipe["version"],
+                    "bottle_sha256": "a" * 64, "deployment_target": "12.0"}
+        prepare_registry(registry, evidence, "intel")
+        resolved = registry["records"][0]["resolved"]
+        self.assertEqual(resolved["version"], recipe["version"])
+        files = recipe["metadata"]["bottle"]["stable"]["files"]
+        for platform, tag in [("macos-arm64", "arm64_sequoia"),
+                              ("linux-x86_64", "x86_64_linux"), ("linux-aarch64", "arm64_linux")]:
+            self.assertEqual(resolved["assets"][platform]["sha256"], files[tag]["sha256"])
+        self.assertEqual(resolved["assets"]["macos-arm64"]["minimum_macos_major"], 15)
+        self.assertEqual(resolved["assets"]["macos-x86_64"]["minimum_macos_major"], 12)
+
     def test_openssl_scan_identity_uses_product_name(self):
         recipe = recipe_for("openssl@3")
         evidence = {"package": "openssl@3", **recipe}
