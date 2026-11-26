@@ -10,14 +10,12 @@ import re
 import nb_bottles as bottles
 
 DIST = Path(__file__).resolve().parents[2] / "dist"
-BOTTLE = DIST / "zlib-1.3.2.macos-x86_64.source.tar.gz"
-EVIDENCE = BOTTLE.with_suffix(".json")
 PACKAGES = ("zlib", "xz", "lz4", "openssl@3")
 RECIPE_PATH = Path(__file__).with_name("intel-library-recipes.json")
 
 
 def recipe_for(name):
-    return None if name == "zlib" else json.loads(RECIPE_PATH.read_text())[name]
+    return json.loads(RECIPE_PATH.read_text())[name]
 
 
 def add_recipe_identity(sbom, evidence):
@@ -31,7 +29,7 @@ def add_recipe_identity(sbom, evidence):
     package_id = "SPDXRef-nanobrew-" + name.replace("@", "-")
     package = {"SPDXID": package_id, "name": product, "versionInfo": evidence["version"],
                "downloadLocation": evidence["source_url"], "filesAnalyzed": False,
-               "licenseConcluded": "NOASSERTION", "licenseDeclared": recipe["source_license"] if recipe else "Zlib",
+               "licenseConcluded": "NOASSERTION", "licenseDeclared": recipe["source_license"],
                "copyrightText": "NOASSERTION",
                "sourceInfo": "Identity from the checksum-verified Nanobrew source recipe",
                "checksums": [{"algorithm": "SHA256", "checksumValue": evidence["source_sha256"]}],
@@ -58,35 +56,22 @@ def source_asset(evidence, url):
 
 def prepare_registry(registry, evidence, url):
     name = evidence.get("package", "zlib")
-    if name != "zlib":
-        return prepare_library_registry(registry, evidence, url)
-    records = registry["records"]
-    record = next((r for r in records if r["token"] == "zlib" and r["kind"] == "formula"), None)
-    if record is None:
-        record = {"token": "zlib", "name": "zlib", "kind": "formula",
-                  "homepage": "https://zlib.net/", "desc": "General-purpose lossless data-compression library",
-                  "dependencies": [], "upstream": {"type": "homebrew_bottle", "verified": True},
-                  "resolved": {"version": evidence["version"], "assets": {}},
-                  "verification": {"sha256": "required"}}
-        records.append(record)
-    resolved = record["resolved"]
-    if (resolved["version"] != evidence["version"] or resolved.get("revision", 0) != 0
-            or record["upstream"]["type"] != "homebrew_bottle"):
-        raise ValueError("zlib registry version/type changed; review the recipe before publishing")
-    resolved["assets"]["macos-x86_64"] = source_asset(evidence, url)
-    return registry
-
-
-def prepare_library_registry(registry, evidence, url):
-    name = evidence["package"]
     recipe = recipe_for(name)
     meta = recipe["metadata"]
     if evidence["version"] != recipe["version"] or meta["versions"]["stable"] != recipe["version"]:
         raise ValueError("Recipe, metadata and source bottle versions must match")
+    if meta["revision"] != 0:
+        raise ValueError("Recipe keg layout currently requires revision zero")
     record = next((r for r in registry["records"] if r["token"] == name and r["kind"] == "formula"), None)
     old = (record or {}).get("resolved", {})
     if old.get("revoked"):
         raise ValueError("Revoked package requires explicit review before source promotion")
+    if name == "zlib" and record is not None:
+        if old.get("revision", 0) != 0 or record["upstream"]["type"] != "homebrew_bottle":
+            raise ValueError("zlib registry revision/type changed; review the recipe before publishing")
+        if old["version"] == recipe["version"]:
+            old["assets"]["macos-x86_64"] = source_asset(evidence, url)
+            return registry
     # Each replacement version gets matching companion assets. Never attach an
     # old ARM/Linux binary to a new global version in the registry schema.
     files = meta["bottle"]["stable"]["files"]
@@ -94,9 +79,13 @@ def prepare_library_registry(registry, evidence, url):
     for platform, tags in {"macos-arm64": ["arm64_sonoma", "arm64_sequoia", "arm64_tahoe", "arm64_golden_gate", "all"],
                            "linux-x86_64": ["x86_64_linux", "all"],
                            "linux-aarch64": ["arm64_linux", "aarch64_linux", "all"]}.items():
-        asset = next((files[tag] for tag in tags if tag in files), None)
-        if asset:
-            assets[platform] = {"url": asset["url"], "sha256": asset["sha256"]}
+        tag = next((tag for tag in tags if tag in files), None)
+        if tag:
+            assets[platform] = {"url": files[tag]["url"], "sha256": files[tag]["sha256"]}
+            minimum = {"arm64_sonoma": 14, "arm64_sequoia": 15,
+                       "arm64_tahoe": 26, "arm64_golden_gate": 27}.get(tag)
+            if name in ("zlib", "openssl@3") and minimum is not None:
+                assets[platform]["minimum_macos_major"] = minimum
         elif platform in old.get("assets", {}):
             raise ValueError(f"No matching-version companion for {name} {platform}")
     assets["macos-x86_64"] = source_asset(evidence, url)
@@ -106,8 +95,6 @@ def prepare_library_registry(registry, evidence, url):
                    "verification": {"sha256": "required"},
                    "resolved": {"version": recipe["version"], "revision": meta["revision"],
                                 "rebuild": meta["bottle"]["stable"]["rebuild"], "assets": assets}}
-    if meta["revision"] != 0:
-        raise ValueError("Recipe keg layout currently requires revision zero")
     if record is None:
         registry["records"].append(replacement)
     else:
@@ -124,15 +111,16 @@ def main():
     args = parser.parse_args()
     name = args.package
     recipe = recipe_for(name)
-    version = recipe["version"] if recipe else "1.3.2"
+    version = recipe["version"]
     bottle = DIST / f"{name}-{version}.macos-x86_64.source.tar.gz"
     evidence = json.loads(bottle.with_suffix(".json").read_text())
     digest = hashlib.sha256(bottle.read_bytes()).hexdigest()
     if (digest != evidence["bottle_sha256"] or evidence["package"] != name
             or evidence["version"] != version or evidence["platform"] != "macos-x86_64"):
         raise ValueError("Bottle/evidence identity mismatch")
-    if recipe and evidence["source_sha256"] != recipe["source_sha256"]:
-        raise ValueError("Evidence source checksum does not match the reviewed recipe")
+    if (evidence["source_sha256"] != recipe["source_sha256"]
+            or evidence["source_url"] != recipe["source_url"]):
+        raise ValueError("Evidence source URL/checksum does not match the reviewed recipe")
     if args.command == "annotate-sbom":
         sbom_path = DIST / f"{name}.spdx.json"
         sbom = add_recipe_identity(json.loads(sbom_path.read_text()), evidence)

@@ -16,8 +16,9 @@ SITE_URL="https://nanobrew.trilok.ai"
 FALLBACK_RELEASE="v${LAST_RELEASE}"
 
 # Never wait forever on a stalled connection (e.g. inside docker build).
+# A retry started within the retry window still has its own transfer timeout.
 meta_curl() { curl -fsSL --connect-timeout 10 --max-time 30 "$@"; }
-download_curl() { curl -fsSL --connect-timeout 10 --speed-limit 1024 --speed-time 30 --retry 2 "$@"; }
+download_curl() { curl -fsSL --connect-timeout 10 --max-time 120 --speed-limit 1024 --speed-time 30 --retry 2 --retry-max-time 300 "$@"; }
 
 echo ""
 echo "  nanobrew — the fastest package manager"
@@ -37,8 +38,8 @@ case "$OS" in
         ;;
     Linux)
         case "$ARCH" in
-            aarch64) TARBALL="nb-aarch64-linux.tar.gz" ;;
-            x86_64)  TARBALL="nb-x86_64-linux.tar.gz" ;;
+            arm64|aarch64) TARBALL="nb-aarch64-linux.tar.gz" ;;
+            x86_64)        TARBALL="nb-x86_64-linux.tar.gz" ;;
             *) echo "error: unsupported architecture: $ARCH"; exit 1 ;;
         esac
         ;;
@@ -98,32 +99,55 @@ if [ "\${NANOBREW_INSTALL_DRY_RUN:-0}" = "1" ]; then
     exit 0
 fi
 
-echo "  Downloading $TARBALL..."
+if command -v sha256sum &>/dev/null; then
+    hash_cmd=(sha256sum)
+elif command -v shasum &>/dev/null; then
+    hash_cmd=(shasum -a 256)
+else
+    echo "error: no sha256sum or shasum found; refusing to install unverified binary" >&2
+    exit 1
+fi
+
 TMPDIR_DL="$(mktemp -d)"
 trap 'rm -rf "$TMPDIR_DL"' EXIT
 
-download_curl "$URL" -o "$TMPDIR_DL/$TARBALL"
-download_curl "$SHA_URL" -o "$TMPDIR_DL/$TARBALL.sha256" 2>/dev/null || true
-
-# Verify SHA256 if checksum file was downloaded
-if [ -s "$TMPDIR_DL/$TARBALL.sha256" ]; then
-    EXPECTED=$(awk '{print $1}' "$TMPDIR_DL/$TARBALL.sha256")
-    if command -v sha256sum &>/dev/null; then
-        ACTUAL=$(sha256sum "$TMPDIR_DL/$TARBALL" | awk '{print $1}')
-    elif command -v shasum &>/dev/null; then
-        ACTUAL=$(shasum -a 256 "$TMPDIR_DL/$TARBALL" | awk '{print $1}')
-    else
-        echo "  warning: no sha256sum/shasum found, skipping verification"
-        ACTUAL="$EXPECTED"
-    fi
-    if [ "$ACTUAL" != "$EXPECTED" ]; then
-        echo "error: SHA256 checksum mismatch!"
-        echo "  expected: $EXPECTED"
-        echo "  actual:   $ACTUAL"
-        exit 1
-    fi
-    echo "  SHA256 verified ✓"
+# Check the sidecar before downloading the archive. A failed curl may still
+# leave a nonempty partial file; it must never be trusted.
+checksum="$TMPDIR_DL/$TARBALL.sha256"
+if ! download_curl "$SHA_URL" -o "$checksum" || [ ! -s "$checksum" ]; then
+    echo "error: could not download SHA256 checksum; refusing to install unverified binary" >&2
+    exit 1
 fi
+# Accept one digest line. A recorded filename may include a build-time path;
+# check its basename, but always hash the archive we just downloaded.
+if ! EXPECTED=$(awk -v archive="$TARBALL" '
+    NR == 1 && NF == 1 { print tolower($1) }
+    NR == 1 && NF > 1 {
+        name = $0
+        sub(/^[[:blank:]]*[^[:blank:]]+[[:blank:]]+/, "", name)
+        sub(/^[*]/, "", name)
+        sub("^.*/", "", name)
+        if (name == archive) print tolower($1)
+    }
+    END { if (NR != 1) exit 1 }
+' "$checksum") || ! [[ $EXPECTED =~ ^[0-9a-f]{64}$ ]]; then
+    echo "error: malformed SHA256 checksum" >&2
+    exit 1
+fi
+
+echo "  Downloading $TARBALL..."
+download_curl "$URL" -o "$TMPDIR_DL/$TARBALL"
+if ! ACTUAL=$("\${hash_cmd[@]}" "$TMPDIR_DL/$TARBALL" | awk '{print $1}'); then
+    echo "error: could not compute SHA256 checksum" >&2
+    exit 1
+fi
+if [ "$ACTUAL" != "$EXPECTED" ]; then
+    echo "error: SHA256 checksum mismatch!" >&2
+    echo "  expected: $EXPECTED" >&2
+    echo "  actual:   $ACTUAL" >&2
+    exit 1
+fi
+echo "  SHA256 verified ✓"
 
 tar -xzf "$TMPDIR_DL/$TARBALL" -C "$TMPDIR_DL"
 
@@ -133,8 +157,14 @@ if [ ! -d "$INSTALL_DIR" ]; then
     if [ "$(id -u)" = "0" ]; then
         mkdir -p "$INSTALL_DIR"
     else
-        sudo mkdir -p "$INSTALL_DIR"
-        sudo chown -R "$(whoami)" "$INSTALL_DIR"
+        if ! sudo -n mkdir -p "$INSTALL_DIR"; then
+            echo "error: install requires root privileges; run with sudo or configure passwordless sudo" >&2
+            exit 1
+        fi
+        if ! sudo -n chown -R "$(whoami)" "$INSTALL_DIR"; then
+            echo "error: could not set ownership of $INSTALL_DIR; run with sudo or configure passwordless sudo" >&2
+            exit 1
+        fi
     fi
 fi
 mkdir -p "$BIN_DIR" \\

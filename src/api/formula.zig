@@ -15,6 +15,8 @@ pub const Formula = struct {
     };
 
     name: []const u8,
+    /// Qualified metadata lookup token; the Cellar still uses `name`.
+    source_token: ?[]const u8 = null,
     version: []const u8,
     revision: u32 = 0,
     rebuild: u32 = 0,
@@ -35,6 +37,9 @@ pub const Formula = struct {
     install_bin_renames: []const BinRename = &.{},
     caveats: []const u8 = "",
     post_install_defined: bool = false,
+    /// Owned JSON value from the API. Null means the key was absent, not
+    /// that it was explicitly empty or malformed (neither invokes legacy hooks).
+    post_install_steps: ?[]const u8 = null,
     /// True when this metadata came from a revoked registry pin's fallback
     /// (previous known-good version). The registry is authoritative here:
     /// live-API freshness checks must not override a security revocation.
@@ -61,6 +66,7 @@ pub const Formula = struct {
         for (self.build_deps) |dep| alloc.free(dep);
         alloc.free(self.build_deps);
         alloc.free(self.name);
+        if (self.source_token) |token| alloc.free(token);
         alloc.free(self.version);
         alloc.free(self.desc);
         alloc.free(self.homepage);
@@ -77,6 +83,7 @@ pub const Formula = struct {
         }
         if (self.install_bin_renames.len > 0) alloc.free(self.install_bin_renames);
         alloc.free(self.caveats);
+        if (self.post_install_steps) |steps| alloc.free(steps);
     }
 
     /// Build the bottle URL for this formula.

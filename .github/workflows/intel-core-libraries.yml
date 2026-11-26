@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/intel-core-libraries.yml
       - scripts/bottles/build_intel_library.py
+      - scripts/bottles/build_zlib_intel.py
       - scripts/bottles/intel-library-recipes.json
       - scripts/bottles/source_bottle_release.py
       - scripts/bottles/test_source_bottle_release.py
@@ -14,6 +15,7 @@ on:
     paths:
       - .github/workflows/intel-core-libraries.yml
       - scripts/bottles/build_intel_library.py
+      - scripts/bottles/build_zlib_intel.py
       - scripts/bottles/intel-library-recipes.json
       - scripts/bottles/source_bottle_release.py
       - scripts/bottles/test_source_bottle_release.py
@@ -49,7 +51,7 @@ jobs:
           python3 scripts/bottles/source_bottle_release.py prepare --package "$PACKAGE"
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.1
       - name: Build Nanobrew
         run: zig build -Doptimize=ReleaseFast
       - name: Install and test the exact bottle on the disposable runner

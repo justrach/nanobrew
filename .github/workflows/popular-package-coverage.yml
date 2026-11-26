@@ -8,6 +8,7 @@ on:
       - scripts/popularity-plan.py
       - scripts/test-popularity-plan.py
       - scripts/verify-popular-packages.py
+      - scripts/test-verify-popular-packages.py
       - src/api/client.zig
       - registry/upstream.json
       - src/upstream/registry_default.json
@@ -17,6 +18,7 @@ on:
       - scripts/popularity-plan.py
       - scripts/test-popularity-plan.py
       - scripts/verify-popular-packages.py
+      - scripts/test-verify-popular-packages.py
       - src/api/client.zig
       - registry/upstream.json
       - src/upstream/registry_default.json
@@ -38,7 +40,9 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
-      - run: python3 scripts/test-popularity-plan.py
+      - run: |
+          python3 scripts/test-popularity-plan.py
+          python3 scripts/test-verify-popular-packages.py
       - name: Rank demand and assess packaging metadata
         run: |
           python3 scripts/popularity-plan.py --top 100
@@ -58,13 +62,14 @@ jobs:
     timeout-minutes: 20
     env:
       NANOBREW_NO_TELEMETRY: '1'
+      NANOBREW_UPSTREAM_REGISTRY_CACHE: ${{ github.workspace }}/registry/upstream.json
       NB_TEST_RESOLUTION: ${{ matrix.resolution }}
       NANOBREW_DISABLE_UPSTREAM_REGISTRY_REMOTE: '1'
     steps:
       - uses: actions/checkout@v4
       - uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.1
       - name: Build Nanobrew with the proposed registry
         run: zig build -Doptimize=ReleaseFast
       - name: Install popular tools on disposable runner
@@ -74,9 +79,9 @@ jobs:
           if [ "$NB_TEST_RESOLUTION" = pinned ]; then
             export NANOBREW_DISABLE_UPSTREAM_FRESHNESS=1
           fi
-          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./zig-out/bin/nb install gh uv oras ripgrep just fd git-lfs codedb codegraff
-      - name: Check exact pins, native architecture and tool behavior
-        run: python3 scripts/verify-popular-packages.py
+          ./zig-out/bin/nb install gh uv oras ripgrep just fd git-lfs codedb codegraff
+      - name: Check selected versions, digests, native architecture and tool behavior
+        run: python3 scripts/verify-popular-packages.py ./zig-out/bin/nb
       - uses: actions/upload-artifact@v4
         with:
           name: popular-packages-${{ matrix.runner }}-${{ matrix.resolution }}

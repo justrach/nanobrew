@@ -6,7 +6,7 @@
 
 const std = @import("std");
 
-const VERSION = "0.1.216";
+const VERSION = "0.1.217";
 
 var g_io: std.Io = undefined;
 
@@ -260,19 +260,18 @@ fn installPackage(alloc: std.mem.Allocator, dirs: Dirs, p: Package) !void {
     const archive_name = try std.fmt.bufPrint(&archive_name_buf, "{s}-{s}{s}", .{ p.name, p.version, ext });
     const archive = try join(alloc, &.{ dirs.cache, archive_name });
     defer alloc.free(archive);
-    if (!pathExists(archive)) try powershell(alloc, &.{ "Invoke-WebRequest", "-Uri", p.url, "-OutFile", archive });
-    try verifySha256(alloc, archive, p.sha256);
+    try ensureVerifiedArchive(alloc, archive, p.url, p.sha256, downloadArchive);
 
     const pkg_root = try join(alloc, &.{ dirs.cellar, p.name });
     defer alloc.free(pkg_root);
     const pkg_dir = try join(alloc, &.{ pkg_root, p.version });
     defer alloc.free(pkg_dir);
-    std.Io.Dir.cwd().deleteTree(io(), pkg_dir) catch {};
+    try std.Io.Dir.cwd().deleteTree(io(), pkg_dir);
     try std.Io.Dir.cwd().createDirPath(io(), pkg_dir);
 
     switch (p.kind) {
         .zip => {
-            try powershell(alloc, &.{ "Expand-Archive", "-LiteralPath", archive, "-DestinationPath", pkg_dir, "-Force" });
+            try extractZip(alloc, archive, pkg_dir);
             for (p.bins) |bin| {
                 const src = try findFileRecursive(alloc, pkg_dir, bin) orelse return error.BinaryNotFound;
                 defer alloc.free(src);
@@ -396,8 +395,54 @@ fn listInstalled(alloc: std.mem.Allocator, dirs: Dirs) !void {
     for (records.items) |r| out("{s} {s}\n", .{ r.name, r.version });
 }
 
+fn ensureVerifiedArchive(
+    alloc: std.mem.Allocator,
+    archive: []const u8,
+    url: []const u8,
+    expected: []const u8,
+    comptime download: fn (std.mem.Allocator, []const u8, []const u8) anyerror!void,
+) !void {
+    if (try hasVerifiedArchive(alloc, archive, expected)) return;
+
+    var random: [16]u8 = undefined;
+    io().random(&random);
+    const suffix = std.fmt.bytesToHex(random, .lower);
+    const temp = try std.fmt.allocPrint(alloc, "{s}.{s}.tmp", .{ archive, &suffix });
+    defer alloc.free(temp);
+    const staging = try std.Io.Dir.createFileAbsolute(io(), temp, .{ .exclusive = true });
+    staging.close(io());
+    defer std.Io.Dir.cwd().deleteFile(io(), temp) catch {};
+
+    try download(alloc, url, temp);
+    try verifySha256(alloc, temp, expected);
+
+    // Serialize the recheck and rename between installers without locking during
+    // download. Leave the lock file in place so all publishers lock the same file.
+    const lock_path = try std.fmt.allocPrint(alloc, "{s}.lock", .{archive});
+    defer alloc.free(lock_path);
+    const lock = try std.Io.Dir.createFileAbsolute(io(), lock_path, .{ .truncate = false, .lock = .exclusive });
+    defer lock.close(io());
+    if (try hasVerifiedArchive(alloc, archive, expected)) return;
+    try std.Io.Dir.renameAbsolute(temp, archive, io());
+}
+
+fn hasVerifiedArchive(alloc: std.mem.Allocator, archive: []const u8, expected: []const u8) !bool {
+    verifySha256(alloc, archive, expected) catch |e| switch (e) {
+        error.FileNotFound, error.ChecksumMismatch => return false,
+        else => return e,
+    };
+    return true;
+}
+
+fn downloadArchive(alloc: std.mem.Allocator, url: []const u8, temp: []const u8) !void {
+    try powershell(alloc, &.{ "Invoke-WebRequest", "-ErrorAction", "Stop", "-Uri", url, "-OutFile", temp });
+}
+
 fn verifySha256(alloc: std.mem.Allocator, path: []const u8, expected: []const u8) !void {
-    const data = try readFileAlloc(alloc, path, 128 * 1024 * 1024);
+    const data = std.Io.Dir.cwd().readFileAlloc(io(), path, alloc, .limited(128 * 1024 * 1024 + 1)) catch |e| switch (e) {
+        error.StreamTooLong => return error.FileTooBig,
+        else => return e,
+    };
     defer alloc.free(data);
     var digest: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(data, &digest, .{});
@@ -410,6 +455,118 @@ fn verifySha256(alloc: std.mem.Allocator, path: []const u8, expected: []const u8
     if (!std.mem.eql(u8, &hex, expected)) return error.ChecksumMismatch;
 }
 
+test "Windows archive cache repairs corrupt files without publishing failed downloads" {
+    const Fixture = struct {
+        const verified = "verified archive";
+        const sha = "040a1170825ade3ff37b189dd280153ecfafb99ee929d1cbebb40fe135afdf26";
+        var winner_inode: std.Io.File.INode = undefined;
+
+        fn download(alloc: std.mem.Allocator, source: []const u8, temp: []const u8) !void {
+            if (eql(source, "interrupt")) {
+                try writeFile(temp, "partial");
+                return error.Interrupted;
+            }
+            if (std.fs.path.isAbsolute(source)) {
+                // Simulate another installer publishing while this one downloads.
+                try writeFile(source, verified);
+                winner_inode = (try std.Io.Dir.cwd().statFile(io(), source, .{})).inode;
+                try writeFile(temp, verified);
+            } else {
+                try writeFile(temp, source);
+            }
+            _ = alloc;
+        }
+    };
+    const alloc = std.testing.allocator;
+    g_io = std.testing.io;
+    var dir = std.testing.tmpDir(.{ .iterate = true });
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(io(), ".", alloc);
+    defer alloc.free(root);
+    const archive = try join(alloc, &.{ root, "package.zip" });
+    defer alloc.free(archive);
+
+    try std.testing.expectError(error.Interrupted, ensureVerifiedArchive(alloc, archive, "interrupt", Fixture.sha, Fixture.download));
+    try std.testing.expectError(error.FileNotFound, verifySha256(alloc, archive, Fixture.sha));
+    try writeFile(archive, "partial");
+    try std.testing.expectError(error.ChecksumMismatch, ensureVerifiedArchive(alloc, archive, "bad download", Fixture.sha, Fixture.download));
+    const old = try readFileAlloc(alloc, archive, 64);
+    defer alloc.free(old);
+    try std.testing.expectEqualStrings("partial", old);
+    try ensureVerifiedArchive(alloc, archive, Fixture.verified, Fixture.sha, Fixture.download);
+    try verifySha256(alloc, archive, Fixture.sha);
+    try ensureVerifiedArchive(alloc, archive, "interrupt", Fixture.sha, Fixture.download);
+
+    try std.Io.Dir.cwd().deleteFile(io(), archive);
+    try ensureVerifiedArchive(alloc, archive, archive, Fixture.sha, Fixture.download);
+    try std.testing.expectEqual(Fixture.winner_inode, (try std.Io.Dir.cwd().statFile(io(), archive, .{})).inode);
+    try std.Io.Dir.cwd().deleteFile(io(), archive);
+    try dir.dir.createDir(io(), "package.zip", .default_dir);
+    try std.testing.expectError(error.IsDir, ensureVerifiedArchive(alloc, archive, "interrupt", Fixture.sha, Fixture.download));
+
+    var entries = dir.dir.iterate();
+    while (try entries.next(io())) |entry| {
+        try std.testing.expect(!std.mem.endsWith(u8, entry.name, ".tmp"));
+    }
+}
+
+test "Windows ZIP extraction finds a binary under a slash-terminated directory entry" {
+    if (@import("builtin").os.tag != .windows) return error.SkipZigTest;
+    // Match watchexec's ZIP layout: an explicit `wrapper/` record followed by a nested EXE.
+    const encoded = "UEsDBBQAAAAAAAAAIQAAAAAAAAAAAAAAAAAPAAAAdG9vbC0yLjUuMS13aW4vUEsDBBQAAAAIAAAA" ++
+        "IQCeUllYHAAAABoAAAAXAAAAdG9vbC0yLjUuMS13aW4vdG9vbC5leGXLSy0uSU1RSK1ITS4tSUzK" ++
+        "SVUoSKzMyU9M4QIAUEsBAhQAFAAAAAAAAAAhAAAAAAAAAAAAAAAAAA8AAAAAAAAAAAAQAAAAAAAA" ++
+        "AHRvb2wtMi41LjEtd2luL1BLAQIUABQAAAAIAAAAIQCeUllYHAAAABoAAAAXAAAAAAAAAAAAIAAA" ++
+        "AC0AAAB0b29sLTIuNS4xLXdpbi90b29sLmV4ZVBLBQYAAAAAAgACAIIAAAB+AAAAAAA=";
+    const decoder = std.base64.standard.Decoder;
+    var zip: [decoder.calcSizeForSlice(encoded) catch unreachable]u8 = undefined;
+    try decoder.decode(&zip, encoded);
+
+    const alloc = std.testing.allocator;
+    g_io = std.testing.io;
+    var dir = std.testing.tmpDir(.{});
+    defer dir.cleanup();
+    const root = try dir.dir.realPathFileAlloc(io(), ".", alloc);
+    defer alloc.free(root);
+    const archive = try join(alloc, &.{ root, "tool's [archive].zip" });
+    defer alloc.free(archive);
+    const dest = try join(alloc, &.{ root, "tool's [cellar]" });
+    defer alloc.free(dest);
+    try writeFile(archive, &zip);
+    try std.Io.Dir.cwd().createDirPath(io(), dest);
+    try extractZip(alloc, archive, dest);
+
+    const bin = try findFileRecursive(alloc, dest, "tool.exe") orelse return error.BinaryNotFound;
+    defer alloc.free(bin);
+    const expected = try join(alloc, &.{ dest, "tool-2.5.1-win", "tool.exe" });
+    defer alloc.free(expected);
+    try std.testing.expectEqualStrings(expected, bin);
+    const contents = try readFileAlloc(alloc, bin, 64);
+    defer alloc.free(contents);
+    try std.testing.expectEqualStrings("nested executable payload\n", contents);
+}
+
+fn extractZip(alloc: std.mem.Allocator, archive: []const u8, dest: []const u8) !void {
+    var script: std.Io.Writer.Allocating = .init(alloc);
+    defer script.deinit();
+    // Use the ZIP API's directory-entry and destination-containment checks,
+    // not the legacy Expand-Archive provider path handling.
+    try script.writer.writeAll("$ErrorActionPreference = 'Stop'; Add-Type -AssemblyName System.IO.Compression.FileSystem; [System.IO.Compression.ZipFile]::ExtractToDirectory(");
+    try writePowerShellLiteral(&script.writer, archive);
+    try script.writer.writeAll(", ");
+    try writePowerShellLiteral(&script.writer, dest);
+    try script.writer.writeByte(')');
+    try runPowerShell(script.written());
+}
+
+fn writePowerShellLiteral(writer: *std.Io.Writer, value: []const u8) !void {
+    try writer.writeByte('\'');
+    for (value) |c| {
+        if (c == '\'') try writer.writeAll("''") else try writer.writeByte(c);
+    }
+    try writer.writeByte('\'');
+}
+
 fn powershell(alloc: std.mem.Allocator, words: []const []const u8) !void {
     var script: std.Io.Writer.Allocating = .init(alloc);
     defer script.deinit();
@@ -418,16 +575,14 @@ fn powershell(alloc: std.mem.Allocator, words: []const []const u8) !void {
         if (i == 0 or std.mem.startsWith(u8, w, "-")) {
             try script.writer.writeAll(w);
         } else {
-            try script.writer.writeByte('\'');
-            for (w) |c| {
-                if (c == '\'') try script.writer.writeAll("''") else try script.writer.writeByte(c);
-            }
-            try script.writer.writeByte('\'');
+            try writePowerShellLiteral(&script.writer, w);
         }
     }
-    const s = try script.toOwnedSlice();
-    defer alloc.free(s);
-    const result = std.process.run(std.heap.smp_allocator, io(), .{ .argv = &.{ "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", s }, .stdout_limit = .unlimited, .stderr_limit = .unlimited }) catch |err_| {
+    try runPowerShell(script.written());
+}
+
+fn runPowerShell(script: []const u8) !void {
+    const result = std.process.run(std.heap.smp_allocator, io(), .{ .argv = &.{ "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script }, .stdout_limit = .unlimited, .stderr_limit = .unlimited }) catch |err_| {
         err("powershell launch failed: {}\n", .{err_});
         return error.PowerShellFailed;
     };

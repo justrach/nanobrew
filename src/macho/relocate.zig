@@ -947,7 +947,7 @@ test "byte-pass - whole-file pass mirrors relocateFile (placeholder + literal)" 
 // as incomplete, so the #355 gate fails the keg instead of caching it.
 
 fn writeMachOFixture(dir: std.Io.Dir, name: []const u8, path_buf: *[std.fs.max_path_bytes]u8) ![]const u8 {
-    var body = [_]u8{0} ** (64 * 1024);
+    var body: [64 * 1024]u8 = @splat(0);
     std.mem.writeInt(u32, body[0..4], MH_MAGIC_64, .little);
     @memcpy(body[32..][0..PLACEHOLDER_PREFIX.len], PLACEHOLDER_PREFIX);
     const f = try dir.createFile(testing.io, name, .{});
@@ -962,7 +962,7 @@ test "relocateFile - a Mach-O it cannot open read-write counts as incomplete" {
     defer tmp_dir.cleanup();
     var path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const path = try writeMachOFixture(tmp_dir.dir, "locked", &path_buf);
-    const path_z = try testing.allocator.dupeZ(u8, path);
+    const path_z = try testing.allocator.dupeSentinel(u8, path, 0);
     defer testing.allocator.free(path_z);
 
     // UF_IMMUTABLE: the owner can still read the file, but the read-write

@@ -1000,8 +1000,9 @@ test "parsePaxRecords reads path and linkpath, rejects malformed records" {
     try testing.expectError(error.MalformedPaxHeader, parsePaxRecords(alloc, "6 x=\n\n18446744073709551615 path=x\n", &pax_path, &pax_link));
 }
 
-const pax_long_1 = "dir/" ++ "a" ** 100 ++ "-enums.def";
-const pax_long_2 = "dir/" ++ "a" ** 100 ++ "-flags.def";
+const pax_long_component: [100]u8 = @splat('a');
+const pax_long_1 = "dir/" ++ pax_long_component ++ "-enums.def";
+const pax_long_2 = "dir/" ++ pax_long_component ++ "-flags.def";
 
 // Append a pax 'x' header + record data + following entry header + payload to
 // tar_data at `pos`, returning the next free offset. The entry gets `name`'s

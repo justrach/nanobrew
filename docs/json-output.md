@@ -4,7 +4,7 @@
 
 `nb list`, `nb outdated`, `nb info` (formula and `--cask`), `nb search`, `nb leaves`, `nb deps`, `nb services list` and `nb where`.
 
-Errors and warnings still go to stderr, with the same exit code as the text command: a package that is not installed, a formula or cask that is not found, or an unknown flag exits 1. Progress lines such as `==> Searching ...` are not printed in JSON mode. In JSON mode `nb leaves` and `nb services list` also exit 1 when the database or service discovery fails (the text commands only warn).
+Read stdout separately from stderr. Progress lines such as `==> Searching ...` are not part of the JSON format. Check the exit code before using the result: a command can fail without a document, or return a partial document (see `nb info`). In JSON mode `nb leaves` and `nb services list` exit 1 when the database or service discovery fails (the text commands only warn).
 
 Every document is one object with `schema` and command-specific fields:
 
@@ -48,10 +48,10 @@ Every document is one object with `schema` and command-specific fields:
 |---|---|
 | `installed`, `latest` | Installed version and the newer version available |
 | `pinned` | `nb upgrade` skips this package until `nb unpin` |
-| `upgrade_supported` | `nb upgrade` can replace this package. For casks this runs the same check `nb upgrade --cask` makes, including the trust policy. |
+| `upgrade_supported` | Whether the package is eligible for upgrade, independent of `pinned`. For casks this checks trust policy and staged-upgrade support; it does not attempt the upgrade or guarantee success. |
 | `unsupported_reason` | When `upgrade_supported` is `false`: the reason that `nb upgrade` prints in `[unsupported, skipping: ...]`, or `cannot prepare cask upgrade (<error>)`. Otherwise `null`. |
 
-An empty `packages` array means everything is up to date. The `==> Checking ...` progress lines are not printed in JSON mode.
+An empty `packages` array means no newer versions were found. If a version check fails, the package can be absent from the result and the command can still exit 0 with a warning on stderr. The `==> Checking ...` progress lines are not printed in JSON mode.
 
 ## `nb info --json [--cask] <name>...`
 
@@ -141,4 +141,4 @@ The three sections match the text output: installed packages, entries in `prefix
 
 ## Tap cask short names
 
-`nb upgrade --cask` and `nb outdated` accept an installed tap cask by its short name, so `nb upgrade --cask nanobrew-ui` finds `Rex57/tap/nanobrew-ui`. This works only when exactly one installed tap cask has that short name; otherwise the command exits 1 and asks for the full token. JSON output always reports the full recorded token.
+`nb upgrade --cask` and `nb outdated` accept an installed tap cask by its short name, so `nb upgrade --cask nanobrew-ui` finds `Rex57/tap/nanobrew-ui`. An exact installed cask token takes precedence. If there is no exact match and more than one installed tap cask shares the short name, the command exits 1 and asks for the full token. `nb outdated --json` reports the full token for tap casks, even when selected by short name.

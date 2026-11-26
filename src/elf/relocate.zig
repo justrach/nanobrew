@@ -598,7 +598,7 @@ test "fixInterpreterInPlace - leaves existing system interpreter alone" {
 test "relocateFile - a failed write-back counts as incomplete" {
     // A Linuxbrew literal is rewritten without /opt/nb, so this reaches the
     // write-back on any host.
-    var body = [_]u8{0} ** (64 * 1024);
+    var body: [64 * 1024]u8 = @splat(0);
     @memcpy(body[0..ELF_MAGIC.len], &ELF_MAGIC);
     @memcpy(body[64..][0..LINUXBREW_LITERAL.len], LINUXBREW_LITERAL);
     var tmp_dir = testing.tmpDir(.{});

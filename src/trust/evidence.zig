@@ -227,12 +227,17 @@ pub fn chooseFormula(a: std.mem.Allocator, feed: Feed, current: Formula) !Formul
     if (e.result != .fail) return current;
     const good = feed.newestPassing(current.name, .formula, platform(), timestamp()) orelse return current;
     rejectRevoked(a, good.*) catch return current;
-    const replacement = try good.toFormula(a);
+    var replacement = try good.toFormula(a);
     errdefer replacement.deinit(a);
     const message = try std.fmt.allocPrint(a, "nb: {s} {s} has failing install evidence; using verified-working {s}\n", .{ current.name, current.effectiveVersion(&buf), good.version });
     defer a.free(message);
     std.Io.File.stderr().writeStreamingAll(paths.safe_io, message) catch {};
-    current.deinit(a);
+    // Evidence replaces artifact metadata, not the resolved lookup route.
+    if (replacement.source_token) |token| a.free(token);
+    replacement.source_token = current.source_token;
+    var previous = current;
+    previous.source_token = null;
+    previous.deinit(a);
     return replacement;
 }
 

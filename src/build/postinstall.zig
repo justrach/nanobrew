@@ -2,16 +2,18 @@
 //
 // Handles two post-install concerns:
 // 1. Caveats: text instructions displayed after install
-// 2. post_install scripts: parsed from Ruby formula source and executed
+// 2. Native post-install steps, or legacy hooks from verified Ruby source
 
 const std = @import("std");
 const Formula = @import("../api/formula.zig").Formula;
-const fetch = @import("../net/fetch.zig");
-
-
-const sandbox = @import("sandbox.zig");
 const formula_cache = @import("formula_cache.zig");
 const certs = @import("certs.zig");
+const install_steps = @import("install_steps.zig");
+const paths = @import("../platform/paths.zig");
+
+test {
+    _ = install_steps;
+}
 
 pub const ParsedCommand = struct {
     argv: []const []const u8,
@@ -32,8 +34,23 @@ pub fn runPostInstall(alloc: std.mem.Allocator, io: std.Io, formula: Formula) !v
     // depend on a network round trip to raw.githubusercontent.com.
     certs.nativePostInstall(lib_io, formula.name);
 
-    // Execute post_install if defined
-    if (formula.post_install_defined) {
+    // Presence, not the legacy boolean or the contents of the array, selects
+    // the structured path. Native TLS handling already took care of its hooks.
+    if (formula.post_install_steps) |steps| {
+        if (!certs.handlesPostInstall(formula.name)) {
+            var ver_buf: [128]u8 = undefined;
+            var buffer: [1024]u8 = undefined;
+            var stderr = std.Io.File.stderr().writerStreaming(lib_io, &buffer);
+            const out = &stderr.interface;
+            install_steps.run(alloc, lib_io, paths.PREFIX, .{
+                .name = formula.name,
+                .version = formula.effectiveVersion(&ver_buf),
+            }, steps, out) catch |err| {
+                out.print("nb: post-install steps skipped or stopped: {s}\n", .{@errorName(err)}) catch {};
+            };
+            out.flush() catch {};
+        }
+    } else if (formula.post_install_defined) {
         ({ const _tmp = std.fmt.allocPrint(std.heap.smp_allocator, "==> Running post-install for {s}...\n", .{formula.name}) catch ""; defer std.heap.smp_allocator.free(_tmp); std.Io.File.stdout().writeStreamingAll(lib_io, _tmp) catch {}; });
         runPostInstallScript(alloc, lib_io, formula) catch |err| {
             ({ const _tmp = std.fmt.allocPrint(std.heap.smp_allocator, "nb: {s}: post-install script failed: {}\n", .{ formula.name, err }) catch ""; defer std.heap.smp_allocator.free(_tmp); std.Io.File.stderr().writeStreamingAll(lib_io, _tmp) catch {}; });

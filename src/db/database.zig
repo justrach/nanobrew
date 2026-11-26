@@ -28,6 +28,7 @@ fn warnLoad(problem: LoadProblem, path: []const u8) void {
 
 pub const Keg = struct {
     name: []const u8,
+    source_token: ?[]const u8 = null,
     version: []const u8,
     sha256: []const u8 = "",
     pinned: bool = false,
@@ -36,6 +37,21 @@ pub const Keg = struct {
     probed_at: i64 = 0,
     probe_schema: u32 = 0,
     probe_platform: u32 = 0,
+
+    pub fn lookupToken(self: Keg) []const u8 {
+        return self.source_token orelse self.name;
+    }
+
+    pub fn matchesName(self: Keg, name: []const u8) bool {
+        return std.mem.eql(u8, self.name, name) or std.mem.eql(u8, self.lookupToken(), name);
+    }
+
+    fn deinit(self: Keg, alloc: std.mem.Allocator) void {
+        alloc.free(self.name);
+        alloc.free(self.version);
+        alloc.free(self.sha256);
+        if (self.source_token) |token| alloc.free(token);
+    }
 };
 
 pub const InstallAction = enum { install, keep, keep_pinned };
@@ -72,6 +88,7 @@ pub const CaskRecord = struct {
 
 pub const HistoryEntry = struct {
     version: []const u8,
+    source_token: ?[]const u8 = null,
     sha256: []const u8,
     installed_at: i64,
 };
@@ -172,8 +189,15 @@ pub const Database = struct {
                                 alloc.free(k_ver);
                                 continue;
                             };
-                            db.kegs.append(alloc, .{
+                            const k_source = dupeSourceToken(alloc, getStr(item.object, "source_token")) catch {
+                                alloc.free(k_name);
+                                alloc.free(k_ver);
+                                alloc.free(k_sha);
+                                continue;
+                            };
+                            const keg: Keg = .{
                                 .name = k_name,
+                                .source_token = k_source,
                                 .version = k_ver,
                                 .sha256 = k_sha,
                                 .pinned = kpinned,
@@ -182,11 +206,8 @@ pub const Database = struct {
                                 .probed_at = kprobed,
                                 .probe_schema = kprobe_schema,
                                 .probe_platform = kprobe_platform,
-                            }) catch {
-                                alloc.free(k_name);
-                                alloc.free(k_ver);
-                                alloc.free(k_sha);
                             };
+                            db.kegs.append(alloc, keg) catch keg.deinit(alloc);
                         }
                     }
                 }
@@ -325,13 +346,20 @@ pub const Database = struct {
                                     alloc.free(h_ver_s);
                                     continue;
                                 };
+                                const h_source_s = dupeSourceToken(alloc, getStr(h_item.object, "source_token")) catch {
+                                    alloc.free(h_ver_s);
+                                    alloc.free(h_sha_s);
+                                    continue;
+                                };
                                 entries.append(alloc, .{
                                     .version = h_ver_s,
+                                    .source_token = h_source_s,
                                     .sha256 = h_sha_s,
                                     .installed_at = hinst,
                                 }) catch {
                                     alloc.free(h_ver_s);
                                     alloc.free(h_sha_s);
+                                    if (h_source_s) |token| alloc.free(token);
                                 };
                             }
                         }
@@ -403,11 +431,7 @@ pub const Database = struct {
             const _warn_msg = std.fmt.bufPrint(&_warn_buf, "nb: WARNING: failed to save package database: {}\n", .{err}) catch "nb: WARNING: failed to save package database\n";
             std.Io.File.stderr().writeStreamingAll(paths.safe_io, _warn_msg) catch {};
         };
-        for (self.kegs.items) |keg| {
-            self.alloc.free(keg.name);
-            self.alloc.free(keg.version);
-            self.alloc.free(keg.sha256);
-        }
+        for (self.kegs.items) |keg| keg.deinit(self.alloc);
         self.kegs.deinit(self.alloc);
         for (self.casks.items) |c| {
             self.alloc.free(c.token);
@@ -436,6 +460,7 @@ pub const Database = struct {
             for (entry.value_ptr.items) |h| {
                 self.alloc.free(h.version);
                 self.alloc.free(h.sha256);
+                if (h.source_token) |token| self.alloc.free(token);
             }
             entry.value_ptr.deinit(self.alloc);
         }
@@ -449,36 +474,55 @@ pub const Database = struct {
     }
 
     pub fn recordInstall(self: *Database, name: []const u8, version: []const u8, sha256: []const u8) !void {
-        const now = nowUnix();
-        var pinned = false;
+        return self.recordInstallWithSource(name, version, sha256, null);
+    }
 
+    pub fn recordInstallWithSource(self: *Database, name: []const u8, version: []const u8, sha256: []const u8, source_token: ?[]const u8) !void {
+        // Duplicate borrowed fields before freeing any old record.
+        const own_name = try self.alloc.dupe(u8, name);
+        errdefer self.alloc.free(own_name);
+        const own_version = try self.alloc.dupe(u8, version);
+        errdefer self.alloc.free(own_version);
+        const own_sha = try self.alloc.dupe(u8, sha256);
+        errdefer self.alloc.free(own_sha);
+        const own_source = try dupeSourceToken(self.alloc, source_token);
+        errdefer if (own_source) |token| self.alloc.free(token);
+        try self.kegs.ensureUnusedCapacity(self.alloc, 1);
+
+        var pinned = false;
         var i: usize = 0;
         while (i < self.kegs.items.len) {
-            if (std.mem.eql(u8, self.kegs.items[i].name, name)) {
+            if (std.mem.eql(u8, self.kegs.items[i].name, own_name)) {
                 const old = self.kegs.items[i];
                 pinned = pinned or old.pinned;
-                self.pushHistory(name, old) catch {};
-                self.alloc.free(old.name);
-                self.alloc.free(old.version);
-                self.alloc.free(old.sha256);
+                self.pushHistory(own_name, old) catch {};
+                old.deinit(self.alloc);
                 _ = self.kegs.orderedRemove(i);
             } else {
                 i += 1;
             }
         }
 
-        try self.kegs.append(self.alloc, .{
-            .name = try self.alloc.dupe(u8, name),
-            .version = try self.alloc.dupe(u8, version),
-            .sha256 = try self.alloc.dupe(u8, sha256),
+        self.kegs.appendAssumeCapacity(.{
+            .name = own_name,
+            .version = own_version,
+            .sha256 = own_sha,
+            .source_token = own_source,
             .pinned = pinned,
-            .installed_at = now,
-            .probe_success = false,
-            .probed_at = 0,
-            .probe_schema = 0,
-            .probe_platform = 0,
+            .installed_at = nowUnix(),
         });
         self.dirty = true;
+    }
+
+    /// Fill in a legacy keg's source without replacing it or changing its evidence.
+    pub fn repairKegSource(self: *Database, name: []const u8, version: []const u8, source_token: []const u8) !void {
+        for (self.kegs.items) |*keg| {
+            if (!std.mem.eql(u8, keg.name, name) or !std.mem.eql(u8, keg.version, version)) continue;
+            if (keg.source_token != null) return;
+            keg.source_token = try self.alloc.dupe(u8, source_token);
+            self.dirty = true;
+            return;
+        }
     }
 
     pub fn recordKegProbe(
@@ -517,9 +561,12 @@ pub const Database = struct {
         errdefer self.alloc.free(ver_owned);
         const sha_owned = try self.alloc.dupe(u8, old.sha256);
         errdefer self.alloc.free(sha_owned);
+        const source_owned = try dupeSourceToken(self.alloc, old.source_token);
+        errdefer if (source_owned) |token| self.alloc.free(token);
         try gop.value_ptr.append(self.alloc, .{
             .version = ver_owned,
             .sha256 = sha_owned,
+            .source_token = source_owned,
             .installed_at = old.installed_at,
         });
     }
@@ -529,10 +576,7 @@ pub const Database = struct {
         var i: usize = 0;
         while (i < self.kegs.items.len) {
             if (std.mem.eql(u8, self.kegs.items[i].name, name)) {
-                const keg = self.kegs.items[i];
-                self.alloc.free(keg.name);
-                self.alloc.free(keg.version);
-                self.alloc.free(keg.sha256);
+                self.kegs.items[i].deinit(self.alloc);
                 _ = self.kegs.orderedRemove(i);
             } else {
                 i += 1;
@@ -544,6 +588,13 @@ pub const Database = struct {
     pub fn findKeg(self: *Database, name: []const u8) ?Keg {
         for (self.kegs.items) |keg| {
             if (std.mem.eql(u8, keg.name, name)) return keg;
+        }
+        return null;
+    }
+
+    pub fn findKegForUpdate(self: *Database, token: []const u8) ?Keg {
+        for (self.kegs.items) |keg| {
+            if (keg.matchesName(token)) return keg;
         }
         return null;
     }
@@ -792,6 +843,13 @@ pub const Database = struct {
         try writer.writeAll("\"");
     }
 
+    fn writeSourceToken(writer: anytype, source_token: ?[]const u8) !void {
+        if (source_token) |token| {
+            try writer.writeAll(",\"source_token\":");
+            try writeJsonStringFallible(writer, token);
+        }
+    }
+
     pub fn writeJsonString(writer: anytype, s: []const u8) void {
         writeJsonStringFallible(writer, s) catch {};
     }
@@ -859,6 +917,7 @@ pub const Database = struct {
             try writeJsonStringFallible(&writer.interface, keg.version);
             try writer.interface.writeAll(",\"sha256\":");
             try writeJsonStringFallible(&writer.interface, keg.sha256);
+            try writeSourceToken(&writer.interface, keg.source_token);
             try writer.interface.print(",\"pinned\":{s},\"installed_at\":{d},\"probe_success\":{s},\"probed_at\":{d},\"probe_schema\":{d},\"probe_platform\":{d}}}", .{
                 if (keg.pinned) "true" else "false",
                 keg.installed_at,
@@ -916,6 +975,7 @@ pub const Database = struct {
                 try writeJsonStringFallible(&writer.interface, h.version);
                 try writer.interface.writeAll(",\"sha256\":");
                 try writeJsonStringFallible(&writer.interface, h.sha256);
+                try writeSourceToken(&writer.interface, h.source_token);
                 try writer.interface.print(",\"installed_at\":{d}}}", .{h.installed_at});
             }
             try writer.interface.writeAll("]");
@@ -943,6 +1003,12 @@ pub const Database = struct {
         file_open = false;
     }
 };
+
+fn dupeSourceToken(alloc: std.mem.Allocator, source_token: ?[]const u8) !?[]const u8 {
+    const token = source_token orelse return null;
+    if (token.len == 0) return null;
+    return try alloc.dupe(u8, token);
+}
 
 fn getStr(obj: std.json.ObjectMap, key: []const u8) ?[]const u8 {
     if (obj.get(key)) |val| {
@@ -1076,6 +1142,67 @@ test "recordInstall keeps an existing pin" {
     try testing.expect(db.findKeg("pkg").?.pinned);
     try db.recordInstall("other", "1.0", "abc");
     try testing.expect(!db.findKeg("other").?.pinned);
+}
+
+test "tap source repair preserves legacy evidence, and source survives replacement and reopen (#548)" {
+    const io = testing.io;
+    const alloc = testing.allocator;
+    const path = try std.fmt.allocPrint(alloc, "/tmp/nb-test-db-tap-{d}.json", .{std.c.getpid()});
+    defer alloc.free(path);
+    defer std.Io.Dir.deleteFileAbsolute(io, path) catch {};
+    const lock = try std.fmt.allocPrint(alloc, "{s}.lock", .{path});
+    defer alloc.free(lock);
+    defer std.Io.Dir.deleteFileAbsolute(io, lock) catch {};
+    const token = "owner/tap/pkg";
+
+    {
+        var db = try Database.openAt(alloc, path);
+        defer db.close();
+        try db.recordInstall("pkg", "1.0", "abc");
+        try db.setPinned("pkg", true);
+        try db.recordKegProbe("pkg", "1.0", "abc", true, 7, 8);
+        try db.flush();
+    }
+    {
+        var db = try Database.openAt(alloc, path);
+        defer db.close();
+        const legacy = db.findKeg("pkg").?;
+        try testing.expectEqualStrings("pkg", legacy.lookupToken());
+        try testing.expect(db.findKegForUpdate(token) == null);
+        try db.repairKegSource("pkg", "2.0", "another/tap/pkg");
+        try db.repairKegSource("pkg", "1.0", token);
+        try db.repairKegSource("pkg", "1.0", "another/tap/pkg");
+        const repaired = db.findKegForUpdate(token).?;
+        try testing.expectEqualStrings("pkg", repaired.name);
+        try testing.expectEqualStrings("abc", repaired.sha256);
+        try testing.expect(repaired.pinned and repaired.probe_success);
+        try testing.expectEqual(legacy.installed_at, repaired.installed_at);
+        try testing.expectEqual(legacy.probed_at, repaired.probed_at);
+        try testing.expectEqual(legacy.probe_schema, repaired.probe_schema);
+        try testing.expectEqual(legacy.probe_platform, repaired.probe_platform);
+        try testing.expectEqual(@as(usize, 0), db.getHistory("pkg").len);
+        try db.flush();
+    }
+    {
+        var db = try Database.openAt(alloc, path);
+        defer db.close();
+        const keg = db.findKeg("pkg").?;
+        try testing.expectEqualStrings(token, keg.lookupToken());
+        try db.recordInstallWithSource(keg.name, "2.0", "def", keg.source_token);
+        try db.flush();
+    }
+    {
+        var db = try Database.openAt(alloc, path);
+        defer db.close();
+        const current = db.findKegForUpdate(token).?;
+        try testing.expectEqualStrings("2.0", current.version);
+        try testing.expect(current.pinned);
+        const previous = db.getHistory("pkg")[0];
+        try testing.expectEqualStrings(token, previous.source_token.?);
+        try db.recordInstallWithSource(current.name, previous.version, previous.sha256, previous.source_token);
+        try testing.expectEqualStrings("1.0", db.findKegForUpdate(token).?.version);
+        try db.flush();
+    }
 }
 
 test "a pin set after the last flush is lost when the process exits without close()" {

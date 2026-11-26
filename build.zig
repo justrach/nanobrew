@@ -130,6 +130,17 @@ pub fn build(b: *std.Build) void {
     const windows_step = b.step("windows", "Build Windows package-manager bridge");
     windows_step.dependOn(&b.addInstallArtifact(windows_exe, .{}).step);
 
+    const windows_cache_test_mod = b.createModule(.{
+        .root_source_file = b.path("src/windows_main.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = target.result.os.tag == .windows,
+    });
+    windows_cache_test_mod.addOptions("windows_registry", windows_registry_opts);
+    const windows_cache_test = b.addTest(.{ .root_module = windows_cache_test_mod });
+    const windows_cache_step = b.step("test-windows-cache", "Exercise Windows cache repair on the host filesystem");
+    windows_cache_step.dependOn(&b.addRunArtifact(windows_cache_test).step);
+
     // ── Linux cross-compilation convenience targets ──
     const linux_x86 = b.resolveTargetQuery(.{
         .cpu_arch = .x86_64,

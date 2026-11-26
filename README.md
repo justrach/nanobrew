@@ -79,10 +79,19 @@ curl -fsSL https://nanobrew.trilok.ai/install | bash
 brew tap justrach/nanobrew https://github.com/justrach/nanobrew
 brew install nanobrew
 
-# Or build from source (needs Zig 0.16.0+)
+# Or build from source (CI uses Zig 0.17.1)
 git clone https://github.com/justrach/nanobrew.git
 cd nanobrew && ./install.sh
 ```
+
+### Intel Mac support
+
+nanobrew publishes a separate `x86_64` macOS binary for Intel Macs, alongside
+its Apple Silicon binary. The Intel release build targets macOS 12.0, but
+individual packages still need a compatible Intel bottle or another supported
+artifact. The [Intel source bottles](docs/intel-source-bottles.md) and
+[Monterey Git stack](scripts/bottles/MONTEREY.md) are opt-in pilots, not general
+Monterey package support.
 
 ### Upgrading
 
@@ -201,6 +210,17 @@ command and elapsed time in both installation and `nb doctor --probe` output.
 As of v0.1.192, the top 100 casks install through nanobrew's native pipeline — no `brew` subprocess, no Homebrew prefix, no Ruby. Native cask support covers apps, `.pkg`, fonts, binaries, suites, copied artifacts, installer scripts, `.tar.xz`, and extensionless vendor URLs. Casks outside the top 100 still fall back to the verified Homebrew path.
 
 ### Linux / Docker (deb packages)
+
+If you use the installer instead of copying the container image's binary,
+run it as root in the build stage. Download the script separately so a failed
+fetch fails the Docker build even when the shell does not enable `pipefail`:
+
+```dockerfile
+RUN curl -fsSL --connect-timeout 10 --max-time 60 \
+    https://nanobrew.trilok.ai/install -o /tmp/install-nb.sh \
+    && bash /tmp/install-nb.sh && rm /tmp/install-nb.sh
+ENV PATH="/opt/nanobrew/prefix/bin:${PATH}"
+```
 
 ```bash
 nb install --deb curl wget git    # install from Ubuntu/Debian repos

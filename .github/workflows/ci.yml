@@ -16,7 +16,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.1
 
       - name: Build (Debug)
         run: zig build
@@ -84,7 +84,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.1
 
       - name: Cross-compile for Linux x86_64
         run: zig build linux
@@ -143,7 +143,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.1
 
       - name: Cross-build Windows binary
         run: zig build windows
@@ -158,6 +158,16 @@ jobs:
     runs-on: windows-latest
     needs: build-windows-native
     steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Zig
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.17.1
+
+      - name: Exercise archive cache recovery on Windows
+        run: zig build test-windows-cache
+
       - name: Download Windows binary
         uses: actions/download-artifact@v4
         with:
@@ -199,7 +209,7 @@ jobs:
       - name: Install Zig
         uses: mlugg/setup-zig@v2
         with:
-          version: 0.16.0
+          version: 0.17.1
 
       - name: Cross-compile x86_64-linux
         run: zig build linux

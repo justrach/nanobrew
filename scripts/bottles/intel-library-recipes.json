@@ -1,4 +1,56 @@
 {
+  "zlib": {
+    "version": "1.4",
+    "source_url": "https://github.com/madler/zlib/releases/download/v1.4/zlib-1.4.tar.gz",
+    "source_sha256": "02dd159783677a749c04adbdd02b55b8a2bcc7e054f51b76b549199a916ad584",
+    "source_license": "Zlib",
+    "metadata_source": "https://raw.githubusercontent.com/Homebrew/homebrew-core/76915903901480e1741a9f000f4e470657ece58f/Formula/z/zlib.rb",
+    "metadata": {
+      "name": "zlib",
+      "desc": "General-purpose lossless data-compression library",
+      "homepage": "https://zlib.net/",
+      "versions": {
+        "stable": "1.4",
+        "head": "HEAD",
+        "bottle": true
+      },
+      "revision": 0,
+      "dependencies": [],
+      "bottle": {
+        "stable": {
+          "rebuild": 0,
+          "root_url": "https://ghcr.io/v2/homebrew/core",
+          "files": {
+            "arm64_golden_gate": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:4fce88358803cd0dfdcc14e2afaf932af2a6a63927c197029e36bf13a072b002",
+              "sha256": "4fce88358803cd0dfdcc14e2afaf932af2a6a63927c197029e36bf13a072b002"
+            },
+            "arm64_tahoe": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:af30c0eda23564e812e00202ef7ae256584016dcbb0b88afb1120e768224de87",
+              "sha256": "af30c0eda23564e812e00202ef7ae256584016dcbb0b88afb1120e768224de87"
+            },
+            "arm64_sequoia": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:89a6f0a9841c9d3b38fd8733bd905fe2f2b218f803c77c7043a6116dd9f3b037",
+              "sha256": "89a6f0a9841c9d3b38fd8733bd905fe2f2b218f803c77c7043a6116dd9f3b037"
+            },
+            "arm64_linux": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:49e4dcb67cdd2c48deebe117d4cd1507641535d94f309e268b9e0e2ae9bf7a04",
+              "sha256": "49e4dcb67cdd2c48deebe117d4cd1507641535d94f309e268b9e0e2ae9bf7a04"
+            },
+            "x86_64_linux": {
+              "cellar": ":any",
+              "url": "https://ghcr.io/v2/homebrew/core/zlib/blobs/sha256:b3eb31f74b7bdd08a084eef995399d27553b97f9639aa59eb525c402db67becc",
+              "sha256": "b3eb31f74b7bdd08a084eef995399d27553b97f9639aa59eb525c402db67becc"
+            }
+          }
+        }
+      }
+    }
+  },
   "xz": {
     "version": "5.8.4",
     "source_url": "https://github.com/tukaani-project/xz/releases/download/v5.8.4/xz-5.8.4.tar.gz",
@@ -51,16 +103,16 @@
     }
   },
   "openssl@3": {
-    "version": "3.6.4",
-    "source_url": "https://github.com/openssl/openssl/releases/download/openssl-3.6.4/openssl-3.6.4.tar.gz",
-    "source_sha256": "9bffaa1ad1e07b354c21bd3324ec02fa15579f45a7d0494b3e74bc449b7333ef",
+    "version": "3.6.5",
+    "source_url": "https://github.com/openssl/openssl/releases/download/openssl-3.6.5/openssl-3.6.5.tar.gz",
+    "source_sha256": "a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98",
     "source_license": "Apache-2.0",
     "metadata": {
       "name": "openssl@3",
       "desc": "Cryptography and SSL/TLS Toolkit",
       "homepage": "https://openssl-library.org",
       "versions": {
-        "stable": "3.6.4",
+        "stable": "3.6.5",
         "head": null,
         "bottle": true
       },
@@ -75,33 +127,28 @@
           "files": {
             "arm64_golden_gate": {
               "cellar": "/opt/homebrew/Cellar",
-              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:51eb22ee51d7b6e678ef5dc2be234adb46f9f541ac1d98e5ed08c9a7535789dc",
-              "sha256": "51eb22ee51d7b6e678ef5dc2be234adb46f9f541ac1d98e5ed08c9a7535789dc"
+              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:fd8ea89de8c9d5390eb17041609842f61986b43932fabdcba9b43bacddc63c84",
+              "sha256": "fd8ea89de8c9d5390eb17041609842f61986b43932fabdcba9b43bacddc63c84"
             },
             "arm64_tahoe": {
               "cellar": "/opt/homebrew/Cellar",
-              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:8c7dab98311d025fda379dba80eaf985af1ceca26c403c66318b3c7d43a028b9",
-              "sha256": "8c7dab98311d025fda379dba80eaf985af1ceca26c403c66318b3c7d43a028b9"
+              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:a1ef3283ad41feaedac5d41dafc4c2a71db6492c3a45a4d1755cfb19d02afc7b",
+              "sha256": "a1ef3283ad41feaedac5d41dafc4c2a71db6492c3a45a4d1755cfb19d02afc7b"
             },
             "arm64_sequoia": {
               "cellar": "/opt/homebrew/Cellar",
-              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:b7139450ed389be82f807daaadffa778d9c4753a3b2d8f784da1cf7383994ee2",
-              "sha256": "b7139450ed389be82f807daaadffa778d9c4753a3b2d8f784da1cf7383994ee2"
-            },
-            "arm64_sonoma": {
-              "cellar": "/opt/homebrew/Cellar",
-              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:01887accd1964e9940ba516509e948eed9850d58d55cc02ca52c503435750685",
-              "sha256": "01887accd1964e9940ba516509e948eed9850d58d55cc02ca52c503435750685"
+              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:0994a8029175af4578c3b93b3020e58dffa638ca21dc22d862c6bc02fea7e73b",
+              "sha256": "0994a8029175af4578c3b93b3020e58dffa638ca21dc22d862c6bc02fea7e73b"
             },
             "arm64_linux": {
               "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:e0f84cb8ab776813a17750423a6ce1b75b870df3ab2c21c54df9ce02646c1e1c",
-              "sha256": "e0f84cb8ab776813a17750423a6ce1b75b870df3ab2c21c54df9ce02646c1e1c"
+              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:5074ccc96209b4a63a1aed9eaa226b0c2976dfaa62f4b0c04eb3344c7ea8d005",
+              "sha256": "5074ccc96209b4a63a1aed9eaa226b0c2976dfaa62f4b0c04eb3344c7ea8d005"
             },
             "x86_64_linux": {
               "cellar": "/home/linuxbrew/.linuxbrew/Cellar",
-              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:73c4159878b98d82e6f4e343ef34a79b74ca2224927d38c0956ce3ea781d6d20",
-              "sha256": "73c4159878b98d82e6f4e343ef34a79b74ca2224927d38c0956ce3ea781d6d20"
+              "url": "https://ghcr.io/v2/homebrew/core/openssl/3/blobs/sha256:d1059270d1dfaae5e945745c7d5930c76a178b270a964ff450c16a2f2cda5ad2",
+              "sha256": "d1059270d1dfaae5e945745c7d5930c76a178b270a964ff450c16a2f2cda5ad2"
             }
           }
         }

@@ -4,12 +4,13 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: Release tag to validate
+        description: Release tag to validate (vX.Y.Z or vX.Y.Z-rc.N)
         required: true
-        default: v0.1.212
+        default: v0.1.216
   pull_request:
     paths:
       - .github/workflows/release-artifact-check.yml
+      - scripts/verify-popular-packages.py
 
 permissions:
   contents: read
@@ -27,7 +28,7 @@ jobs:
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 15
     env:
-      RELEASE_TAG: ${{ inputs.tag || 'v0.1.212' }}
+      RELEASE_TAG: ${{ inputs.tag || 'v0.1.216' }}
       NANOBREW_UPSTREAM_REGISTRY_CACHE: ${{ github.workspace }}/registry/upstream.json
       GH_TOKEN: ${{ github.token }}
       NANOBREW_NO_TELEMETRY: '1'
@@ -35,11 +36,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Download and verify signed release artifact
+        shell: bash
         env:
           ARCH: ${{ matrix.arch }}
         run: |
-          version=$(sed -n 's/^const VERSION = "\([^"]*\)";.*/\1/p' src/main.zig)
-          test -n "$version"
+          if [[ ! $RELEASE_TAG =~ ^v([0-9]+\.[0-9]+\.[0-9]+)(-rc\.[0-9]+)?$ ]]; then
+            echo "error: expected a release tag vX.Y.Z or vX.Y.Z-rc.N" >&2
+            exit 1
+          fi
+          # Release candidates report the base version, without the -rc.N suffix.
+          version="${BASH_REMATCH[1]}"
           mkdir -p dist/release-check
           cd dist/release-check
           archive="nb-$ARCH-apple-darwin.tar.gz"
@@ -51,17 +57,24 @@ jobs:
           grep -q 'Authority=Developer ID Application' signature.txt
           grep -q 'flags=0x10000(runtime)' signature.txt
           lipo nb -verify_arch "$ARCH"
-          ./nb version | tee version.txt
-          grep -F "$version" version.txt
-      - name: Install and exercise the default package selection
+          ./nb version > version.txt
+          cat version.txt
+          if ! cmp -s version.txt <(printf '%s\n' "$version"); then
+            echo "error: expected nb version to report exactly $version for $RELEASE_TAG" >&2
+            exit 1
+          fi
+      # The artifact predates source selection fixes in this checkout. Use
+      # checksum-pinned inputs here; popular-package-coverage tests live
+      # resolution with the newly built binary.
+      - name: Install and exercise the checksum-pinned package selection
+        env:
+          NANOBREW_DISABLE_UPSTREAM_FRESHNESS: '1'
+          NB_TEST_RESOLUTION: pinned
         run: |
           sudo ./dist/release-check/nb init
           sudo chown -R "$(id -un)" /opt/nanobrew
-          NANOBREW_UPSTREAM_REGISTRY_CACHE="$PWD/registry/upstream.json" ./dist/release-check/nb install gh uv oras ripgrep just fd git-lfs codedb codegraff
-          for package in ripgrep just fd git-lfs codedb codegraff; do
-            ./dist/release-check/nb info "$package"
-          done
-          NB_TEST_RESOLUTION=default python3 scripts/verify-popular-packages.py
+          ./dist/release-check/nb install gh uv oras ripgrep just fd git-lfs codedb codegraff
+          python3 scripts/verify-popular-packages.py ./dist/release-check/nb
       - uses: actions/upload-artifact@v4
         with:
           name: signed-release-${{ matrix.arch }}

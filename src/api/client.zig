@@ -275,7 +275,7 @@ fn fetchFormulaWithClientAndUpstreamRegistryOptions(
                     live.deinit(alloc);
                 }
             }
-            return upstream_formula;
+            return withTapSource(alloc, upstream_formula, if (tap_ref) name else null);
         } else |err| switch (err) {
             error.UpstreamRecordNotFound,
             error.UnsupportedPlatform,
@@ -290,7 +290,7 @@ fn fetchFormulaWithClientAndUpstreamRegistryOptions(
     // Tap formula: "user/tap/formula" -> fetch from GitHub when no verified
     // upstream record exists for the tap token.
     if (tap_ref) {
-        return tap.fetchTapFormula(alloc, client, name);
+        return withTapSource(alloc, try tap.fetchTapFormula(alloc, client, name), name);
     }
 
     return fetchFormulaLive(alloc, client, name) catch |err| {
@@ -305,6 +305,15 @@ fn fetchFormulaWithClientAndUpstreamRegistryOptions(
         }
         return err;
     };
+}
+
+// Both fetched and cached upstream metadata can have just the local name.
+fn withTapSource(alloc: std.mem.Allocator, formula: Formula, source_token: ?[]const u8) !Formula {
+    errdefer formula.deinit(alloc);
+    var result = formula;
+    result.source_token = if (source_token) |token| try alloc.dupe(u8, token) else null;
+    if (formula.source_token) |token| alloc.free(token);
+    return result;
 }
 
 /// Fetch a formula directly from the live Homebrew API (cache → network),
@@ -381,19 +390,33 @@ fn fetchFormulaLive(alloc: std.mem.Allocator, client: ?*std.http.Client, name: [
 }
 
 // A newer source-only formula must not displace a working binary pin.
-// Otherwise Homebrew dropping Intel bottles undoes our maintained coverage.
+// Upstream release archives are stored in source_url and carry install rules;
+// Homebrew bottles instead use bottle_url. Preserve both on platforms where
+// Homebrew has no compatible live bottle.
 fn preferLiveFormula(live: Formula, upstream: Formula) bool {
-    if (upstream.bottle_url.len > 0 and live.bottle_url.len == 0) return false;
+    const has_binary_pin = upstream.bottle_url.len > 0 or
+        (upstream.source_url.len > 0 and upstream.source_sha256.len > 0 and upstream.install_binaries.len > 0);
+    if (has_binary_pin and live.bottle_url.len == 0) return false;
     return formulaMetadataIsNewer(live, upstream) or upstreamHasRemovedDependency(live, upstream);
 }
 
-test "freshness preserves maintained Intel bottle when live is source-only" {
-    const pin = Formula{ .name = "expat", .version = "2.8.1", .bottle_url = "https://example.test/pin" };
-    const source = Formula{ .name = "expat", .version = "2.8.4" };
-    try std.testing.expect(!preferLiveFormula(source, pin));
+test "freshness preserves both bottle and release archive pins when live is source-only" {
+    const bottle_pin = Formula{ .name = "ripgrep", .version = "15.1.0", .bottle_url = "https://example.test/bottle" };
+    const archive_pin = Formula{
+        .name = "ripgrep",
+        .version = "15.1.0",
+        .source_url = "https://example.test/rg-macos.tar.gz",
+        .source_sha256 = "5aeca67f2283f75235de40d0bd9c0a5bbc5fce23b6d48b3bf9fa1b2db08382ca",
+        .install_binaries = &.{"rg"},
+    };
+    const source = Formula{ .name = "ripgrep", .version = "16.0.0", .source_url = "https://example.test/16.0.0.tar.gz" };
+    try std.testing.expect(!preferLiveFormula(source, bottle_pin));
+    try std.testing.expect(!preferLiveFormula(source, archive_pin));
+    try std.testing.expect(preferLiveFormula(source, .{ .name = "ripgrep", .version = "15.1.0" }));
     var bottle = source;
-    bottle.bottle_url = "https://example.test/new";
-    try std.testing.expect(preferLiveFormula(bottle, pin));
+    bottle.bottle_url = "https://example.test/new-bottle";
+    try std.testing.expect(preferLiveFormula(bottle, bottle_pin));
+    try std.testing.expect(preferLiveFormula(bottle, archive_pin));
 }
 
 fn formulaMetadataIsNewer(candidate: Formula, current: Formula) bool {
@@ -1109,6 +1132,14 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
     else
         false;
 
+    // Preserve presence, even for [] or the wrong type: structured metadata
+    // must never fall through to a legacy hook.
+    const post_install_steps = if (root.get("post_install_steps")) |steps|
+        try std.json.Stringify.valueAlloc(alloc, steps, .{})
+    else
+        null;
+    errdefer if (post_install_steps) |steps| alloc.free(steps);
+
     var bottle_url = try allocDupe(alloc, "");
     errdefer alloc.free(bottle_url);
     var bottle_sha256 = try allocDupe(alloc, "");
@@ -1161,7 +1192,31 @@ fn parseFormulaJson(alloc: std.mem.Allocator, json_data: []const u8) !Formula {
         .build_deps = build_deps,
         .caveats = caveats,
         .post_install_defined = post_install_defined,
+        .post_install_steps = post_install_steps,
     };
+}
+
+test "parseFormulaJson preserves structured post-install metadata independently of the legacy flag" {
+    const cases = [_]struct { fields: []const u8, steps: ?[]const u8, legacy: bool }{
+        .{ .fields = "\"post_install_defined\":true,", .steps = null, .legacy = true },
+        .{ .fields = "\"post_install_defined\":true,\"post_install_steps\":[],", .steps = "[]", .legacy = true },
+        .{ .fields = "\"post_install_defined\":true,\"post_install_steps\":null,", .steps = "null", .legacy = true },
+        .{ .fields = "\"post_install_defined\":false,\"post_install_steps\":[{\"type\":\"warn\"}],", .steps = "[{\"type\":\"warn\"}]", .legacy = false },
+    };
+    for (cases) |case| {
+        const json = try std.fmt.allocPrint(testing.allocator,
+            \\{{"name":"demo","versions":{{"stable":"1.0"}},{s}"bottle":{{"stable":{{"files":{{"all":{{"url":"bottle"}}}}}}}}}}
+        , .{case.fields});
+        defer testing.allocator.free(json);
+        const f = try parseFormulaJson(testing.allocator, json);
+        defer f.deinit(testing.allocator);
+        try testing.expectEqual(case.legacy, f.post_install_defined);
+        if (case.steps) |steps| {
+            try testing.expectEqualStrings(steps, f.post_install_steps.?);
+        } else {
+            try testing.expect(f.post_install_steps == null);
+        }
+    }
 }
 
 fn findBottleTag(files: std.json.ObjectMap) ?std.json.Value {
